@@ -6,6 +6,36 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [Unreleased]
+
+### Fixed
+
+- **Bootstrap `cne init` deadlock on first-build lakes with dead funds.**
+  The multi-source no-data certification inside `_gapfill_multiday_via_kline`
+  required a symbol to have *no staged rows at all* and *every session
+  missing*. A delisted/liquidated ETF or LOF that TDX and EastMoney cannot
+  serve fails both: its tip fetch still stages one zero-volume pre-open
+  placeholder, so the symbol kept its missing keys forever, the
+  `daily_bars_interior_gap` gate refused to checkpoint, and `--resume`
+  repeated the deadlock on every pass — the negative-evidence write point is
+  unreachable behind that raise. Three changes, preserving the
+  two-independent-sources-agreement principle:
+
+  - A zero-volume placeholder no longer disqualifies certification: the
+    rule now requires *no positive-volume staged row in the window*
+    (placeholders are not trade evidence — the same semantics
+    `load_bar_universe` already documents).
+  - Partially-staged symbols (source retention starts mid-window) get their
+    missing keys certified per contiguous segment: EastMoney kline and Sina
+    are probed over each segment; rows either returns are staged first, and
+    only a double-empty segment is certified (`daily_bars_segment_no_data`
+    finding, `expected_no_data_keys` on the gapfill result, bounded
+    negative evidence persisted per segment).
+  - `_staged_daily_bar_missing_keys` now skips keys covered by live
+    negative evidence — symmetric with its existing trading-status
+    exclusion — so a run that has already certified a key passes the gate
+    on the same invocation instead of raising first and recording later.
+
 ## [0.9.0] — 2026-09-13
 
 One breaking data-contract change, and the storage/quality work that came with
