@@ -58,8 +58,8 @@
 | 项 | 值 |
 |------|-------|
 | 波次 | `daily_bars`（Wave 1，依赖 corporate_actions） |
-| 主源 | tdx_protocol（未复权，SH/SZ） |
-| 备源 / 路由 | tip 缺口：eastmoney **clist**（分钟级）；多日窗口：eastmoney **kline**；BJ：sina |
+| 主源 | qmt_bridge（未复权；启用本地 BigQMT 桥时生效） |
+| 补齐 / 路由 | QMT 缺口先交给 TDX；tip 缺口：eastmoney **clist**（分钟级）；多日窗口：eastmoney **kline**；BJ：sina |
 | 频率 | 每日增量；init 时全量回填；深历史由同花顺按上市年份回补（股票与 ETF/LOF 均支持） |
 | 主键 | (symbol, trade_date) |
 | 重拉 | 当日 `corporate_actions` 的除权日对应标的 |
@@ -213,6 +213,7 @@
 | 采集方式 | **按日期区间整市场扫**，不是按标的循环，也不是按报告期。`RPT_F10_EH_EQUITY.END_DATE` 是股本变动日；股东户数在旬末/月末也披露（2025-07-10 有 894 行）。只扫季末会捞回一堆看着合理的行，然后静默漏掉其余大部分 |
 | 日更范围 | 按 `NOTICE_DATE` 回看 30 天。窗口开在公告日而不是变动日：几周前生效的变动今天才公告，按变动日开窗永远看不到它 |
 | PIT | `announce_date` 取自 `NOTICE_DATE`，进主键 |
+| QMT 补源 | `shareholder_counts` 可用 `get_holder_num`：`report_time` 给户数日期，`announce_time` 给披露日期；QMT 不回传东财的户均三列，置空 |
 | 源端历史底 | `share_structure` **1990**（1990 年 19 行，之前没有）；`shareholder_counts` **1992**（1992 年 25 行，1990/1991 为空）。均为固定底，不随今天滚动 |
 
 #### top_holders
@@ -259,6 +260,7 @@
 
 | 来源 | 协议 | MVP 用途 | 备源 | 降级策略 |
 |--------|----------|-----------|--------|---------|
+| qmt_bridge | 本地终端桥 | daily_bars, index_bars, minute_bars, minute_bars_5m（download → local parse）；trading_calendar；corporate_actions 回填；financial_statement_items；instruments（沪深A股+ETF，本地补充）；index_constituents（13 个主要指数 8731 行，含上证50/180/380、沪深300、中证500/800/1000、创业板指/50、科创50/100、中证全指）；trade_ticks（仅最近 session）；dragon_tiger（`get_longhubang`）；top_holders（`get_top10_share_holder`）；shareholder_counts（`get_holder_num`，仅 eastmoney 关闭时启用） | tdx_protocol 按缺口补齐；FSI/龙虎榜/前十大股东退 eastmoney | 桥不可用或无行时整批/缺口走 TDX；日线按 symbol×交易日 diff；权息按标的全历史读取；财务只信 `m_anntime`，终端未下载的空响应不会冒充 PIT；instruments 逐 symbol detail 慢但数据完整；BJ 板块桥暂不支持；SW 行业分类桥不可用；tick 历史仅最近 1 个交易日 |
 | tdx_protocol | TCP | bars、instruments、calendar | eastmoney clist（tip 路由）/ kline（多日） | tip 缺口进 curated（ADR-0005）；snapshot 供 diff |
 | sina | HTTP | adj_factors（qfq/hfq） | — | 跳过该标的 + quality finding |
 | bse | HTTP | BJ 日线 tip 成交额 | — | 仅在与 Sina OHLCV 精确一致时补 amount；否则保留 null + quality finding |

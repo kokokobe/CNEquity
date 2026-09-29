@@ -26,23 +26,23 @@ from cnequity.steps import reference, bars, events, ...  # noqa
 
 | Step | 数据集 | Worker | 主源 |
 |------|--------|--------|------|
-| instruments | instruments | 否 | tdx_protocol + EM list_date |
-| trading_calendar | trading_calendar | 否 | exchange_calendar 种子 |
+| instruments | instruments | 否 | tdx_protocol + EM list_date（TDX 失败时 QMT bridge fallback） |
+| trading_calendar | trading_calendar | 否 | qmt_bridge（失败时 exchange_calendar 种子） |
 | trading_status | trading_status | 否 | eastmoney；init 后可选 baostock ST 回填 |
 
 ### bars.py（L1）
 
 | Step | 数据集 | Worker | 主源 |
 |------|--------|--------|------|
-| daily_bars | daily_bars | **是** | tdx_protocol（失败时东财备源快照） |
-| index_bars | index_bars | 否 | tdx_protocol |
+| daily_bars | daily_bars | **是** | qmt_bridge（按 symbol×交易日 diff；缺失/失败时 TDX 补齐，再走东财备源快照） |
+| index_bars | index_bars | 否 | qmt_bridge（缺失/失败时 TDX 补齐，再走东财备源） |
 
 ### intraday.py（L1，可选）
 
 | Step | 数据集 | 频率 | 源端视野 | 全市场体积 |
 |------|--------|------|---------|-----------|
-| minute_bars | minute_bars | 1m | 95 个交易日 | 约 35MB/日、8.4GB/年 |
-| minute_bars_5m | minute_bars_5m | 5m | 491 个交易日（约 2 年） | 约 6MB/日、1.5GB/年 |
+| minute_bars | minute_bars | 1m | 95 个交易日 | 约 35MB/日、8.4GB/年；qmt_bridge 优先，TDX 补缺口 |
+| minute_bars_5m | minute_bars_5m | 5m | 491 个交易日（约 2 年） | 约 6MB/日、1.5GB/年；qmt_bridge 优先，TDX 补缺口 |
 
 两个 step 由 `_register_intraday_steps()` 从注册表生成——加一个频率是加一条 `DatasetSpec`，不是在四个模块里各改一处。
 
@@ -56,7 +56,7 @@ from cnequity.steps import reference, bars, events, ...  # noqa
 
 | Step | 数据集 | 主源 |
 |------|--------|------|
-| corporate_actions | corporate_actions | 日更东财 / 回填 TDX |
+| corporate_actions | corporate_actions | 回填 QMT（部分失败退 TDX）/ 日更东财日期快照 |
 | announcement_index | announcement_index | cninfo |
 
 ### fundamentals.py（L3）
@@ -64,7 +64,7 @@ from cnequity.steps import reference, bars, events, ...  # noqa
 | Step | 数据集 | 主源 |
 |------|--------|------|
 | valuation_metrics | valuation_metrics | 东财快照；回填 baostock |
-| financial_statement_items | financial_statement_items | eastmoney |
+| trade_ticks | trade_ticks | tdx_protocol（批量失败时 QMT bridge fallback，仅最近 session） |
 
 ### capital.py（L4）
 

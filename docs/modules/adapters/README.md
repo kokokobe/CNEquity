@@ -7,6 +7,7 @@
 ```
 adapters/
 ├── throttle.py           跨源限速调度
+├── qmt_bridge.py         本地 QMT 终端桥（BigQMT）
 ├── tdx_protocol/         通达信协议（内置客户端）
 ├── eastmoney/            东方财富 HTTP API
 ├── sina/                 新浪（复权因子 / BJ / 外盘窄集）
@@ -37,6 +38,8 @@ adapters/
 
 | 源 | 文档 | 主要数据集 |
 |----|------|------------|
+| qmt_bridge | （无独立页）见 [逐源限制](../../datasets/sources.md) | daily_bars, index_bars, minute_bars, minute_bars_5m（download → local parse；TDX 只补缺口） |
+| qmt_bridge | （无独立页）见 [逐源限制](../../datasets/sources.md) | trading_calendar；corporate_actions 回填；financial_statement_items（四张财务表，`report_type=announce_time`）；instruments（`get_stock_list_in_sector` + `get_instrument_detail`）；index_constituents（13 个主要指数，`get_stock_list_in_sector`）；trade_ticks（`get_market_data_ex(period='tick')`，仅最新 session）；dragon_tiger（`get_longhubang`）；top_holders（`get_top10_share_holder(data_name='holder')`） |
 | tdx_protocol | [tdx-protocol.md](tdx-protocol.md) | daily_bars, index_bars, instruments, corporate_actions |
 | eastmoney | [eastmoney.md](eastmoney.md) | 资金面、估值、结构、新闻等 |
 | sina | [sina.md](sina.md) | adj_factors；BJ / 部分外盘 |
@@ -69,6 +72,8 @@ min_interval_seconds = 1.0
 ```
 
 TDX 独立段 `[tdx_protocol]`，非 `sources.*`。
+QMT 桥独立段 `[qmt_bridge]`，也不是 `sources.*`；启用后日线、指数日线和
+1m/5m 分钟线先走本地终端下载+本地解析，QMT 缺口再交给 TDX。
 
 ---
 

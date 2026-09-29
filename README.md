@@ -70,25 +70,25 @@ CNEquity 开源、免注册、自托管。它不负责给出交易信号，而�
 | 数据集                            | 说明           | 主源           | 备源           | 历史                      | 调度组                |
 | ------------------------------ | ------------ | ------------ | ------------ | ----------------------- | ------------------ |
 | **L0 · 基础参考**                  |              |              |              |                         |                    |
-| `instruments`                  | 证券主数据        | tdx_protocol | baostock     | 回填 `baostock`           | core               |
-| `trading_calendar`             | 交易日历         | tdx_protocol | exchange     | 可回补                     | core               |
+| `instruments`                  | 证券主数据        | tdx_protocol | baostock     | 回填 `baostock`（TDX 失败时 QMT fallback） | core |
+| `trading_calendar`             | 交易日历         | qmt_bridge   | exchange     | 可回补                     | core               |
 | `trading_status`               | 交易状态（停复牌/ST） | eastmoney    | exchange     | 回填 `baostock`           | core               |
 | **L1 · 行情**                    |              |              |              |                         |                    |
 | `adj_factors`                  | 复权因子         | sina         | baostock     | 可回补                     | —                  |
 | `commodity_bars` ○             | 商品期货主连       | sina         | eastmoney    | 可回补                     | macro_risk         |
-| `daily_bars`                   | 日线           | tdx_protocol | eastmoney    | 可回补                     | core               |
+| `daily_bars`                   | 日线           | qmt_bridge   | eastmoney    | 可回补                     | core               |
 | `delisting_events`             | 退市事件         | derived      | —            | 可回补                     | —                  |
-| `index_bars`                   | 指数日线         | tdx_protocol | eastmoney    | 可回补                     | core               |
-| `minute_bars` ○                | 1 分钟线        | tdx_protocol | —            | 可回补                     | intraday           |
-| `minute_bars_5m` ○             | 5 分钟线        | tdx_protocol | —            | 可回补                     | intraday           |
+| `index_bars`                   | 指数日线         | qmt_bridge   | eastmoney    | 可回补                     | core               |
+| `minute_bars` ○                | 1 分钟线        | qmt_bridge   | —            | 可回补                     | intraday           |
+| `minute_bars_5m` ○             | 5 分钟线        | qmt_bridge   | —            | 可回补                     | intraday           |
 | `trade_ticks` ○                | 分笔快照         | tdx_protocol | —            | 可回补                     | ticks              |
 | **L2 · 公司事件**                  |              |              |              |                         |                    |
 | `announcement_index`           | 公告索引         | cninfo       | —            | 可回补                     | events:disclosures |
-| `corporate_actions`            | 公司行为         | eastmoney    | tdx_protocol | 可回补（回填走 `tdx_protocol`） | core               |
+| `corporate_actions`            | 公司行为         | qmt_bridge   | eastmoney    | 可回补（回填走 QMT；日更东财日期快照） | core               |
 | `earnings_disclosure_schedule` | 业绩披露预约       | eastmoney    | —            | 可回补                     | fundamentals       |
 | **L3 · 基本面**                   |              |              |              |                         |                    |
 | `analyst_consensus`            | 分析师一致预期      | eastmoney    | —            | 仅当日                     | research           |
-| `financial_statement_items`    | 财务报表科目       | eastmoney    | —            | 可回补                     | fundamentals       |
+| `financial_statement_items`    | 财务报表科目       | qmt_bridge   | eastmoney    | 可回补（QMT 需先在终端下载财务数据） | fundamentals       |
 | `share_structure`              | 股本结构         | eastmoney    | —            | 可回补                     | fundamentals       |
 | `shareholder_counts`           | 股东户数         | eastmoney    | —            | 可回补                     | fundamentals       |
 | `top_holders`                  | 前十大股东 / 流通股东 | eastmoney    | —            | 可回补                     | 按需回填               |

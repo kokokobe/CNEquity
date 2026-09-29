@@ -85,6 +85,20 @@ class Config:
     # Test/demo escape hatch only: lets TDX adapters return fabricated rows
     # (labeled source="mock") instead of failing the batch.
     tdx_allow_mock: bool = False
+    # QMT is the preferred daily-bars source when the local BigQMT bridge is
+    # reachable.  Missing rows still fall through to the existing TDX lane.
+    qmt_bridge_enabled: bool = False
+    qmt_bridge_tdx_gap_fill: bool = True
+    qmt_bridge_src_path: str | None = None
+    qmt_bridge_client_config_path: str | None = None
+    qmt_bridge_account_id: str | None = field(default=None, repr=False)
+    qmt_bridge_timeout_seconds: float | None = 30.0
+    qmt_bridge_download_timeout_seconds: float = 180.0
+    qmt_bridge_data_wait_seconds: float = 10.0
+    qmt_bridge_chunk_size: int = 0
+    # "auto" infers 股/手 from amount / close / volume; "share" and "lot"
+    # pin the bridge's QMT deployment.
+    qmt_bridge_volume_unit: str = "auto"
     sources: dict[str, bool] = field(default_factory=dict)
     source_intervals: dict[str, float] = field(default_factory=dict)
     # Optional HTTP(S) proxy for EastMoneyClient (e.g. mainland egress for push2his).
@@ -577,6 +591,7 @@ def load_config(path: str | Path) -> Config:
     lake_profile = raw.get("data", {}).get("profile") or None
     orch = raw.get("orchestrator", {})
     tdx = raw.get("tdx_protocol", {})
+    qmt = raw.get("qmt_bridge", {})
     sources_raw = raw.get("sources", {})
     derive_raw = raw.get("derive", {})
 
@@ -762,6 +777,14 @@ def load_config(path: str | Path) -> Config:
             "pass universe= (or universe_profile=) to load() instead"
         )
 
+    def _resolve_qmt_path(value: object) -> str | None:
+        if not value:
+            return None
+        path = Path(str(value)).expanduser()
+        if not path.is_absolute():
+            path = config_path.parent / path
+        return str(path.resolve())
+
     cfg = Config(
         data_root=data_root,
         lake_profile=str(lake_profile) if lake_profile else None,
@@ -798,6 +821,18 @@ def load_config(path: str | Path) -> Config:
         tdx_connect_timeout_sec=int(tdx.get("connect_timeout_sec", 10)),
         tdx_host_pool=_parse_tdx_host_pool(tdx.get("hosts", {})),
         tdx_allow_mock=bool(tdx.get("allow_mock", False)),
+        qmt_bridge_enabled=bool(qmt.get("enabled", False)),
+        qmt_bridge_tdx_gap_fill=bool(qmt.get("tdx_gap_fill", True)),
+        qmt_bridge_src_path=_resolve_qmt_path(qmt.get("bridge_src_path")),
+        qmt_bridge_client_config_path=_resolve_qmt_path(qmt.get("client_config_path")),
+        qmt_bridge_account_id=str(qmt["account_id"]) if qmt.get("account_id") else None,
+        qmt_bridge_timeout_seconds=(
+            float(qmt["timeout_seconds"]) if qmt.get("timeout_seconds") is not None else 30.0
+        ),
+        qmt_bridge_download_timeout_seconds=float(qmt.get("download_timeout_seconds", 180.0)),
+        qmt_bridge_data_wait_seconds=float(qmt.get("data_wait_seconds", 10.0)),
+        qmt_bridge_chunk_size=int(qmt.get("chunk_size", 0)),
+        qmt_bridge_volume_unit=str(qmt.get("volume_unit", "auto")),
         sources=sources,
         source_intervals=source_intervals,
         eastmoney_proxy=eastmoney_proxy,
@@ -935,6 +970,16 @@ def validate_config(cfg: Config) -> list[str]:
         errors.append(f"[universe].ingest must be one of: {known}")
     if cfg.audit_gate not in {"off", "shadow", "block"}:
         errors.append("[quality].audit_gate must be one of: off, shadow, block")
+    if cfg.qmt_bridge_volume_unit not in {"auto", "share", "lot"}:
+        errors.append("[qmt_bridge].volume_unit must be 'auto', 'share', or 'lot'")
+    if cfg.qmt_bridge_timeout_seconds is not None and cfg.qmt_bridge_timeout_seconds <= 0:
+        errors.append("[qmt_bridge].timeout_seconds must be > 0")
+    if cfg.qmt_bridge_download_timeout_seconds <= 0:
+        errors.append("[qmt_bridge].download_timeout_seconds must be > 0")
+    if cfg.qmt_bridge_data_wait_seconds < 0:
+        errors.append("[qmt_bridge].data_wait_seconds must be >= 0")
+    if cfg.qmt_bridge_chunk_size < 0:
+        errors.append("[qmt_bridge].chunk_size must be >= 0")
     if cfg.raw_archive_compression not in {"gzip", "none"}:
         errors.append("[raw_archive].compression must be 'gzip' or 'none'")
     if cfg.raw_archive_max_payload_bytes is not None and cfg.raw_archive_max_payload_bytes < 1:

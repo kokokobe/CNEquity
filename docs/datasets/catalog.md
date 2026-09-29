@@ -192,7 +192,7 @@ bars_15m = (
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
 | instruments | —（单文件 merge） | symbol | by_date | — | tdx_protocol | EM 分别从 A 股与 ETF/LOF clist 补 list_date；baostock 回填退市股（`cne backfill instruments`）；merge 保留退市 |
-| trading_calendar | trade_date | trade_date | by_date | ✓ | tdx_protocol | 备源交易所 CSV；种子 2016–2027 |
+| trading_calendar | trade_date | trade_date | by_date | ✓ | qmt_bridge | QMT 交易日；备源交易所 CSV；种子 2016–2027 |
 | trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST 回填；派生停牌写月分区。`status`（normal/suspended/**delisted**）与 `risk_warning`（ST/*ST）是两列——旧版单列会让停牌冲掉 ST 标记；退市行由 `instruments` 判定并标 `derived_delisted`。旧湖读取自动兼容，物理迁移见 [schema](schema.md#trading_status) |
 
 ---
@@ -201,10 +201,10 @@ bars_15m = (
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | tip 缺口东财 clist 路由进 curated；多日 kline；BJ→sina；snapshot 仍留 audit |
-| index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
-| minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 1m。**可选**，默认关；`[minute_bars]` 配置范围；**源端只有 95 个交易日**（见下「历史视野」）；全市场约 35MB/日；required=false |
-| minute_bars_5m | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 5m。同上可选；**491 个交易日（约 2 年），是唯一有真历史的日内频率**；全市场约 6MB/日；required=false |
+| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | qmt_bridge | 本地 BigQMT 桥优先；TDX 按缺口补齐；tip 缺口东财 clist 路由进 curated；BJ→sina；snapshot 仍留 audit |
+| index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | qmt_bridge | |
+| minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | qmt_bridge | 1m。**可选**，默认关；`[minute_bars]` 配置范围；**源端只有 95 个交易日**（见下「历史视野」）；全市场约 35MB/日；required=false |
+| minute_bars_5m | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | qmt_bridge | 5m。同上可选；**491 个交易日（约 2 年），是唯一有真历史的日内频率**；全市场约 6MB/日；required=false |
 
 两个日内数据集共用一组质量检查：主键重复（通用 `pk_unique`）、时段外 bar、`trade_date` 与 `bar_time` 不一致、会话缺口，以及**与日频的成交量+成交额双向对账**。
 | trade_ticks | trade_date | symbol, trade_date, tick_seq | by_date | ✓ | tdx_protocol | 分笔。**可选**，默认关；`[trade_ticks]` 独立配置；**不是逐笔成交**（见下）；源端回溯至 **2024-01-02**；watchlist 200 只约 7MB/日；required=false |
@@ -218,7 +218,7 @@ bars_15m = (
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | eastmoney（日更） | 回填：tdx_protocol；混粒度用 `scripts/repartition.py` |
+| corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | qmt_bridge（回填） | 日更仍用 eastmoney 日期快照；TDX/修理源补缺口 |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
 | earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`cne backfill` 走 2016 起全报告期 |
 
@@ -228,11 +228,11 @@ bars_15m = (
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`cne backfill` 默认自 2001 起（`--start`/`--end` 分块）；PIT 同时受 `announce_date` 与 `fetched_at` 截止；baostock 不用于 FSI |
+| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | qmt_bridge | 按报告期分区；QMT 使用 `announce_time` 读取首次披露日，需先在 QMT 数据管理中下载财务数据；QMT 失败或本地为空时退 EastMoney；`cne backfill` 默认自 2001 起 |
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 回填：baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 | share_structure | change_date | symbol, change_date, announce_date | by_date PIT | — | eastmoney | 总股本/流通/限售/自由流通。**按变动日期扫，不是按报告期**：END_DATE 是股本变动日，2025Q3 有 88 个不同日期 |
-| shareholder_counts | count_date | symbol, count_date, announce_date | by_date PIT | — | eastmoney | 股东户数与户均持股，筹码集中度输入。**旬末/月末也披露**：2025Q3 区间 13,356 行 / 71 个日期，只扫季末仅 5,635 行 |
+| shareholder_counts | count_date | symbol, count_date, announce_date | by_date PIT | — | eastmoney | 股东户数与户均持股，筹码集中度输入。**旬末/月末也披露**：2025Q3 区间 13,356 行 / 71 个日期，只扫季末仅 5,635 行；EastMoney 关闭时可用 `qmt_bridge`（户均列为空） |
 | top_holders | record_date | symbol, record_date, holder_scope, holder_rank, holder_name, announce_date | by_date PIT | — | eastmoney | 一张表两个口径：`holder_scope=total`（前十大股东）/ `float`（前十大流通股东）。2025Q3 有 10,749 行全口径不落在季末 |
 
 ---
@@ -320,8 +320,10 @@ bars_15m = (
 
 | 数据集 | 主源 | 备源 |
 |--------|------|------|
-| daily_bars | tdx_protocol | eastmoney |
-| corporate_actions | eastmoney | tdx_protocol |
+| daily_bars | qmt_bridge | eastmoney |
+| index_bars | qmt_bridge | eastmoney |
+| corporate_actions | qmt_bridge | eastmoney |
+| financial_statement_items | qmt_bridge | eastmoney |
 
 ## 对发布方的核对（authority checks）
 

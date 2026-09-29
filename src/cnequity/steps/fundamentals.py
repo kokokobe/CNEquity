@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 
 from cnequity.adapters.eastmoney.fundamentals import fetch_financial_statement_items
 from cnequity.adapters.eastmoney.shareholders import CHANGE_DATE, NOTICE_DATE
 from cnequity.adapters.eastmoney.valuation import fetch_valuation_metrics
+from cnequity.adapters.qmt_bridge import fetch_financial_statement_items_qmt
 from cnequity.config import Config
 from cnequity.domain.symbols import is_all_a_symbol, parse_symbol
 from cnequity.orchestrator.registry import register_step
@@ -361,7 +362,9 @@ def _expected_financial_periods(config: Config, trade_date: date) -> set[str]:
 def step_financial_statement_items(
     config: Config, trade_date: date, run_id: str, context: dict
 ) -> dict:
-    if not config.sources.get("eastmoney", True):
+    qmt_enabled = bool(getattr(config, "qmt_bridge_enabled", False))
+    eastmoney_enabled = config.sources.get("eastmoney", True)
+    if not qmt_enabled and not eastmoney_enabled:
         raise RuntimeError("financial_statement_items: eastmoney source disabled in config")
     # Quarterly data: daily runs pick up same-day announcements; backfill walks
     # every report period from 2001 (CLI --start/--end clips the walk;
@@ -369,12 +372,38 @@ def step_financial_statement_items(
     backfill = getattr(config, "_backfill", False)
     archive_source = "eastmoney_backfill" if backfill else "eastmoney"
     archive_scope = f"{'backfill' if backfill else 'daily'}:{trade_date.isoformat()}"
-    df = fetch_financial_statement_items(
-        trade_date,
-        backfill=backfill,
-        config=config,
-        run_id=run_id,
-    )
+    qmt_metrics: dict = {}
+    df = pl.DataFrame()
+    qmt_used = False
+    if qmt_enabled and not config.tdx_allow_mock:
+        symbols = getattr(config, "_backfill_symbols", None) or load_symbols(config)
+        qmt_start = HISTORY_START if backfill else trade_date - timedelta(days=DAILY_LOOKBACK_DAYS)
+        qmt_end = getattr(config, "_backfill_end", None) or trade_date
+        try:
+            df = fetch_financial_statement_items_qmt(
+                symbols,
+                qmt_start,
+                qmt_end,
+                config=config,
+                metrics=qmt_metrics,
+            )
+            # An empty QMT answer can mean "no filings today" or "the terminal
+            # has not downloaded financial data". Let EastMoney distinguish the
+            # two so a local data gap cannot masquerade as a complete empty day.
+            qmt_used = int(qmt_metrics.get("failed_requests", 0)) == 0 and not df.is_empty()
+            if qmt_used:
+                archive_source = "qmt_bridge"
+        except Exception as exc:
+            logger.warning("QMT financial-statement fetch failed: %s", exc)
+    if not qmt_used:
+        if not eastmoney_enabled:
+            raise RuntimeError("financial_statement_items: QMT failed and eastmoney is disabled")
+        df = fetch_financial_statement_items(
+            trade_date,
+            backfill=backfill,
+            config=config,
+            run_id=run_id,
+        )
     missing_periods: set[str] = set()
     missing_statement_types: dict[str, list[str]] = {}
     # Completeness is a whole-market claim: "every period the market reported
@@ -458,7 +487,7 @@ def step_financial_statement_items(
                         source=archive_source,
                         request_scope=archive_scope,
                     )
-                    if config.should_archive_raw("financial_statement_items")
+                    if not qmt_used and config.should_archive_raw("financial_statement_items")
                     else None
                 ),
             )
@@ -485,7 +514,7 @@ def step_financial_statement_items(
                 source=archive_source,
                 request_scope=archive_scope,
             )
-            if config.should_archive_raw("financial_statement_items")
+            if not qmt_used and config.should_archive_raw("financial_statement_items")
             else None
         ),
     )
@@ -532,6 +561,7 @@ def _run_shareholder_step(
     *,
     daily_by: str,
     daily_lookback_days: int,
+    source: str = "eastmoney",
 ) -> dict:
     """Walk date windows, writing each as it lands.
 
@@ -542,7 +572,7 @@ def _run_shareholder_step(
     """
     from datetime import timedelta
 
-    if not config.sources.get("eastmoney", True):
+    if source != "qmt_bridge" and not config.sources.get("eastmoney", True):
         raise RuntimeError(f"{dataset}: eastmoney source disabled in config")
 
     if getattr(config, "_backfill", False):
@@ -582,7 +612,11 @@ def _run_shareholder_step(
             # Preserve that fact at row level so strict PIT reads can reject
             # it even after the data has been copied to another lake without
             # the registry metadata beside it.
-            source=("eastmoney_backfill" if getattr(config, "_backfill", False) else "eastmoney"),
+            source=(
+                source
+                if source == "qmt_bridge"
+                else ("eastmoney_backfill" if getattr(config, "_backfill", False) else "eastmoney")
+            ),
             batch_id=f"batch-{win_start.isoformat()}",
         )
         rows_read += int(chunk.get("rows_read", 0))
@@ -628,6 +662,27 @@ def step_share_structure(config: Config, trade_date: date, run_id: str, context:
 
 @register_step("shareholder_counts", group="fundamentals", depends_on=["instruments"])
 def step_shareholder_counts(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
+    eastmoney_enabled = config.sources.get("eastmoney", True)
+    if not eastmoney_enabled and getattr(config, "qmt_bridge_enabled", False):
+        from cnequity.adapters.qmt_bridge import fetch_shareholder_counts_qmt
+        from cnequity.steps.common import load_symbols
+
+        symbols = getattr(config, "_backfill_symbols", None) or load_symbols(config)
+
+        def fetch_qmt(start: date, end: date, *, by: str, config: Config):
+            return fetch_shareholder_counts_qmt(symbols, start, end, by=by, config=config)
+
+        return _run_shareholder_step(
+            config,
+            trade_date,
+            run_id,
+            "shareholder_counts",
+            fetch_qmt,
+            daily_by=NOTICE_DATE,
+            daily_lookback_days=DAILY_LOOKBACK_DAYS,
+            source="qmt_bridge",
+        )
+
     from cnequity.adapters.eastmoney.shareholders import fetch_shareholder_counts
 
     return _run_shareholder_step(
