@@ -66,6 +66,20 @@ from cnequity.orchestrator.engine import JobEngine
     ),
 )
 @click.option(
+    "--max-attempts",
+    default=10,
+    show_default=True,
+    help=(
+        "仅 --outstanding：单个 key 累计未补齐达到该次数后进入 parked 状态。"
+        "后续 --outstanding 默认跳过，但 key 仍留在台账里。"
+    ),
+)
+@click.option(
+    "--retry-parked",
+    is_flag=True,
+    help="仅 --outstanding：忽略尝试上限，把已 parked 的 key 也纳入本次修复。",
+)
+@click.option(
     "--symbols",
     "symbols_str",
     default=None,
@@ -137,6 +151,8 @@ def backfill(
     ex_dates_str: str | None,
     bse_tip_repair: bool,
     bj_amount_repair: bool,
+    max_attempts: int,
+    retry_parked: bool,
 ):
     """回填一个数据集。
 
@@ -213,7 +229,15 @@ def backfill(
             raise click.ClickException(
                 "--outstanding 的范围取自欠账台账；请去掉 --symbols/--start/--end"
             )
-        result = _repair_outstanding(cfg, dataset, workers)
+        if max_attempts < 1:
+            raise click.ClickException("--max-attempts 至少为 1")
+        result = _repair_outstanding(
+            cfg,
+            dataset,
+            workers,
+            max_attempts=max_attempts,
+            retry_parked=retry_parked,
+        )
         click.echo(json.dumps(result, indent=2, default=str))
         if result["status"] != "success":
             raise SystemExit(1)
@@ -259,7 +283,14 @@ def backfill(
         raise SystemExit(1)
 
 
-def _repair_outstanding(cfg, dataset: str, workers: int) -> dict:
+def _repair_outstanding(
+    cfg,
+    dataset: str,
+    workers: int,
+    *,
+    max_attempts: int = 10,
+    retry_parked: bool = False,
+) -> dict:
     """Refetch exactly what the ledger says is owed, a month at a time.
 
     Owed keys are scatter, not a range: measured on a real init, 5,037 keys sat
@@ -273,11 +304,37 @@ def _repair_outstanding(cfg, dataset: str, workers: int) -> dict:
     from collections import defaultdict
 
     from cnequity.steps.bars import _last_final_session
-    from cnequity.storage.state import StateStore
+    from cnequity.storage import state as state_module
 
-    owed = StateStore(cfg.meta_root).get_outstanding_keys(dataset)
+    owed = state_module.StateStore(cfg.meta_root).get_outstanding_keys(dataset)
     if not owed:
         return {"dataset": dataset, "status": "success", "outstanding": 0, "note": "nothing owed"}
+    limit = max(1, int(max_attempts))
+    parked = [] if retry_parked else [
+        row
+        for row in owed
+        if int(row.get("attempts", 0) or 0) >= limit
+    ]
+    active = owed if retry_parked else [
+        row
+        for row in owed
+        if int(row.get("attempts", 0) or 0) < limit
+    ]
+    if parked:
+        click.echo(
+            f"[{dataset}] {len(parked)} 个 key 已累计 {limit} 次未补齐；"
+            "本次跳过，key 仍在台账中（--retry-parked 可强制重试）",
+            err=True,
+        )
+    if not active:
+        return {
+            "dataset": dataset,
+            "status": "success",
+            "outstanding": len(owed),
+            "parked": len(parked),
+            "parked_after_attempts": limit,
+            "note": "all outstanding keys are parked; use --retry-parked to retry them",
+        }
 
     # A key for a session that has not closed yet would make its whole monthly
     # pass fail the finality guard, and every other key in that month with it:
@@ -287,7 +344,7 @@ def _repair_outstanding(cfg, dataset: str, workers: int) -> dict:
     buckets: dict[str, set[str]] = defaultdict(set)
     days_in: dict[str, list[str]] = defaultdict(list)
     deferred = 0
-    for row in owed:
+    for row in active:
         symbol, day = row.get("symbol"), row.get("trade_date")
         if not symbol or not day:
             continue
@@ -310,8 +367,8 @@ def _repair_outstanding(cfg, dataset: str, workers: int) -> dict:
         }
 
     click.echo(
-        f"[{dataset}] 欠着 {len(owed)} 个 key，涉及 "
-        f"{len({r['symbol'] for r in owed})} 只标的；分 {len(buckets)} 个月度批次修复",
+        f"[{dataset}] 待试 {len(active)} 个 key，涉及 "
+        f"{len({r['symbol'] for r in active})} 只标的；分 {len(buckets)} 个月度批次修复",
         err=True,
     )
     failures: list[str] = []
@@ -342,7 +399,9 @@ def _repair_outstanding(cfg, dataset: str, workers: int) -> dict:
         "status": "success" if not failures else "failed",
         "passes": len(buckets),
         "failed_passes": failures,
-        "outstanding": settled,
+        "outstanding": settled.get("still_owed", settled) if isinstance(settled, dict) else settled,
+        "parked": len(parked),
+        "parked_after_attempts": limit,
     }
 
 
