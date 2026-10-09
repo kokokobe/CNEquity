@@ -674,7 +674,7 @@ def step_financial_statement_items(
                     raw_archive_exempt=True,
                 )
         except Exception as exc:
-            logger.warning("QMT financial-statement fetch failed: %s", exc)
+            logger.warning("QMT financial-statement fetch/publish failed: %s", exc)
 
     state = StateStore(config.meta_root)
     unit_prefix = "fsi-"
