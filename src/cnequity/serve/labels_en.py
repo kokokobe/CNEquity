@@ -113,7 +113,7 @@ EN: dict[str, str] = {
     "通达信": "TDX",
     "日线主源。关掉后日线不再向通达信取数。": "Primary daily bar source. When off, daily bars are no longer fetched from TDX.",
     "QMT 本地桥": "Local QMT bridge",
-    "启用本地 BigQMT 终端桥；日线、指数、分钟线等会先走 QMT。桥路径和终端参数仍在配置文件里。": "Enable the local BigQMT terminal bridge; daily bars, index bars and minute bars prefer QMT. Bridge paths and terminal settings stay in the config file.",
+    "启用本地 BigQMT 终端桥。日线、指数、分钟线、交易日历、财务、公司行动和复权因子优先走 QMT；逐笔成交、指数成分和股东户数只在原源失败或关闭时用 QMT 补位。BigQMT 离线时自动回落，桥路径和终端参数仍在配置文件里。": "Enable the local BigQMT terminal bridge. Daily bars, index bars, minute bars, the trading calendar, financials, corporate actions and adjustment factors prefer QMT; trade ticks, index constituents and shareholder counts only fall back to QMT when their primary source fails or is disabled. Falls back automatically when BigQMT is offline; bridge paths and terminal settings stay in the config file.",
     "东财": "EastMoney",
     "公告、财务和资金流。关掉后不再请求东财。": "Announcements, financials and fund flows. When off, EastMoney is no longer requested.",
     "新浪日线": "Sina daily bars",
