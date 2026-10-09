@@ -499,6 +499,12 @@ def _backfill_valuation_metrics_locked(config: Config, trade_date: date, run_id:
     if aborted_reason:
         result["aborted"] = aborted_reason
     if all_failed or aborted_reason:
+        if rows_written:
+            # The staged chunks are complete market data for the symbols that
+            # succeeded. Failed symbols remain in the resume todo, so warning
+            # on the result while settling this batch avoids republishing a
+            # full-market sweep into another lost staging run.
+            result["batch_settled"] = True
         result["failed_symbols"] = len(set(all_failed))
         finding = {
             "dataset": "valuation_metrics",
@@ -847,7 +853,7 @@ def step_financial_statement_items(
                         source=archive_source,
                         request_scope=archive_scope,
                     )
-                    if not qmt_used and config.should_archive_raw("financial_statement_items")
+                    if not qmt_enabled and config.should_archive_raw("financial_statement_items")
                     else None
                 ),
             )
@@ -882,7 +888,7 @@ def step_financial_statement_items(
                 source=archive_source,
                 request_scope=archive_scope,
             )
-            if not qmt_used and config.should_archive_raw("financial_statement_items")
+            if not qmt_enabled and config.should_archive_raw("financial_statement_items")
             else None
         ),
     )
@@ -975,6 +981,7 @@ def _run_shareholder_step(
     empty_windows: list[tuple[date, date]] = []
     failures: list[tuple[str, str]] = []
     stopped = False
+    capture = None
     state = StateStore(config.meta_root)
     report = sweep_progress(logger, f"{dataset} windows", len(windows), every=1, unit="windows")
     staged = StagingWriter(config.staging_root).list_run_files(dataset, run_id)
@@ -1026,7 +1033,6 @@ def _run_shareholder_step(
             report(index)
         else:
             source = "eastmoney_backfill" if getattr(config, "_backfill", False) else "eastmoney"
-            capture = None
             if config.should_archive_raw(dataset):
                 from cnequity.adapters.eastmoney.shareholders import ShareholderCapture
                 from cnequity.storage.raw_archive import begin_capture

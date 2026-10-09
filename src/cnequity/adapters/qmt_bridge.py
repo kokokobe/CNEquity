@@ -13,6 +13,7 @@ from typing import Any
 
 import polars as pl
 
+from cnequity.adapters.calendar.exchange_calendar import build_trading_calendar
 from cnequity.domain.schemas import data_version_for, with_provenance
 
 logger = logging.getLogger(__name__)
@@ -988,11 +989,36 @@ def fetch_trading_calendar_qmt(
         parsed = _coerce_date(value)
         if parsed is not None:
             trading.add(parsed)
+    if not trading:
+        return pl.DataFrame()
+    last_session = max(trading)
+    if last_session < start:
+        return pl.DataFrame()
+
+    # QMT returns sessions through the latest observed day only. Beyond that
+    # its response is empty, not authoritative: treating future dates as closed
+    # made the next trading day skip the entire daily pipeline.
+    fallback = pl.DataFrame()
+    if last_session < end:
+        fallback = build_trading_calendar(last_session + timedelta(days=1), end)
+    fallback_by_date = {
+        row["trade_date"]: bool(row["is_trading"])
+        for row in fallback.iter_rows(named=True)
+    }
+    fallback_source = "exchange_calendar"
     if metrics is not None:
         metrics["requests"] = int(metrics.get("requests", 0)) + 1
         metrics["rows_read"] = int(metrics.get("rows_read", 0)) + len(trading)
     rows = [
-        {"trade_date": current, "is_trading": current in trading}
+        {
+            "trade_date": current,
+            "is_trading": (
+                current in trading
+                if current <= last_session
+                else fallback_by_date[current]
+            ),
+            "source": SOURCE if current <= last_session else fallback_source,
+        }
         for ordinal in range(start.toordinal(), end.toordinal() + 1)
         for current in [date.fromordinal(ordinal)]
     ]

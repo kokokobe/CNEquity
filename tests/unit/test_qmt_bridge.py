@@ -569,6 +569,17 @@ class _TradingCalendarFakeXtData:
         return ["20240701", "20240702", "20240703", "20240704", "20240705"]
 
 
+class _PartialTradingCalendarFakeXtData:
+    def get_trading_dates(self, market, start_time, end_time):
+        assert market == "SH"
+        return [
+            "20260928",
+            "20260929",
+            "20260930",
+            "20261008",
+        ]
+
+
 def test_fetch_trading_calendar_qmt_materialises_non_sessions():
     frame = fetch_trading_calendar_qmt(
         date(2024, 7, 1),
@@ -582,7 +593,27 @@ def test_fetch_trading_calendar_qmt_materialises_non_sessions():
         date(2024, 7, 6),
         date(2024, 7, 7),
     ]
-    assert frame["source"].unique().to_list() == ["qmt_bridge"]
+    assert set(frame["source"].unique().to_list()) == {"qmt_bridge", "exchange_calendar"}
+
+
+def test_fetch_trading_calendar_qmt_falls_back_after_last_session():
+    frame = fetch_trading_calendar_qmt(
+        date(2026, 9, 25),
+        date(2026, 10, 9),
+        config=None,
+        xtdata=_PartialTradingCalendarFakeXtData(),
+    )
+
+    assert frame.height == 15
+    by_date = {row["trade_date"]: row for row in frame.iter_rows(named=True)}
+    assert by_date[date(2026, 9, 30)]["is_trading"] is True
+    assert by_date[date(2026, 9, 30)]["source"] == "qmt_bridge"
+    assert by_date[date(2026, 10, 7)]["is_trading"] is False
+    assert by_date[date(2026, 10, 7)]["source"] == "qmt_bridge"
+    assert by_date[date(2026, 10, 8)]["is_trading"] is True
+    assert by_date[date(2026, 10, 8)]["source"] == "qmt_bridge"
+    assert by_date[date(2026, 10, 9)]["is_trading"] is True
+    assert by_date[date(2026, 10, 9)]["source"] == "exchange_calendar"
 
 
 class _FinancialsFakeXtData:

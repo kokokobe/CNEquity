@@ -459,6 +459,48 @@ def test_backfill_valuation_locked_writes_chunks(cfg, monkeypatch):
     )
 
 
+def test_backfill_valuation_locked_settles_batch_with_partial_failures(cfg, monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.storage.repairs.valuation_orphans.purge_valuation_orphan_symbols",
+        lambda config: {"purged": 0},
+    )
+    monkeypatch.setattr(fund, "load_symbols", lambda config: ["600519.SH"])
+    monkeypatch.setattr(fund, "load_bar_universe", lambda config: {"600519.SH"})
+    monkeypatch.setattr(
+        fund,
+        "_symbols_needing_backfill",
+        lambda config, universe, **kwargs: ["600519.SH"],
+    )
+    monkeypatch.setattr(fund, "_valuation_history_end", lambda config, trade_date: date(2024, 6, 1))
+
+    def fake_history(batch, start, end, config=None):
+        return (
+            pl.DataFrame(
+                {
+                    "symbol": batch,
+                    "trade_date": [date(2024, 1, 2)] * len(batch),
+                    "pe_ttm": [10.0] * len(batch),
+                    "pb": [1.0] * len(batch),
+                    "ps_ttm": [2.0] * len(batch),
+                    "total_mv": [1e9] * len(batch),
+                    "float_mv": [1e9] * len(batch),
+                }
+            ),
+            ["600519.SH"],
+        )
+
+    monkeypatch.setattr(
+        "cnequity.adapters.baostock.valuation.fetch_valuation_history",
+        fake_history,
+    )
+
+    result = fund._backfill_valuation_metrics_locked(cfg, date(2024, 6, 28), "run-partial")
+
+    assert result["rows_written"] == 1
+    assert result["failed_symbols"] == 1
+    assert result["batch_settled"] is True
+
+
 def test_backfill_valuation_locked_honors_requested_window(cfg, monkeypatch):
     cfg._backfill_start = date(2024, 5, 1)
     cfg._backfill_end = date(2024, 6, 1)

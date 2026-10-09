@@ -360,7 +360,7 @@ def test_generic_backfill_plan_is_offline_and_does_not_create_lake(tmp_path, mon
     assert plan["symbols"] == ["000001.SZ"]
     assert plan["data_root"] == str(cfg.data_root)
     assert (plan["start"], plan["end"]) == ("2018-01-01", "2018-01-31")
-    assert plan["registered_sources"]["primary"] == "tdx_protocol"
+    assert plan["registered_sources"]["primary"] == "qmt_bridge"
     assert plan["source_status"]["tdx_protocol"]["enabled"] is False
     assert set(plan["source_status"]["tdx_protocol"]["pacing_seconds"]) == {"tdx_protocol"}
     assert plan["cold_request_lower_bound"] == 1

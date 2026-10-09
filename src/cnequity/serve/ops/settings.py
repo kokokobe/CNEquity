@@ -185,6 +185,17 @@ SETTINGS: tuple[Setting, ...] = (
         True,
     ),
     Setting(
+        "qmt_bridge",
+        "sources",
+        "qmt_bridge",
+        "enabled",
+        "bool",
+        "QMT 本地桥",
+        "启用本地 BigQMT 终端桥；日线、指数、分钟线等会先走 QMT。"
+        "桥路径和终端参数仍在配置文件里。",
+        False,
+    ),
+    Setting(
         "eastmoney",
         "sources",
         "sources.eastmoney",

@@ -34,6 +34,8 @@
 | `--start` | `—` | 回填区间起点（YYYY-MM-DD），包括 daily_bars、minute_bars、衍生品日线、日期/报告期推进及 sector_bars。sector_bars 默认往前 400 天；超过来源历史深度的范围保留为缺口，可取范围照常交付并提供补数指引。 |
 | `--end` | `—` | 回填区间终点（YYYY-MM-DD，默认今天），与 --start 配合限定历史窗口。 |
 | `--outstanding` | `False` | 只修复被容忍缺口欠下的那些 key，范围和窗口都取自欠账台账，不看 --symbols/--start/--end。补上的 key 会销账，仍然缺的继续欠着。 |
+| `--max-attempts` | `10` | 仅 --outstanding：单个 key 累计未补齐达到该次数后进入 parked 状态。后续 --outstanding 默认跳过，但 key 仍留在台账里。 |
+| `--retry-parked` | `False` | 仅 --outstanding：忽略尝试上限，把已 parked 的 key 也纳入本次修复。 |
 | `--symbols` | `—` | 限定范围的标的列表，逗号分隔：用于 intraday、trading_status、corporate_actions 的限定回填，以及 financial_statement_items、daily_bars、share_structure 的限定修复。trading_status 的 checkpoint 与覆盖证据会记下确切范围；daily_bars 会把这个显式范围写进 backfill 元数据。 |
 | `--workers` | `1` | 仅 margin_trading 的日期推进并发数。每个请求仍然走配置里共享的源限流器；其它数据集必须为 1。 |
 | `--margin-source` | `—` | 仅 margin_trading：本次回填使用的来源，不修改配置文件或来源限速。 |

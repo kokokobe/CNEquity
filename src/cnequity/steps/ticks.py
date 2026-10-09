@@ -21,8 +21,8 @@ from datetime import date, timedelta
 
 import polars as pl
 
-from cnequity.adapters.tdx_protocol.client import fetch_trade_ticks_batch, normalize_with_source
 from cnequity.adapters.qmt_bridge import fetch_trade_ticks_qmt
+from cnequity.adapters.tdx_protocol.client import fetch_trade_ticks_batch, normalize_with_source
 from cnequity.config import Config
 from cnequity.domain.datasets import get_dataset
 from cnequity.orchestrator.outcomes import SourcePayloadError, SourceUnavailableError

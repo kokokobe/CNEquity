@@ -19,8 +19,8 @@ from cnequity.adapters.tdx_protocol.client import (
     fetch_index_bars,
     normalize_with_source,
 )
-from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.config import Config
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.frames import with_columns_unless_blank
 from cnequity.domain.market_time import A_SHARE_FINAL_AT, shanghai_now
 from cnequity.domain.rate_limit import (
@@ -41,7 +41,6 @@ from cnequity.orchestrator.outcomes import SourceUnavailableError
 from cnequity.orchestrator.registry import register_step
 from cnequity.orchestrator.worker_pool import fetch_daily_bars_parallel
 from cnequity.quality.audit import persist_step_findings
-from cnequity.query.canonical import dedupe_by_primary_key
 from cnequity.steps.common import (
     BACKFILL_START,
     DailyBarOwnership,
@@ -4536,7 +4535,6 @@ def _certify_missing_segments(
     from cnequity.adapters.eastmoney.bars import fetch_daily_bars as fetch_em_kline
     from cnequity.domain.schemas import data_version_for, with_provenance
     from cnequity.quality.failover import write_backup_snapshot
-    from cnequity.storage import StagingWriter
 
     if not missing or not sessions:
         return set(), 0, 0
@@ -5247,6 +5245,7 @@ def _fetch_index_bars_with_priority(
                 rate_limit=rate_limit,
                 allow_mock=False,
                 backfill=backfill,
+                allow_partial=allow_partial,
                 config=config,
             )
         except Exception as exc:
@@ -5277,7 +5276,6 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
     _reject_unfinished_daily_bar_window(config, end)
     rl = config.tdx_rate_limit_spec()
     df, _ = _fetch_index_bars_with_priority(
-        config,
         [f"{code}.{exchange}" for code, exchange in INDEX_SYMBOLS],
         start,
         end,

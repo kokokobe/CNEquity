@@ -10,8 +10,8 @@ from typing import Any
 
 import polars as pl
 
-from cnequity.adapters.tdx_protocol.client import fetch_daily_bars, normalize_with_source
 from cnequity.adapters.qmt_bridge import fetch_daily_bars_qmt
+from cnequity.adapters.tdx_protocol.client import fetch_daily_bars, normalize_with_source
 from cnequity.config import Config, load_config
 from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.rate_limit import RateLimitSpec

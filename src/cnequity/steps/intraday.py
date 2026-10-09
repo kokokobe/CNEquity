@@ -19,9 +19,9 @@ from cnequity.adapters.tdx_protocol.client import (
     normalize_with_source,
     reset_tdx_server_cache,
 )
-from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.adapters.tdx_protocol.minute_bars import pages_for_window
 from cnequity.config import Config
+from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.datasets import get_dataset, intraday_datasets
 from cnequity.orchestrator.outcomes import SourcePayloadError, SourceUnavailableError
 from cnequity.orchestrator.registry import register_step

@@ -112,6 +112,8 @@ EN: dict[str, str] = {
     "停掉 push2、push2his 和 push2delay，请求不会发出。datacenter 和其他东财主机继续。这和下面的东财总闸是两个开关。": "Stops push2, push2his and push2delay; no requests are sent. datacenter and other EastMoney hosts continue. This is separate from the EastMoney master switch below.",
     "通达信": "TDX",
     "日线主源。关掉后日线不再向通达信取数。": "Primary daily bar source. When off, daily bars are no longer fetched from TDX.",
+    "QMT 本地桥": "Local QMT bridge",
+    "启用本地 BigQMT 终端桥；日线、指数、分钟线等会先走 QMT。桥路径和终端参数仍在配置文件里。": "Enable the local BigQMT terminal bridge; daily bars, index bars and minute bars prefer QMT. Bridge paths and terminal settings stay in the config file.",
     "东财": "EastMoney",
     "公告、财务和资金流。关掉后不再请求东财。": "Announcements, financials and fund flows. When off, EastMoney is no longer requested.",
     "新浪日线": "Sina daily bars",

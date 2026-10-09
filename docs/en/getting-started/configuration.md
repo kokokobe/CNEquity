@@ -100,7 +100,7 @@ Main sources and request channels in the template:
 | `backfill` (ths_official) | **Off** by default. It changes the lake's contents, so it must be turned on explicitly. Holding credentials, enabling the source and allowing it to modify data are three separate decisions |
 | `api_key` (ths_official) | Prefer the environment variable `HITHINK_FINANCE_API_KEY` over writing it into the config |
 
-The fetch settings in `cne serve` only change `enabled` for TDX, EastMoney, Sina daily bars, Baostock, the BSE website, THS pages and CNINFO, plus EastMoney's `push2_paused`. The minute-bar, trade-tick and futures switches and `[universe] ingest` / `ingest_eligible_etfs` are on that page too. Before confirming, it lists the differences, and it backs up before writing; intervals, budgets, breakers and credentials are left untouched. The environment variable `CNE_PUSH2_PAUSED=1` still takes precedence over the pause switch in the config.
+The fetch settings in `cne serve` only change `enabled` for TDX, the local QMT bridge, EastMoney, Sina daily bars, Baostock, the BSE website, THS pages and CNINFO, plus EastMoney's `push2_paused`. The minute-bar, trade-tick and futures switches and `[universe] ingest` / `ingest_eligible_etfs` are on that page too. Before confirming, it lists the differences, and it backs up before writing; intervals, budgets, breakers and credentials are left untouched. The environment variable `CNE_PUSH2_PAUSED=1` still takes precedence over the pause switch in the config.
 
 Template request intervals (conservative client-side settings, not a guarantee of a safe quota on the source side):
 

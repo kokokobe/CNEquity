@@ -185,3 +185,5 @@
 "配合 --runs：要求连续多少个交易日（默认 20）。": "With --runs: number of consecutive trading days required (default 20)."
 "配合 --runs：截止日期 YYYY-MM-DD（含）。": "With --runs: cutoff date YYYY-MM-DD (inclusive)."
 "配合 --runs：连续天数门禁没过就退出 1。": "With --runs: exit 1 if the consecutive-days gate fails."
+"仅 --outstanding：单个 key 累计未补齐达到该次数后进入 parked 状态。后续 --outstanding 默认跳过，但 key 仍留在台账里。": "With --outstanding only: after a key has missed this many attempts it is parked. Later --outstanding runs skip it by default, but it stays in the ledger."
+"仅 --outstanding：忽略尝试上限，把已 parked 的 key 也纳入本次修复。": "With --outstanding only: ignore the attempt cap and include parked keys in this repair."

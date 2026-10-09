@@ -76,6 +76,7 @@ def test_the_whitelist_is_the_page_and_daily_has_no_range():
     assert [spec.id for spec in SETTINGS] == [
         "push2_paused",
         "tdx",
+        "qmt_bridge",
         "eastmoney",
         "sina_bars",
         "baostock",
@@ -274,6 +275,21 @@ def test_comments_and_crlf_survive_a_single_key_edit():
     assert "allow_mock = true # demo\r\n" in edited
     assert "enabled = false\r\n" in edited
     assert "\n[tdx_protocol]\n" not in edited
+
+
+def test_qmt_bridge_switch_can_be_added_by_settings(tmp_path):
+    text = f"""
+[data]
+root = "{path_for_toml(tmp_path / "data")}"
+"""
+    current = read_values(text)
+    assert current["qmt_bridge"] is False
+
+    edited, changes = revise(text, {**current, "qmt_bridge": True})
+
+    assert [change["id"] for change in changes] == ["qmt_bridge"]
+    parsed = tomllib_text(edited)
+    assert parsed["qmt_bridge"]["enabled"] is True
 
 
 def test_read_only_and_remote_follow_the_operations_page(config):

@@ -100,7 +100,7 @@ cne config validate --config configs/cnequity.toml
 | `backfill`（ths_official） | 默认 **关**。它会改变湖里的内容，所以必须显式打开。持有凭证、启用源、允许它改数据是三个决定 |
 | `api_key`（ths_official） | 建议用环境变量 `HITHINK_FINANCE_API_KEY` 而非写进配置 |
 
-`cne serve` 的取数设置只改通达信、东财、新浪日线、Baostock、北交所官网、同花顺页面和巨潮的 `enabled`，以及东财的 `push2_paused`。分钟线、分笔、期货开关和 `[universe] ingest` / `ingest_eligible_etfs` 也在那一页。确认前先列出差异，写入前备份；间隔、预算、熔断和凭据不动。环境变量 `CNE_PUSH2_PAUSED=1` 仍优先于配置里的暂停开关。
+`cne serve` 的取数设置只改通达信、QMT 本地桥、东财、新浪日线、Baostock、北交所官网、同花顺页面和巨潮的 `enabled`，以及东财的 `push2_paused`。分钟线、分笔、期货开关和 `[universe] ingest` / `ingest_eligible_etfs` 也在那一页。确认前先列出差异，写入前备份；间隔、预算、熔断和凭据不动。环境变量 `CNE_PUSH2_PAUSED=1` 仍优先于配置里的暂停开关。
 
 模板请求间隔（客户端保守设置，不是源方安全配额保证）：
 

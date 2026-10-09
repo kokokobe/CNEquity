@@ -132,6 +132,11 @@ def stale_fetch_plan(cfg, anchor: date, *, groups: set[str] | None = None) -> li
             continue
         if spec.layer == "derived" or name not in STEP_REGISTRY:
             continue
+        if not spec.required and spec.empty_severity == "info" and not row["has_data"]:
+            # A registry entry whose absence is informational has no active
+            # source (economic_calendar is the standing case). Retrying an
+            # empty table forever turns every stale-only pass into degraded.
+            continue
         if not is_dataset_enabled(name, cfg):
             continue
         if name in events_owned:

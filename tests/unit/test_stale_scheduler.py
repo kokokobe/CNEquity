@@ -46,7 +46,12 @@ def test_snapshot_only_stale_work_is_scheduled_before_expensive_bars(monkeypatch
 
 
 def test_watermarkless_live_snapshots_recover_missing_same_day_capture(monkeypatch, tmp_path):
-    """A missed rolling window remains schedulable, including unlock events."""
+    """A missed rolling window remains schedulable, including unlock events.
+
+    ``economic_calendar`` is also a watermarkless live snapshot, but its
+    registry entry says absence is informational: the only source is retired,
+    so a permanent empty table must not turn into a daily failed fetch.
+    """
     cfg = type("Cfg", (), {"data_root": tmp_path, "minute_bars_enabled": False})()
     rows = pl.DataFrame(
         {
@@ -76,10 +81,7 @@ def test_watermarkless_live_snapshots_recover_missing_same_day_capture(monkeypat
 
     plan = stale_fetch_plan(cfg, date(2024, 1, 5))
 
-    assert {item["dataset"] for item in plan} == {
-        "economic_calendar",
-        "share_unlock_schedule",
-    }
+    assert [item["dataset"] for item in plan] == ["share_unlock_schedule"]
     assert all(item["deadline"] == "same_day" for item in plan)
     assert all(item["priority"] == 0 for item in plan)
 

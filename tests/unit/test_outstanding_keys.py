@@ -274,7 +274,7 @@ def test_a_repair_parks_keys_after_the_attempt_limit(tmp_path, monkeypatch):
     assert passes == ["daily_bars"]
     assert result["parked"] == 1
     assert result["parked_after_attempts"] == 10
-    assert result["status"] == "success"
+    assert result["status"] == "warning"
 
 
 def test_parked_keys_can_be_retried_explicitly(tmp_path, monkeypatch):
