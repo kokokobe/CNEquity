@@ -919,3 +919,125 @@ def test_share_structure_symbol_refresh_is_one_window_scoped_to_the_names(cfg, m
     monkeypatch.setattr("cnequity.adapters.eastmoney.shareholders.fetch_share_structure", fetch)
     fund.step_share_structure(cfg, date(2026, 9, 29), "run-symbols", {})
     assert calls == [(date(1990, 1, 1), date(2026, 9, 29), ["603014.SH"])]
+
+
+def test_financial_statement_items_qmt_publishes_with_raw_archive_required(cfg, monkeypatch):
+    """The default critical archive set covers this dataset; a QMT publish
+    must still go through instead of dying on the exact-wire requirement."""
+    cfg.raw_archive_enabled = True
+    cfg.qmt_bridge_enabled = True
+    monkeypatch.setattr(fund, "load_symbols", lambda _config: ["600519.SH"])
+    monkeypatch.setattr(
+        fund,
+        "fetch_financial_statement_items_qmt",
+        lambda *args, **kwargs: with_provenance(
+            pl.DataFrame(
+                {
+                    "symbol": ["600519.SH"],
+                    "report_period": ["2024Q1"],
+                    "statement_type": ["income"],
+                    "item_code": ["revenue"],
+                    "item_value": [1_000_000.0],
+                    "announce_date": [date(2024, 4, 20)],
+                }
+            ),
+            source="qmt_bridge",
+            data_version=data_version_for("financial_statement_items"),
+        ),
+    )
+    result = fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-qmt-archive", {})
+    assert result["rows_written"] == 1
+    files = list(cfg.staging_root.glob("financial_statement_items/**/*.parquet"))
+    assert pl.read_parquet(files[0])["source"].unique().to_list() == ["qmt_bridge"]
+
+
+def test_financial_statement_items_eastmoney_fallback_keeps_wire_evidence(cfg, monkeypatch):
+    """With the QMT bridge on, an EastMoney fallback still archives its wire."""
+    from cnequity.storage.raw_archive import RawPayloadArchive, begin_capture
+
+    cfg.raw_archive_enabled = True
+    cfg.qmt_bridge_enabled = True
+    monkeypatch.setattr(fund, "load_symbols", lambda _config: ["600519.SH"])
+    monkeypatch.setattr(
+        fund,
+        "fetch_financial_statement_items_qmt",
+        lambda *args, **kwargs: pl.DataFrame(),
+    )
+    scope = "daily:2024-06-28"
+    nonce = begin_capture(
+        cfg,
+        "financial_statement_items",
+        "run-fallback-wire",
+        source="eastmoney",
+        request_scope=scope,
+    )
+    archive = RawPayloadArchive(
+        cfg.meta_root,
+        capture_owner=cfg,
+        capture_run_id="run-fallback-wire",
+        capture_source="eastmoney",
+        capture_scope=scope,
+        capture_nonce=nonce,
+        datasets=["financial_statement_items"],
+        compression="none",
+    )
+    record = archive.archive(
+        "financial_statement_items",
+        f"eastmoney:{scope}".encode(),
+        source="eastmoney",
+        run_id="run-fallback-wire",
+        request_scope=scope,
+        observation_id=f"run-fallback-wire:eastmoney:{scope}",
+        payload_format="bytes",
+        http_metadata={"wire_exact": True},
+    )
+    assert record is not None
+    monkeypatch.setattr(
+        fund,
+        "fetch_financial_statement_items",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "report_period": ["2024Q1"],
+                "statement_type": ["income"],
+                "item_code": ["revenue"],
+                "item_value": [1_000_000.0],
+                "announce_date": [date(2024, 4, 20)],
+            }
+        ),
+    )
+    result = fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-fallback-wire", {})
+    assert result["rows_written"] == 1
+    files = list(cfg.staging_root.glob("financial_statement_items/**/*.parquet"))
+    assert pl.read_parquet(files[0])["source"].unique().to_list() == ["eastmoney"]
+
+
+def test_shareholder_counts_qmt_publishes_with_raw_archive_required(cfg, monkeypatch):
+    from cnequity.adapters import qmt_bridge
+
+    cfg.raw_archive_enabled = True
+    cfg.sources["eastmoney"] = False
+    cfg.qmt_bridge_enabled = True
+    cfg._backfill = True
+    cfg._backfill_start = date(2024, 1, 1)
+    cfg._backfill_end = date(2024, 6, 30)
+    cfg._backfill_symbols = ["600519.SH"]
+    monkeypatch.setattr(
+        qmt_bridge,
+        "fetch_shareholder_counts_qmt",
+        lambda *args, **kwargs: pl.DataFrame(
+            {
+                "symbol": ["600519.SH"],
+                "count_date": [date(2024, 3, 31)],
+                "holder_count": [100000.0],
+                "holder_count_change_pct": [None],
+                "avg_float_shares": [None],
+                "avg_holding_value": [None],
+                "announce_date": [date(2024, 4, 20)],
+            }
+        ),
+    )
+    result = fund.step_shareholder_counts(cfg, date(2024, 6, 28), "run-qmt-archive", {})
+    assert result["rows_written"] == 1
+    files = list(cfg.staging_root.glob("shareholder_counts/**/*.parquet"))
+    assert pl.read_parquet(files[0])["source"].unique().to_list() == ["qmt_bridge"]

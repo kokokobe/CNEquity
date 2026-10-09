@@ -386,6 +386,7 @@ def _archive_fetched_payload(
     source: str,
     raw_payload: object | None = None,
     raw_archive_evidence: RawArchiveEvidence | None = None,
+    raw_archive_exempt: bool = False,
     request_params: dict | None = None,
     url: str | None = None,
 ) -> None:
@@ -396,10 +397,13 @@ def _archive_fetched_payload(
     for the sidecars they wrote before returning their normalized dataframe. A
     canonical dataframe is not an exact source observation and must never be
     advertised as replayable wire evidence.
+    Non-HTTP sources such as the local QMT bridge have no wire to retain; the
+    caller asserts that explicitly with ``raw_archive_exempt`` instead of
+    faking a receipt.
     """
     # Config owns the policy.  In particular, an empty explicit list means
     # "use the built-in critical set", not "archive every dataframe".
-    if not config.should_archive_raw(dataset):
+    if not config.should_archive_raw(dataset) or raw_archive_exempt:
         return
     if raw_payload is None:
         # This check deliberately happens before write_simple: a critical
@@ -463,6 +467,7 @@ def write_fetched(
     batch_id: str = "batch-0",
     raw_payload: object | None = None,
     raw_archive_evidence: RawArchiveEvidence | None = None,
+    raw_archive_exempt: bool = False,
     request_params: dict | None = None,
     url: str | None = None,
     snapshot_date: date | None = None,
@@ -493,6 +498,7 @@ def write_fetched(
             source=source,
             raw_payload=raw_payload,
             raw_archive_evidence=raw_archive_evidence,
+            raw_archive_exempt=raw_archive_exempt,
             request_params=request_params,
             url=url,
         )

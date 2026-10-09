@@ -669,6 +669,9 @@ def step_financial_statement_items(
                     "financial_statement_items",
                     df,
                     source=archive_source,
+                    # The bridge is a local terminal feed: there is no HTTP
+                    # wire payload to retain, and faking a receipt would lie.
+                    raw_archive_exempt=True,
                 )
         except Exception as exc:
             logger.warning("QMT financial-statement fetch failed: %s", exc)
@@ -853,7 +856,7 @@ def step_financial_statement_items(
                         source=archive_source,
                         request_scope=archive_scope,
                     )
-                    if not qmt_enabled and config.should_archive_raw("financial_statement_items")
+                    if config.should_archive_raw("financial_statement_items")
                     else None
                 ),
             )
@@ -888,7 +891,7 @@ def step_financial_statement_items(
                 source=archive_source,
                 request_scope=archive_scope,
             )
-            if not qmt_enabled and config.should_archive_raw("financial_statement_items")
+            if config.should_archive_raw("financial_statement_items")
             else None
         ),
     )
@@ -1095,6 +1098,9 @@ def _run_shareholder_step(
                 if capture is not None
                 else None
             ),
+            # QMT windows have no paginated wire to archive; the bridge is a
+            # local terminal feed, so the exact-wire requirement cannot apply.
+            raw_archive_exempt=(source == "qmt_bridge"),
         )
         if not incomplete:
             state.mark_staged_units(dataset, run_id, [unit])
