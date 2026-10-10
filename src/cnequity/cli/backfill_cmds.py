@@ -537,6 +537,7 @@ def backfill(
         # command still printed status=success with rows_written=0. `derive`,
         # `verify --bars` and `audit` all refuse this up front; so does this now.
         raise click.ClickException("--start 必须早于或等于 --end")
+    _guard_history_horizon(dataset, start_d)
     if bj_amount_repair:
         if start_d is None or end_d is None:
             raise click.ClickException("--bj-amount-repair 需要同时给 --start 和 --end")
