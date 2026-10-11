@@ -440,6 +440,31 @@ def test_a_missing_catalogue_is_not_fatal(tmp_path):
     assert _merge_untdxable_instruments(cfg, live).equals(live)
 
 
+def test_active_curated_beijing_rows_stay_in_the_snapshot(tmp_path):
+    """A missing BSE board must not hide the rows enrichment needs to date."""
+    cfg = Config(data_root=tmp_path / "data", sources={"sina": True})
+    part = cfg.curated_root / "instruments"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["920157.BJ", "920001.BJ"],
+            "name": ["宇特光电", None],
+            "exchange": ["BJ", "BJ"],
+            "asset_type": ["stock", "stock"],
+            "list_date": pl.Series([None, date(2024, 1, 1)], dtype=pl.Date),
+            "delist_date": pl.Series([None, None], dtype=pl.Date),
+            "prev_symbol": pl.Series([None, None], dtype=pl.Utf8),
+            "source": ["sina", "bse"],
+            "data_version": ["v1", "v1"],
+        }
+    ).write_parquet(part / "part-merged.parquet")
+
+    out = _merge_untdxable_instruments(cfg, _live_instruments(["600519.SH"]))
+
+    assert {"920157.BJ", "920001.BJ"} <= set(out["symbol"])
+    assert out.filter(pl.col("symbol") == "920001.BJ")["list_date"].item() == date(2024, 1, 1)
+
+
 def _board(symbols_to_names: dict[str, str]):
     symbols = sorted(symbols_to_names)
     return pl.DataFrame(

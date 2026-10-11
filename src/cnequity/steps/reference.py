@@ -374,7 +374,23 @@ def _merge_untdxable_instruments(config: Config, df: pl.DataFrame) -> pl.DataFra
     except Exception as exc:  # noqa: BLE001 — a missing catalogue is not fatal
         logger.debug("no delisted catalogue to read untdxable instruments from: %s", exc)
         return df
+    from cnequity.storage.instrument_catalog import load_curated_instruments
+
+    existing = load_curated_instruments(config)
     known = set(df["symbol"].to_list()) if not df.is_empty() else set()
+    if existing is not None and not existing.is_empty():
+        carried = existing.filter(
+            ~pl.col("symbol").is_in(sorted(known))
+            & pl.col("symbol").str.ends_with(".BJ")
+            & pl.col("delist_date").is_null()
+        )
+        if not carried.is_empty():
+            logger.info(
+                "instruments: +%d active Beijing row(s) carried from curated lake",
+                carried.height,
+            )
+            df = pl.concat([df, carried], how="diagonal_relaxed")
+            known = set(df["symbol"].to_list())
     recovered = sorted(s for s in live_missing if s not in known and not is_tdx_servable(s))
     if not recovered:
         return df
