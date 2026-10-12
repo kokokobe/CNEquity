@@ -14,6 +14,7 @@ from cnequity.adapters.qmt_bridge import (
     fetch_financial_statement_items_qmt,
     fetch_index_bars_qmt,
     fetch_index_constituents_qmt,
+    fetch_instrument_list_dates_qmt,
     fetch_instruments_qmt,
     fetch_minute_bars_qmt,
     fetch_shareholder_counts_qmt,
@@ -736,6 +737,34 @@ def test_fetch_instruments_qmt_parses_stocks_and_etfs():
     assert etfs["symbol"].to_list() == ["510300.SH"]
     assert frame["source"].unique().to_list() == ["qmt_bridge"]
     assert metrics["rows_read"] == 4
+
+
+def test_fetch_instrument_list_dates_qmt_reads_beijing_details_and_ignores_special_dates():
+    class _Client:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get_instrument_detail(self, symbol):
+            self.calls.append(symbol)
+            return {
+                "920157.BJ": {"OpenDate": 20261009},
+                "920202.BJ": {"OpenDate": 20260929},
+                "301660.SZ": {"OpenDate": 19700101},
+            }.get(symbol, {})
+
+    client = _Client()
+    metrics: dict = {}
+    dates = fetch_instrument_list_dates_qmt(
+        ["301660.SZ", "920202.BJ", "920157.BJ"],
+        config=None,
+        xtdata=client,
+        metrics=metrics,
+    )
+
+    assert dates == {"920157.BJ": date(2026, 10, 9), "920202.BJ": date(2026, 9, 29)}
+    assert client.calls == ["301660.SZ", "920157.BJ", "920202.BJ"]
+    assert metrics["requests"] == 3
+    assert metrics.get("failed_requests", 0) == 0
 
 
 class _IndexConstituentsFakeXtData:

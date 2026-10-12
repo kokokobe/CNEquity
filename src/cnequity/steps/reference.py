@@ -10,7 +10,11 @@ import polars as pl
 
 from cnequity.adapters.calendar.exchange_calendar import curated_bar_dates
 from cnequity.adapters.eastmoney.instruments import enrich_instrument_list_dates
-from cnequity.adapters.qmt_bridge import fetch_instruments_qmt, fetch_trading_calendar_qmt
+from cnequity.adapters.qmt_bridge import (
+    fetch_instrument_list_dates_qmt,
+    fetch_instruments_qmt,
+    fetch_trading_calendar_qmt,
+)
 from cnequity.adapters.tdx_protocol.client import (
     fetch_instruments,
     fetch_trading_calendar,
@@ -109,6 +113,7 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
     if beijing_gap:
         findings.append(beijing_gap)
     df = enrich_instrument_list_dates(config, df)
+    df = _enrich_list_dates_from_qmt(config, df)
     df = _enrich_etf_list_dates_from_profiles(config, df, trade_date)
     if getattr(config, "_backfill", False):
         try:
@@ -138,6 +143,41 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
         )
         result.setdefault("context_updates", {})["audit_findings"] = findings
     return result
+
+
+def _enrich_list_dates_from_qmt(config: Config, instruments: pl.DataFrame) -> pl.DataFrame:
+    """Fill remaining listing dates by direct QMT instrument detail lookup.
+
+    This is a fallback, not a replacement for the ordinary snapshot: only
+    symbols still missing a list date are queried, and a pending IPO's special
+    ``OpenDate`` remains null.
+    """
+    if not getattr(config, "qmt_bridge_enabled", False) or "list_date" not in instruments.columns:
+        return instruments
+    missing = instruments.filter(pl.col("list_date").is_null())
+    if missing.is_empty():
+        return instruments
+    try:
+        date_map = fetch_instrument_list_dates_qmt(
+            missing["symbol"].to_list(),
+            config=config,
+        )
+    except Exception as exc:
+        logger.warning("instruments: QMT list-date detail lookup failed: %s", exc)
+        return instruments
+    if not date_map:
+        return instruments
+    dates = pl.DataFrame(
+        {"symbol": list(date_map), "list_date": list(date_map.values())},
+        schema={"symbol": pl.Utf8, "list_date": pl.Date},
+    )
+    return (
+        instruments.join(dates, on="symbol", how="left")
+        .with_columns(
+            pl.coalesce(pl.col("list_date"), pl.col("list_date_right")).alias("list_date")
+        )
+        .drop("list_date_right")
+    )
 
 
 def _enrich_etf_list_dates_from_profiles(

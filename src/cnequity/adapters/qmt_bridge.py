@@ -774,7 +774,9 @@ def fetch_adj_factors_qmt(
     chunks = (
         [symbols]
         if chunk_size <= 0
-        else [symbols[offset : offset + chunk_size] for offset in range(0, len(symbols), chunk_size)]
+        else [
+            symbols[offset : offset + chunk_size] for offset in range(0, len(symbols), chunk_size)
+        ]
     )
 
     raw_frames: dict[str, Any] = {}
@@ -832,7 +834,9 @@ def fetch_adj_factors_qmt(
     if not rows:
         logger.warning(
             "QMT adj factors returned no usable rows for %d symbol(s) over %s..%s",
-            len(symbols), start.isoformat(), end.isoformat()
+            len(symbols),
+            start.isoformat(),
+            end.isoformat(),
         )
         return pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date, "factor": pl.Float64})
     frame = pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
@@ -1002,8 +1006,7 @@ def fetch_trading_calendar_qmt(
     if last_session < end:
         fallback = build_trading_calendar(last_session + timedelta(days=1), end)
     fallback_by_date = {
-        row["trade_date"]: bool(row["is_trading"])
-        for row in fallback.iter_rows(named=True)
+        row["trade_date"]: bool(row["is_trading"]) for row in fallback.iter_rows(named=True)
     }
     fallback_source = "exchange_calendar"
     if metrics is not None:
@@ -1013,9 +1016,7 @@ def fetch_trading_calendar_qmt(
         {
             "trade_date": current,
             "is_trading": (
-                current in trading
-                if current <= last_session
-                else fallback_by_date[current]
+                current in trading if current <= last_session else fallback_by_date[current]
             ),
             "source": SOURCE if current <= last_session else fallback_source,
         }
@@ -1035,7 +1036,7 @@ def _instrument_detail_date(value: Any) -> date | None:
     if value is None:
         return None
     raw = str(value).strip()
-    if raw in {"0", "99999999", ""}:
+    if raw in {"0", "99999999", "19700101", ""}:
         return None
     digits = "".join(char for char in raw[:8] if char.isdigit())
     if len(digits) != 8:
@@ -1128,6 +1129,39 @@ def fetch_instruments_qmt(
         source=SOURCE,
         data_version=data_version_for("instruments"),
     )
+
+
+def fetch_instrument_list_dates_qmt(
+    symbols: list[str] | tuple[str, ...],
+    *,
+    config: Any = None,
+    xtdata: Any | None = None,
+    metrics: dict[str, Any] | None = None,
+) -> dict[str, date]:
+    """Targeted listing dates from instrument details, including Beijing rows.
+
+    The bridge's sector sweep does not expose the BSE sector, but direct
+    per-symbol details do.  Special ``OpenDate`` values such as ``19700101``
+    stay absent rather than becoming a false listing date.
+    """
+    wanted = sorted({str(symbol).strip() for symbol in symbols if str(symbol).strip()})
+    if not wanted:
+        return {}
+    client = _qmt_bridge_client(config=config, xtdata=xtdata)
+    out: dict[str, date] = {}
+    for symbol in wanted:
+        try:
+            detail = client.get_instrument_detail(symbol)
+            if metrics is not None:
+                metrics["requests"] = int(metrics.get("requests", 0)) + 1
+            list_date = _instrument_detail_date((detail or {}).get("OpenDate"))
+            if list_date is not None:
+                out[symbol] = list_date
+        except Exception:
+            if metrics is not None:
+                metrics["failed_requests"] = int(metrics.get("failed_requests", 0)) + 1
+            logger.warning("QMT bridge instrument detail failed for %s", symbol, exc_info=True)
+    return out
 
 
 def fetch_index_constituents_qmt(
