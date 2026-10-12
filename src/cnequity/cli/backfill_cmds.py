@@ -216,6 +216,14 @@ from cnequity.orchestrator.engine import JobEngine
     ),
 )
 @click.option(
+    "--qmt-bars-repair",
+    is_flag=True,
+    help=(
+        "仅 daily_bars：用 BigQMT 桥补缺失的北交所日线；只写入 curated 湖缺失的 keys，"
+        "上市区间外或零成交量行不作为覆盖。需要 --symbols 和 --start/--end。"
+    ),
+)
+@click.option(
     "--tdx-volume-repair",
     is_flag=True,
     help=(
@@ -270,6 +278,7 @@ def backfill(
     bj_amount_repair: bool,
     tdx_amount_repair: bool,
     qmt_amount_repair: bool,
+    qmt_bars_repair: bool,
     tdx_volume_repair: bool,
     turnover_repair: bool,
     fill_em_outage: bool,
@@ -308,6 +317,7 @@ def backfill(
             or bj_amount_repair
             or tdx_amount_repair
             or qmt_amount_repair
+            or qmt_bars_repair
             or tdx_volume_repair
             or turnover_repair
             or fill_em_outage
@@ -388,6 +398,7 @@ def backfill(
             or bj_amount_repair
             or tdx_amount_repair
             or qmt_amount_repair
+            or qmt_bars_repair
             or tdx_volume_repair
             or turnover_repair
             or fill_em_outage
@@ -518,10 +529,14 @@ def backfill(
         raise click.ClickException("--tdx-amount-repair 只适用于 daily_bars")
     if qmt_amount_repair and dataset != "daily_bars":
         raise click.ClickException("--qmt-amount-repair 只适用于 daily_bars")
+    if qmt_bars_repair and dataset != "daily_bars":
+        raise click.ClickException("--qmt-bars-repair 只适用于 daily_bars")
     if bj_amount_repair and tdx_amount_repair:
         raise click.ClickException("--bj-amount-repair 与 --tdx-amount-repair 只能用一个")
     if qmt_amount_repair and (bj_amount_repair or tdx_amount_repair):
         raise click.ClickException("--qmt-amount-repair 不能与其它 amount repair 同时使用")
+    if qmt_bars_repair and qmt_amount_repair:
+        raise click.ClickException("--qmt-bars-repair 与 --qmt-amount-repair 只能用一个")
     if bj_amount_repair:
         click.echo(
             "提示：--bj-amount-repair 已由 --tdx-amount-repair 取代，"
@@ -565,6 +580,10 @@ def backfill(
         if not symbols_str or start_d is None or end_d is None:
             raise click.ClickException("--qmt-amount-repair 需要 --symbols 和 --start/--end")
         cfg._qmt_amount_repair = True
+    if qmt_bars_repair:
+        if not symbols_str or start_d is None or end_d is None:
+            raise click.ClickException("--qmt-bars-repair 需要 --symbols 和 --start/--end")
+        cfg._qmt_bars_repair = True
     if tdx_volume_repair:
         if dataset != "daily_bars":
             raise click.ClickException("--tdx-volume-repair 只适用于 daily_bars")
@@ -644,6 +663,7 @@ def backfill(
                 (bj_amount_repair, "bj-amount-repair"),
                 (tdx_amount_repair, "tdx-amount-repair"),
                 (qmt_amount_repair, "qmt-amount-repair"),
+                (qmt_bars_repair, "qmt-bars-repair"),
                 (tdx_volume_repair, "tdx-volume-repair"),
                 (turnover_repair, "turnover-repair"),
                 (fill_em_outage, "fill-em-outage"),

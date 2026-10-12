@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from cnequity.adapters.qmt_bridge import fetch_index_bars_qmt
+from cnequity.adapters.qmt_bridge import fetch_daily_bars_qmt, fetch_index_bars_qmt
 from cnequity.adapters.tdx_protocol.client import (
     INDEX_SYMBOLS,
     fetch_index_bars,
@@ -1620,6 +1620,143 @@ def repair_daily_bar_turnover(
     return result
 
 
+def repair_bj_bars_from_qmt(
+    config: Config,
+    start: date,
+    end: date,
+    run_id: str,
+    *,
+    symbols: list[str] | None,
+) -> dict:
+    """Stage missing Beijing daily bars observed by the BigQMT bridge.
+
+    This is deliberately an anti-join against curated keys: a bar the lake
+    already holds is never re-staged merely because QMT returned it again.
+    Rows outside the instrument listing span and zero-volume placeholders are
+    not admitted as coverage.
+    """
+    from cnequity.query.parquet_scan import collect_parquet_root
+    from cnequity.steps.http_common import write_fetched
+
+    target = sorted(
+        symbol
+        for symbol in (
+            _resolve_daily_bar_scope(config, symbols)
+            if symbols
+            else filter_ingest_universe(load_symbols(config), config.ingest_universe)
+        )
+        if symbol.endswith(".BJ")
+    )
+    if not target:
+        raise RuntimeError("QMT bars repair needs at least one Beijing symbol in scope")
+
+    try:
+        existing = (
+            collect_parquet_root(
+                config.curated_root / "daily_bars",
+                partition_col="trade_date",
+                start=start,
+                end=end,
+                symbols=target,
+            )
+            .select("symbol", "trade_date")
+            .unique()
+        )
+    except FileNotFoundError:
+        existing = pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date})
+
+    fresh = fetch_daily_bars_qmt(target, start, end, config=config)
+    rows_read = fresh.height
+    if fresh.is_empty():
+        return {
+            "rows_read": 0,
+            "rows_written": 0,
+            "usable_result": False,
+            "context_updates": {
+                "audit_findings": [
+                    {
+                        "dataset": "daily_bars",
+                        "severity": "info",
+                        "check": "daily_bars_qmt_bars_unavailable",
+                        "message": (
+                            f"QMT served no Beijing bars for {len(target)} symbol(s) "
+                            f"over {start}..{end}"
+                        ),
+                        "source": "qmt_bridge",
+                        "source_limited": True,
+                    }
+                ]
+            },
+        }
+
+    metadata = (
+        instrument_metadata(config)
+        .filter(pl.col("symbol").is_in(target) & pl.col("list_date").is_not_null())
+        .select("symbol", "list_date", "delist_date", "asset_type")
+    )
+    if metadata.is_empty():
+        candidates = fresh.clear()
+    else:
+        candidates = fresh.join(metadata, on="symbol", how="inner").filter(
+            (pl.col("volume") > 0)
+            & pl.col("amount").is_finite()
+            & (pl.col("amount") > 0)
+            & (pl.col("trade_date") >= pl.col("list_date"))
+            & (pl.col("delist_date").is_null() | (pl.col("trade_date") < pl.col("delist_date")))
+        )
+    missing = candidates.join(existing, on=["symbol", "trade_date"], how="anti")
+    if missing.is_empty():
+        return {
+            "rows_read": rows_read,
+            "rows_written": 0,
+            "usable_result": False,
+            "context_updates": {
+                "audit_findings": [
+                    {
+                        "dataset": "daily_bars",
+                        "severity": "info",
+                        "check": "daily_bars_qmt_bars_already_covered",
+                        "message": (
+                            f"QMT returned {rows_read} Beijing row(s) over {start}..{end}; "
+                            "no keys were missing from curated storage"
+                        ),
+                        "source": "qmt_bridge",
+                    }
+                ]
+            },
+        }
+
+    out = write_fetched(
+        config,
+        run_id,
+        "daily_bars",
+        missing,
+        source="qmt_bridge",
+        batch_id="qmt-bj-bars-repair-0000",
+    )
+    rows_written = int(out.get("rows_written", 0))
+    return {
+        "rows_read": rows_read,
+        "rows_written": rows_written,
+        "usable_result": rows_written > 0,
+        "context_updates": {
+            "audit_findings": [
+                {
+                    "dataset": "daily_bars",
+                    "severity": "info",
+                    "check": "daily_bars_qmt_bars_repair",
+                    "message": (
+                        f"QMT supplied {rows_written} missing Beijing bar(s) over {start}..{end}"
+                    ),
+                    "source": "qmt_bridge",
+                    "rows_supplemented": rows_written,
+                    "symbols_supplemented": missing.get_column("symbol").n_unique(),
+                }
+            ]
+        },
+    }
+
+
 def _yearly_slices(start: date, end: date) -> list[tuple[date, date]]:
     slices: list[tuple[date, date]] = []
     year = start.year
@@ -1844,6 +1981,11 @@ def step_daily_bars(config: Config, trade_date: date, run_id: str, context: dict
 
     if getattr(config, "_qmt_amount_repair", False):
         return _repair_bj_amounts_from_qmt(
+            config, start, end, run_id, symbols=getattr(config, "_backfill_symbols", None)
+        )
+
+    if getattr(config, "_qmt_bars_repair", False):
+        return repair_bj_bars_from_qmt(
             config, start, end, run_id, symbols=getattr(config, "_backfill_symbols", None)
         )
 
