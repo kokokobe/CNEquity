@@ -157,6 +157,66 @@ def test_a_sina_sh_row_uses_the_same_gate(cfg, monkeypatch):
     assert updated["source"][0] == "tdx_protocol"
 
 
+def test_a_delisted_beijing_row_can_be_supplemented_from_qmt(cfg, monkeypatch):
+    row = {
+        "symbol": "920305.BJ",
+        "trade_date": DAY,
+        "open": 10.15,
+        "high": 10.22,
+        "low": 10.09,
+        "close": 10.15,
+        "volume": 1_400_706,
+        "amount": None,
+        "source": "sina",
+    }
+    monkeypatch.setattr(
+        "cnequity.adapters.qmt_bridge.fetch_daily_bars_qmt",
+        lambda *a, **k: pl.DataFrame(
+            [
+                {
+                    **row,
+                    "amount": 14_209_645.0,
+                }
+            ]
+        ),
+    )
+    stored = pl.DataFrame([row])
+    updated, findings = bars._supplement_bj_amounts_from_qmt(cfg, stored, start=DAY, end=DAY)
+
+    assert updated["amount"][0] == 14_209_645.0
+    assert updated["volume"][0] == 1_400_706
+    assert updated["source"][0] == "qmt_bridge"
+    supplement = findings[0]
+    assert supplement["check"] == "daily_bars_qmt_amount_supplement"
+    assert supplement["rows_supplemented"] == 1
+
+
+def test_a_qmt_price_mismatch_leaves_beijing_row_alone(cfg, monkeypatch):
+    row = {
+        "symbol": "920305.BJ",
+        "trade_date": DAY,
+        "open": 10.15,
+        "high": 10.22,
+        "low": 10.09,
+        "close": 10.15,
+        "volume": 1_400_706,
+        "amount": None,
+        "source": "sina",
+    }
+    monkeypatch.setattr(
+        "cnequity.adapters.qmt_bridge.fetch_daily_bars_qmt",
+        lambda *a, **k: pl.DataFrame([{**row, "close": 10.16, "amount": 14_209_645.0}]),
+    )
+    stored = pl.DataFrame([row])
+    updated, findings = bars._supplement_bj_amounts_from_qmt(cfg, stored, start=DAY, end=DAY)
+
+    assert updated["amount"][0] is None
+    assert updated["source"][0] == "sina"
+    assert [f["check"] for f in findings if f["severity"] == "warning"] == [
+        "daily_bars_qmt_amount_mismatch"
+    ]
+
+
 def test_sina_history_repair_asks_tdx_only_for_null_sina_rows(tmp_path, monkeypatch):
     from datetime import datetime, timezone
 

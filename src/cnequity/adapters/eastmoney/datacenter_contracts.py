@@ -20,6 +20,7 @@ from cnequity.adapters.eastmoney import economic_calendar as econ_mod
 from cnequity.adapters.eastmoney import fundamentals as fund_mod
 from cnequity.adapters.eastmoney import index_constituents as idx_mod
 from cnequity.adapters.eastmoney import institutional as inst_mod
+from cnequity.adapters.eastmoney import instruments as instruments_mod
 from cnequity.adapters.eastmoney import sectors as sectors_mod
 from cnequity.adapters.eastmoney import share_unlock as unlock_mod
 from cnequity.adapters.eastmoney import valuation_datacenter as valuation_mod
@@ -44,6 +45,9 @@ def datacenter_contracts() -> tuple[DatacenterContract, ...]:
     """All known datacenter contracts (test inventory + live probe input)."""
     contracts: list[DatacenterContract] = [
         DatacenterContract("valuation_metrics", valuation_mod._REPORT, valuation_mod._COLUMNS),
+        DatacenterContract(
+            "instrument_list_dates", instruments_mod.IPO_REPORT, instruments_mod.IPO_COLUMNS
+        ),
         DatacenterContract(
             "corporate_actions",
             ca_mod._REPORT,

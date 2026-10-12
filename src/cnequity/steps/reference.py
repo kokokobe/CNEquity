@@ -10,7 +10,11 @@ import polars as pl
 
 from cnequity.adapters.calendar.exchange_calendar import curated_bar_dates
 from cnequity.adapters.eastmoney.instruments import enrich_instrument_list_dates
-from cnequity.adapters.qmt_bridge import fetch_instruments_qmt, fetch_trading_calendar_qmt
+from cnequity.adapters.qmt_bridge import (
+    fetch_instrument_list_dates_qmt,
+    fetch_instruments_qmt,
+    fetch_trading_calendar_qmt,
+)
 from cnequity.adapters.tdx_protocol.client import (
     fetch_instruments,
     fetch_trading_calendar,
@@ -109,6 +113,7 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
     if beijing_gap:
         findings.append(beijing_gap)
     df = enrich_instrument_list_dates(config, df)
+    df = _enrich_list_dates_from_qmt(config, df)
     df = _enrich_etf_list_dates_from_profiles(config, df, trade_date)
     if getattr(config, "_backfill", False):
         try:
@@ -138,6 +143,41 @@ def step_instruments(config: Config, trade_date: date, run_id: str, context: dic
         )
         result.setdefault("context_updates", {})["audit_findings"] = findings
     return result
+
+
+def _enrich_list_dates_from_qmt(config: Config, instruments: pl.DataFrame) -> pl.DataFrame:
+    """Fill remaining listing dates by direct QMT instrument detail lookup.
+
+    This is a fallback, not a replacement for the ordinary snapshot: only
+    symbols still missing a list date are queried, and a pending IPO's special
+    ``OpenDate`` remains null.
+    """
+    if not getattr(config, "qmt_bridge_enabled", False) or "list_date" not in instruments.columns:
+        return instruments
+    missing = instruments.filter(pl.col("list_date").is_null())
+    if missing.is_empty():
+        return instruments
+    try:
+        date_map = fetch_instrument_list_dates_qmt(
+            missing["symbol"].to_list(),
+            config=config,
+        )
+    except Exception as exc:
+        logger.warning("instruments: QMT list-date detail lookup failed: %s", exc)
+        return instruments
+    if not date_map:
+        return instruments
+    dates = pl.DataFrame(
+        {"symbol": list(date_map), "list_date": list(date_map.values())},
+        schema={"symbol": pl.Utf8, "list_date": pl.Date},
+    )
+    return (
+        instruments.join(dates, on="symbol", how="left")
+        .with_columns(
+            pl.coalesce(pl.col("list_date"), pl.col("list_date_right")).alias("list_date")
+        )
+        .drop("list_date_right")
+    )
 
 
 def _enrich_etf_list_dates_from_profiles(
@@ -374,7 +414,23 @@ def _merge_untdxable_instruments(config: Config, df: pl.DataFrame) -> pl.DataFra
     except Exception as exc:  # noqa: BLE001 — a missing catalogue is not fatal
         logger.debug("no delisted catalogue to read untdxable instruments from: %s", exc)
         return df
+    from cnequity.storage.instrument_catalog import load_curated_instruments
+
+    existing = load_curated_instruments(config)
     known = set(df["symbol"].to_list()) if not df.is_empty() else set()
+    if existing is not None and not existing.is_empty():
+        carried = existing.filter(
+            ~pl.col("symbol").is_in(sorted(known))
+            & pl.col("symbol").str.ends_with(".BJ")
+            & pl.col("delist_date").is_null()
+        )
+        if not carried.is_empty():
+            logger.info(
+                "instruments: +%d active Beijing row(s) carried from curated lake",
+                carried.height,
+            )
+            df = pl.concat([df, carried], how="diagonal_relaxed")
+            known = set(df["symbol"].to_list())
     recovered = sorted(s for s in live_missing if s not in known and not is_tdx_servable(s))
     if not recovered:
         return df

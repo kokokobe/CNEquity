@@ -20,11 +20,16 @@ from cnequity.adapters.eastmoney.common import (
     ETF_CLIST_FS,
     symbol_from_clist,
     symbol_from_clist_etf,
+    symbol_from_secucode,
 )
+from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
 from cnequity.config import Config
 
 logger = logging.getLogger(__name__)
+
+IPO_REPORT = "RPTA_APP_IPOAPPLY"
+IPO_COLUMNS = "SECUCODE,SECURITY_CODE,LISTING_DATE"
 
 
 def _parse_list_date(value: object) -> date | None:
@@ -96,6 +101,47 @@ def fetch_list_date_map(
             client.close()
 
 
+def fetch_ipo_list_date_map(
+    symbols: list[str] | tuple[str, ...],
+    *,
+    client: EastMoneyClient | None = None,
+    config: Config | None = None,
+) -> dict[str, date]:
+    """Explicit listing dates from the datacenter IPO-apply report.
+
+    A row with ``LISTING_DATE=null`` is an announced or pending IPO.  It stays
+    absent from the map so the caller cannot mistake an announcement for an
+    actual listing.  Querying only the missing symbols keeps the ordinary
+    repair path to one request per bounded symbol batch.
+    """
+    wanted = sorted(set(symbols))
+    if not wanted:
+        return {}
+    owns = client is None
+    if client is None:
+        client = EastMoneyClient(config=config)
+    try:
+        out: dict[str, date] = {}
+        for offset in range(0, len(wanted), 100):
+            batch = wanted[offset : offset + 100]
+            codes = ",".join(f'"{symbol.rsplit(".", 1)[0].zfill(6)}"' for symbol in batch)
+            rows = fetch_datacenter(
+                client,
+                IPO_REPORT,
+                IPO_COLUMNS,
+                filter_expr=f"(SECURITY_CODE in ({codes}))",
+            )
+            for row in rows:
+                symbol = symbol_from_secucode(row.get("SECUCODE"))
+                list_date = _parse_list_date(row.get("LISTING_DATE"))
+                if symbol in set(batch) and list_date is not None:
+                    out[symbol] = list_date
+        return out
+    finally:
+        if owns:
+            client.close()
+
+
 def _baostock_list_dates(config: Config) -> dict[str, date]:
     """SH/SZ stock and ETF listing dates from one baostock query; {} on failure."""
     if not config.sources.get("baostock", False):
@@ -129,7 +175,7 @@ def _fill_list_dates(df: pl.DataFrame, date_map: dict[str, date]) -> pl.DataFram
 
 
 def enrich_instrument_list_dates(config: Config, df: pl.DataFrame) -> pl.DataFrame:
-    """Fill null list_date on *df*: baostock first, then EastMoney for the rest."""
+    """Fill null list_date on *df*: baostock, push2, then datacenter IPO."""
     if df.is_empty() or df.filter(pl.col("list_date").is_null()).is_empty():
         return df
 
@@ -148,5 +194,14 @@ def enrich_instrument_list_dates(config: Config, df: pl.DataFrame) -> pl.DataFra
         date_map = fetch_list_date_map(config=config, equity=want_equity, etf=want_etf)
     except Exception as exc:
         logger.warning("EastMoney instrument list_date enrichment failed: %s", exc)
+        date_map = {}
+    df = _fill_list_dates(df, date_map)
+    missing = df.filter(pl.col("list_date").is_null())
+    if missing.is_empty():
         return df
-    return _fill_list_dates(df, date_map)
+    try:
+        ipo_dates = fetch_ipo_list_date_map(missing["symbol"].to_list(), config=config)
+    except Exception as exc:
+        logger.warning("EastMoney IPO instrument list_date enrichment failed: %s", exc)
+        return df
+    return _fill_list_dates(df, ipo_dates)

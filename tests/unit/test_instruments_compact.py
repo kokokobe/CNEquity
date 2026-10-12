@@ -684,6 +684,71 @@ def test_enrich_instrument_list_dates_fills_nulls(tmp_path, monkeypatch):
     assert enriched["list_date"][0] == date(2001, 8, 27)
 
 
+def test_fetch_ipo_list_date_map_fills_only_explicit_listing_dates(monkeypatch):
+    from cnequity.adapters.eastmoney import instruments as em_inst
+
+    calls: list[tuple[str, str]] = []
+
+    def _datacenter(client, report, columns, *, filter_expr, **kwargs):
+        calls.append((report, filter_expr))
+        return [
+            {
+                "SECUCODE": "920157.BJ",
+                "SECURITY_CODE": "920157",
+                "LISTING_DATE": "2026-10-09 00:00:00",
+            },
+            {"SECUCODE": "301718.SZ", "SECURITY_CODE": "301718", "LISTING_DATE": None},
+        ]
+
+    monkeypatch.setattr(em_inst, "fetch_datacenter", _datacenter)
+    out = em_inst.fetch_ipo_list_date_map(["301718.SZ", "920157.BJ"], client=object())
+
+    assert out == {"920157.BJ": date(2026, 10, 9)}
+    assert calls == [
+        (
+            "RPTA_APP_IPOAPPLY",
+            '(SECURITY_CODE in ("301718","920157"))',
+        )
+    ]
+
+
+def test_ipo_source_failure_keeps_list_dates_null(tmp_path, monkeypatch):
+    from cnequity.adapters.eastmoney import instruments as em_inst
+
+    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    df = pl.DataFrame([_instrument("920157.BJ")])
+
+    monkeypatch.setattr(em_inst, "fetch_list_date_map", lambda **kwargs: {})
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("IPO report failed")
+
+    monkeypatch.setattr(em_inst, "fetch_ipo_list_date_map", _boom)
+    out = em_inst.enrich_instrument_list_dates(cfg, df)
+
+    assert out["list_date"].to_list() == [None]
+
+
+def test_push2_failure_still_uses_ipo_datacenter(tmp_path, monkeypatch):
+    from cnequity.adapters.eastmoney import instruments as em_inst
+
+    cfg = Config(data_root=tmp_path / "data", sources={"eastmoney": True})
+    df = pl.DataFrame([_instrument("920157.BJ")])
+
+    def _boom(**kwargs):
+        raise RuntimeError("push2 paused")
+
+    monkeypatch.setattr(em_inst, "fetch_list_date_map", _boom)
+    monkeypatch.setattr(
+        em_inst,
+        "fetch_ipo_list_date_map",
+        lambda symbols, **kwargs: {"920157.BJ": date(2026, 10, 9)},
+    )
+    out = em_inst.enrich_instrument_list_dates(cfg, df)
+
+    assert out["list_date"].to_list() == [date(2026, 10, 9)]
+
+
 def test_fetch_list_date_map_closes_owned_client_on_success(monkeypatch):
     from cnequity.adapters.eastmoney import instruments as em_inst
 
