@@ -208,6 +208,14 @@ from cnequity.orchestrator.engine import JobEngine
     ),
 )
 @click.option(
+    "--qmt-amount-repair",
+    is_flag=True,
+    help=(
+        "仅 daily_bars：用 BigQMT 桥补退市 BJ 的 Sina 行成交额；开高低收一致且成交量差小于一手时才补，"
+        "已存价格和成交量不动。需要 --symbols 和 --start/--end。"
+    ),
+)
+@click.option(
     "--tdx-volume-repair",
     is_flag=True,
     help=(
@@ -261,6 +269,7 @@ def backfill(
     bse_tip_repair: bool,
     bj_amount_repair: bool,
     tdx_amount_repair: bool,
+    qmt_amount_repair: bool,
     tdx_volume_repair: bool,
     turnover_repair: bool,
     fill_em_outage: bool,
@@ -298,6 +307,7 @@ def backfill(
             or bse_tip_repair
             or bj_amount_repair
             or tdx_amount_repair
+            or qmt_amount_repair
             or tdx_volume_repair
             or turnover_repair
             or fill_em_outage
@@ -377,6 +387,7 @@ def backfill(
             or bse_tip_repair
             or bj_amount_repair
             or tdx_amount_repair
+            or qmt_amount_repair
             or tdx_volume_repair
             or turnover_repair
             or fill_em_outage
@@ -505,8 +516,12 @@ def backfill(
         raise click.ClickException("--bj-amount-repair 只适用于 daily_bars")
     if tdx_amount_repair and dataset != "daily_bars":
         raise click.ClickException("--tdx-amount-repair 只适用于 daily_bars")
+    if qmt_amount_repair and dataset != "daily_bars":
+        raise click.ClickException("--qmt-amount-repair 只适用于 daily_bars")
     if bj_amount_repair and tdx_amount_repair:
         raise click.ClickException("--bj-amount-repair 与 --tdx-amount-repair 只能用一个")
+    if qmt_amount_repair and (bj_amount_repair or tdx_amount_repair):
+        raise click.ClickException("--qmt-amount-repair 不能与其它 amount repair 同时使用")
     if bj_amount_repair:
         click.echo(
             "提示：--bj-amount-repair 已由 --tdx-amount-repair 取代，"
@@ -546,6 +561,10 @@ def backfill(
         if start_d is None or end_d is None:
             raise click.ClickException("--tdx-amount-repair 需要同时给 --start 和 --end")
         cfg._tdx_amount_repair = True
+    if qmt_amount_repair:
+        if not symbols_str or start_d is None or end_d is None:
+            raise click.ClickException("--qmt-amount-repair 需要 --symbols 和 --start/--end")
+        cfg._qmt_amount_repair = True
     if tdx_volume_repair:
         if dataset != "daily_bars":
             raise click.ClickException("--tdx-volume-repair 只适用于 daily_bars")
@@ -624,6 +643,7 @@ def backfill(
                 (bse_tip_repair, "bse-tip-repair"),
                 (bj_amount_repair, "bj-amount-repair"),
                 (tdx_amount_repair, "tdx-amount-repair"),
+                (qmt_amount_repair, "qmt-amount-repair"),
                 (tdx_volume_repair, "tdx-volume-repair"),
                 (turnover_repair, "turnover-repair"),
                 (fill_em_outage, "fill-em-outage"),
@@ -1092,16 +1112,12 @@ def _repair_outstanding(
     if not owed:
         return {"dataset": dataset, "status": "success", "outstanding": 0, "note": "nothing owed"}
     limit = max(1, int(max_attempts))
-    parked = [] if retry_parked else [
-        row
-        for row in owed
-        if int(row.get("attempts", 0) or 0) >= limit
-    ]
-    active = owed if retry_parked else [
-        row
-        for row in owed
-        if int(row.get("attempts", 0) or 0) < limit
-    ]
+    parked = (
+        [] if retry_parked else [row for row in owed if int(row.get("attempts", 0) or 0) >= limit]
+    )
+    active = (
+        owed if retry_parked else [row for row in owed if int(row.get("attempts", 0) or 0) < limit]
+    )
     if parked:
         click.echo(
             f"[{dataset}] {len(parked)} 个 key 已累计 {limit} 次未补齐；"
