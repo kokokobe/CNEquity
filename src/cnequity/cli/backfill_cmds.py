@@ -1532,7 +1532,10 @@ def _override_scope(cfg, dataset: str, symbols: list[str]) -> None:
         from cnequity.domain.derivatives import parse_future_code
 
         for symbol in symbols:
-            code, _, exchange = symbol.partition(".")
+            # Not `_`: this module's gettext alias is `_`, and assigning to it
+            # here would make every later `_()` call in this function raise
+            # UnboundLocalError.
+            code, _sep, exchange = symbol.partition(".")
             try:
                 contract = parse_future_code(code, exchange, shanghai_today())
             except ValueError as exc:

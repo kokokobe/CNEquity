@@ -1716,7 +1716,9 @@ def _report_outstanding_keys(cfg, datasets: list[str]) -> None:
             owed.append((dataset, len(rows), stubborn))
     if not owed:
         return
-    summary = ", ".join(f"{dataset} {count}" for dataset, count, _ in sorted(owed))
+    # Not `_`: this module's gettext alias is `_`, and assigning to it here
+    # would make every later `_()` call in this function raise UnboundLocalError.
+    summary = ", ".join(f"{dataset} {count}" for dataset, count, _stubborn in sorted(owed))
     click.echo(
         _(
             "\nKeys owed by tolerated gaps: {summary}\nThese sessions are already past the watermark, and no incremental run will ask for them again; fill them with `cne backfill <dataset> --outstanding`."
