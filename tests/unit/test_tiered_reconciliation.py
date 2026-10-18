@@ -194,3 +194,55 @@ def test_the_daily_bar_tip_does_not_re_read_the_settled_session(tmp_path):
     # Behind by a few sessions: every missed session is still in the window.
     StateStore(cfg.meta_root).set_date("daily_bars", date(2026, 9, 15))
     assert incremental_window(cfg, "daily_bars", date(2026, 9, 18)) == date(2026, 9, 16)
+
+
+def test_a_finished_daily_bar_deep_sweep_lets_the_next_session_go_tip_only(tmp_path):
+    """daily_bars has its own fetch path and never recorded its deep sweep, so
+    from 2026-10-08 every daily run was a deep day (~30 min, not ~8)."""
+    from cnequity.steps.common import mark_reconciled, reconciliation_depth
+    from cnequity.storage.state import StateStore
+
+    cfg = _cfg(tmp_path)
+    _deep_done(cfg, "daily_bars", date(2026, 9, 14))
+    StateStore(cfg.meta_root).set_date("daily_bars", date(2026, 9, 18))
+    monday = date(2026, 9, 21)
+    assert reconciliation_depth(cfg, "daily_bars", monday) == "deep"
+
+    mark_reconciled(cfg, "daily_bars", monday, "deep")
+    StateStore(cfg.meta_root).set_date("daily_bars", monday)
+    tuesday = date(2026, 9, 22)
+    assert reconciliation_depth(cfg, "daily_bars", tuesday) == "tail"
+    assert incremental_window(cfg, "daily_bars", tuesday) == tuesday
+
+
+def test_the_daily_bar_step_records_its_deep_sweep(tmp_path, monkeypatch):
+    import cnequity.steps.bars as bars
+    from cnequity.steps.common import _DEEP_RECONCILED_FIELD
+    from cnequity.storage.state import StateStore
+
+    cfg = _cfg(tmp_path)
+    monday = date(2026, 9, 21)
+    monkeypatch.setattr(bars, "incremental_window", lambda *_a: date(2026, 9, 15))
+    monkeypatch.setattr(bars, "reconciliation_depth", lambda *_a: "deep")
+    monkeypatch.setattr(bars, "_reject_unfinished_daily_bar_window", lambda *_a: None)
+    monkeypatch.setattr(bars, "_daily_fund_bar_symbols", lambda *_a, **_k: [])
+    monkeypatch.setattr(bars, "load_symbols", lambda _c: [])
+    monkeypatch.setattr(
+        bars,
+        "_fetch_tip_via_exchange",
+        lambda *_a: {"rows_read": 0, "rows_written": 0, "covered": set()},
+    )
+    monkeypatch.setattr(
+        bars, "fetch_daily_bars_parallel", lambda *_a, **_k: {"rows_read": 0, "rows_written": 0}
+    )
+    monkeypatch.setattr(bars, "_finish_daily_bars", lambda *_a, **_k: {"status": "warning"})
+    monkeypatch.setattr(bars, "_merge_ownership_result", lambda out, *_a: out)
+
+    bars._step_daily_bars(cfg, monday, "run-1", {})
+    assert StateStore(cfg.meta_root).get_date("daily_bars", field=_DEEP_RECONCILED_FIELD) == monday
+
+    # An execution failure leaves the deep sweep owed.
+    later = date(2026, 9, 28)
+    monkeypatch.setattr(bars, "_finish_daily_bars", lambda *_a, **_k: {"status": "failed"})
+    bars._step_daily_bars(cfg, later, "run-2", {})
+    assert StateStore(cfg.meta_root).get_date("daily_bars", field=_DEEP_RECONCILED_FIELD) == monday

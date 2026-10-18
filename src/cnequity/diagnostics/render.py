@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from cnequity.diagnostics.report import Report, Severity
+from cnequity.i18n import _, localize
 
 _MARK: dict[Severity, tuple[str, str]] = {
     Severity.OK: ("OK  ", "green"),
@@ -18,28 +19,28 @@ def _style(text: str, color: str) -> str:
 
 
 def render_text(report: Report) -> list[str]:
-    lines: list[str] = ["环境"]
+    lines: list[str] = [_("Environment")]
     width = max(len(k) for k in report.environment)
     for key, value in report.environment.items():
         lines.append(f"  {key.ljust(width)}  {value}")
 
     lines.append("")
-    lines.append("依赖")
+    lines.append(_("Dependencies"))
     for status in report.packages:
         mark, color = _MARK[Severity.OK if status.importable else Severity.ERROR]
-        note = "OK" if status.importable else "无法导入"
+        note = "OK" if status.importable else _("cannot be imported")
         lines.append(f"  {_style(mark, color)}  {status.package.module} — {note}")
 
     if report.findings:
         lines.append("")
-        lines.append("检查结果")
+        lines.append(_("Findings"))
         for finding in report.findings:
             mark, color = _MARK[finding.severity]
-            lines.append(f"  {_style(mark, color)}  {finding.title}")
-            for detail_line in finding.detail.splitlines():
+            lines.append(f"  {_style(mark, color)}  {localize(finding.title)}")
+            for detail_line in localize(finding.detail).splitlines():
                 lines.append(f"        {detail_line}")
             if finding.fix:
-                fix_lines = finding.fix.splitlines()
+                fix_lines = localize(finding.fix).splitlines()
                 lines.append(f"        {_style('→', 'cyan')} {fix_lines[0]}")
                 # Repair steps arrive as one line per command; keep them aligned
                 # under the arrow so they stay copy-pasteable.
@@ -48,16 +49,32 @@ def render_text(report: Report) -> list[str]:
 
     errors, warnings = len(report.errors), len(report.warnings)
     if errors:
-        lines.append(_style(f"{errors} 个问题需要处理，{warnings} 个警告。", "red"))
+        lines.append(
+            _style(
+                _("{errors} problem(s) need attention, {warnings} warning(s).").format(
+                    errors=errors, warnings=warnings
+                ),
+                "red",
+            )
+        )
     elif warnings:
-        lines.append(_style(f"没有致命问题，{warnings} 个警告。", "yellow"))
+        lines.append(
+            _style(
+                _("No fatal problems, {warnings} warning(s).").format(warnings=warnings), "yellow"
+            )
+        )
     else:
         # Say what was checked, not just that it passed. `doctor` inspects the
         # environment, dependencies and config — never the lake — so a bare
         # "everything is fine" reads as a clean bill of health for a lake whose
         # daily job may have been failing for a fortnight.
-        lines.append(_style("环境、依赖与配置正常。", "green"))
-    lines.append("doctor 只检查环境/依赖/配置；数据湖状态用 `cne status --datasets`。")
+        lines.append(_style(_("Environment, dependencies and config are fine."), "green"))
+    lines.append(
+        _(
+            "doctor checks only the environment, dependencies and config; for the lake, "
+            "use `cne status --datasets`."
+        )
+    )
     return lines
 
 

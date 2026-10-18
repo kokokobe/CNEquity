@@ -21,6 +21,13 @@ INIT_PHASE_STEPS: dict[str, list[str]] = {
     "phase5_derive_and_publish": ["trading_status_derive", "compact"],
 }
 
+#: The Sina factor prefetch runs in the background from the first of these
+#: phases until the finalize phase, where the derive takes over. It is not a
+#: step, so it is never part of what an init owes.
+FACTOR_PREFETCH_PHASES = frozenset({"phase2c_daily_bars_backfill", "phase2a_corporate_actions"})
+FACTOR_PREFETCH_STOP_PHASE = "phase4_finalize"
+
+
 INIT_BACKFILL_PHASES = frozenset(
     {
         # trading_calendar must span the full bar history (2016+) or historical
@@ -37,17 +44,77 @@ INIT_BACKFILL_PHASES = frozenset(
     }
 )
 
+#: Phases whose failure must not stop a first build. Without corporate actions
+#: or index/status rows the lake is thinner but its bars still publish and
+#: query; stopping here left a new user with nothing after an hour of work.
+#: The failed steps stay owed, so the next ``cne init`` resumes only them.
+NON_BLOCKING_INIT_PHASES = frozenset({"phase2a_corporate_actions", "phase3_index_and_status"})
+
+#: Steps inside blocking phases that run after ``compact`` has published the
+#: bars. Each derives or checks what is already in the lake, and a later run
+#: redoes it; letting one of them fail a first build reported a lake with
+#: published, queryable bars as unusable and skipped the phase after it.
+NON_BLOCKING_INIT_STEPS = frozenset(
+    {"derive_adj_factors", "derive_industry_index", "audit", "trading_status_derive"}
+)
+
 FINALIZE_STEPS = frozenset({"compact", "derive_adj_factors", "derive_industry_index", "audit"})
 RESOLVED_BATCH_STATUSES = frozenset({"success", "superseded"})
 
+#: Daily bars run before the corporate-action sweep. The sweep asks TDX for
+#: every instrument's whole xdxr history whatever the window, which held a
+#: first build's bars back by ~44 minutes; nothing before phase4's
+#: ``derive_adj_factors`` reads corporate actions during init.
 DEFAULT_INIT_PHASES = [
+    "phase1_reference",
+    "phase2c_daily_bars_backfill",
+    "phase2a_corporate_actions",
+    "phase3_index_and_status",
+    "phase4_finalize",
+    "phase5_derive_and_publish",
+]
+
+#: The order shipped (and written into generated configs) before 0.17.0. A
+#: config still carrying it verbatim never chose it, so it gets the new order.
+LEGACY_DEFAULT_INIT_PHASES = (
     "phase1_reference",
     "phase2a_corporate_actions",
     "phase2c_daily_bars_backfill",
     "phase3_index_and_status",
     "phase4_finalize",
     "phase5_derive_and_publish",
-]
+)
+
+
+def configured_init_phases(configured: list[str] | None) -> list[str]:
+    """Phase list for a new init: the config's own, or the default.
+
+    An unedited legacy default is upgraded; any other list is the operator's
+    choice and is kept as written. Existing runs resume from the phases they
+    recorded, never from this.
+    """
+    if not configured or tuple(configured) == LEGACY_DEFAULT_INIT_PHASES:
+        return list(DEFAULT_INIT_PHASES)
+    return list(configured)
+
+
+def scheduled_later(step: str, dep: str, phases: list[str]) -> bool:
+    """Whether *phases* deliberately run *dep* after *step*.
+
+    The phase list is the init's own ordering contract. A declared dependency
+    it schedules later (``daily_bars`` on ``corporate_actions``, which exists
+    for daily-wave ordering) cannot gate *step*, or a retry would wait for a
+    phase that only starts once *step* is done.
+    """
+
+    def first(name: str) -> int | None:
+        for index, phase in enumerate(phases):
+            if name in INIT_PHASE_STEPS.get(phase, []):
+                return index
+        return None
+
+    step_at, dep_at = first(step), first(dep)
+    return step_at is not None and dep_at is not None and dep_at > step_at
 
 
 def expected_steps(phases: list[str]) -> list[str]:
@@ -214,3 +281,46 @@ def needs_finalize(phases: list[str], batches: list[Any]) -> bool:
     ):
         return False
     return not all(step_completed(batches, step) for step in FINALIZE_STEPS)
+
+
+def blocking_phase(phase: str) -> bool:
+    return phase not in NON_BLOCKING_INIT_PHASES
+
+
+def blocking_step(phase: str, step: str) -> bool:
+    """Whether *step* failing in *phase* must stop a first build."""
+    return blocking_phase(phase) and step not in NON_BLOCKING_INIT_STEPS
+
+
+def blocks_init(phase: str, steps: set[str] | list[str]) -> bool:
+    """Whether any of *steps*, left unfinished in *phase*, must stop the init.
+
+    No step to blame (a phase that failed without per-step results) blocks
+    exactly as its phase does.
+    """
+    if not steps:
+        return blocking_phase(phase)
+    return any(blocking_step(phase, step) for step in steps)
+
+
+def owed_steps(phases: list[str], batches: list[Any]) -> list[str]:
+    """Expected steps this init has not completed, in phase order."""
+    return [step for step in expected_steps(phases) if not step_completed(batches, step)]
+
+
+def only_non_blocking_owed(phases: list[str], batches: list[Any]) -> bool:
+    """True when every owed step is one a first build may leave owed.
+
+    The finalize steps must have completed too, so the lake actually holds
+    the published result rather than staged rows.
+    """
+    owed = set(owed_steps(phases, batches))
+    if not owed:
+        return False
+    blocking = {
+        step
+        for phase in phases
+        for step in INIT_PHASE_STEPS.get(phase, [])
+        if blocking_step(phase, step)
+    }
+    return not (owed & blocking)

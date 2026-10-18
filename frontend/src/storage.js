@@ -13,6 +13,13 @@ const reasonText = code => ({
   missing_current_pointer: tr("缺少当前版本指针", "Missing current pointer"),
   unreceipted_generation: tr("缺少版本收据", "Missing generation receipt"),
   missing_file_manifest: tr("缺少文件清单", "Missing file manifest"),
+  incomplete_batches: tr("仍有未完成批次", "Incomplete batches remain"),
+  not_compacted: tr("尚未成功合并", "Not successfully compacted"),
+  running: tr("运行中", "Running"),
+  active_run_lock: tr("运行锁被占用", "Run lock is held"),
+  lifecycle_hold: tr("已登记保留", "Registered hold"),
+  orphan_candidate: tr("孤立暂存，需另行核实", "Orphan staging needs separate review"),
+  young_orphan: tr("新近孤立暂存", "Recent orphan staging"),
 }[code] || code);
 const statusText = code => ({
   due: tr("已过观察期", "Past the observation period"),
@@ -24,15 +31,15 @@ const size = n => n >= 2 ** 30 ? `${(n / 2 ** 30).toFixed(2)} GiB` : n >= 2 ** 2
 const countText = items => `${items.length.toLocaleString(locale())} ${tr("项", "items")} · ${size(items.reduce((n, o) => n + o.logical_bytes, 0))}`;
 const bytesOf = items => items.reduce((n, o) => n + o.logical_bytes, 0);
 const datasetId = o => {
-  if (o.kind === "experiments") return "";
+  if (o.kind !== "revisions") return "";
   const mark = " · 第 "; // i18n-ignore
   const cut = o.label.indexOf(mark);
   return cut > 0 ? o.label.slice(0, cut) : o.label;
 };
-const groupKey = o => (o.kind === "experiments" ? "experiments" : datasetId(o));
-const groupTitle = key => (key === "experiments" ? tr("试验目录", "Experiments") : dsWithCode(key));
+const groupKey = o => (o.kind !== "revisions" ? o.kind : datasetId(o));
+const groupTitle = key => (key === "experiments" ? tr("试验目录", "Experiments") : key === "staging" ? tr("采集暂存", "Ingestion staging") : dsWithCode(key));
 const versionName = o => {
-  if (o.kind === "experiments") return o.label;
+  if (o.kind !== "revisions") return o.label;
   const mark = " · 第 "; // i18n-ignore
   const cut = o.label.indexOf(mark);
   if (cut < 0) return o.label;
@@ -49,7 +56,7 @@ const why = o => {
   }
   return o.reasons.map(reasonText).join(tr("、", ", ")) || statusText("protected");
 };
-const datasetCell = item => (item.kind === "experiments" ? escHtml(groupTitle("experiments")) : dsMarkup(datasetId(item)));
+const datasetCell = item => (item.kind !== "revisions" ? escHtml(groupTitle(item.kind)) : dsMarkup(datasetId(item)));
 const escHtml = value => String(value ?? "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
 let generation = 0;
 export function closeStorage() { generation++; }
@@ -204,14 +211,16 @@ export async function renderStorage({ api, setPage, esc, dataTable }) {
     document.getElementById("storage-review").innerHTML = "";
     const done = [];
     try {
-      for (const kind of ["revisions", "experiments"]) {
+      for (const kind of ["revisions", "experiments", "staging"]) {
         const group = chosen.filter(o => o.kind === kind);
         for (let index = 0; index < group.length; index += 200) {
           const slice = group.slice(index, index + 200);
           const range = `${index + 1}–${index + slice.length} / ${group.length}`;
           showMessage(kind === "revisions"
             ? tr(`正在核验勾选的历史版本（${range}）。核验通过后会删除这些项目。`, `Verifying the selected old revisions (${range}). They are deleted once the check passes.`)
-            : tr(`正在核验勾选的试验目录（${range}）。核验通过后会删除这些项目。`, `Verifying the selected experiment directories (${range}). They are deleted once the check passes.`));
+            : kind === "staging"
+              ? tr(`正在核验已合并暂存（${range}）。核验通过后会删除这些项目。`, `Verifying compacted staging (${range}). It is deleted once the check passes.`)
+              : tr(`正在核验勾选的试验目录（${range}）。核验通过后会删除这些项目。`, `Verifying the selected experiment directories (${range}). They are deleted once the check passes.`));
           const job = await poll(await post("/api/storage/reviews", { kind, phase: "purge", object_ids: slice.map(o => o.object_id) }));
           if (!job) return;
           const same = job.objects.map(o => o.object_id).sort().join("\n") === slice.map(o => o.object_id).sort().join("\n");
@@ -300,7 +309,7 @@ export async function renderStorage({ api, setPage, esc, dataTable }) {
     groupMembers = new Map(ordered.map(([name, members]) => [name, members.map(o => o.object_id)]));
     const note = picking
       ? tr("按账面大小从大到小。勾选数据集会带上其中列出的每个历史版本，包括折叠着的。最近 5 代和观察期内的历史也可以删。", "Largest logical size first. Checking a dataset selects every listed version in it, including collapsed ones. The latest 5 generations and versions still in observation can be deleted.")
-      : tr("这些历史不能删除。原因写在每一行上：当前指针以外的引用、人工保留、缺少收据或归档。", "These versions cannot be deleted. Each row says why: a reference other than the current pointer, a manual hold, or a missing receipt or archive.");
+      : tr("这些历史不能删除。原因写在每一行上：当前指针以外的引用、人工保留、缺少收据或归档，或暂存仍有未完成批次。", "These items cannot be deleted. Each row says why: references, holds, missing receipts or archives, or unfinished staging batches.");
     const body = ordered.map(([name, members]) => {
       const versions = [...members].sort((a, b) => versionName(b).localeCompare(versionName(a), "zh", { numeric: true }));
       const opened = Boolean(q) || openGroups.has(name);
@@ -366,10 +375,10 @@ export async function renderStorage({ api, setPage, esc, dataTable }) {
     const deletable = summary.objects.filter(canPick);
     const kept = summary.objects.filter(o => !o.current && !canPick(o));
     const metric = (id, title, items, note) => `<button type="button" class="storage-metric${view === id ? " on" : ""}" data-storage-action data-view="${id}" aria-pressed="${view === id}"><span class="metric-label">${title}</span><span class="metric-value">${items.length.toLocaleString("zh-CN")}</span><span class="metric-note">${note || countText(items)}</span></button>`;
-    const unfinished = summary.unfinished.length ? `<section class="surface-panel report-panel storage-review"><h2>${tr("有未完成的删除记录", "An unfinished deletion is still open")}</h2><p class="panel-note">${tr("先重新审核原清单。已完成的项目不会重复删除，剩余项目仍需确认。", "Review the original list again. Finished items are not deleted twice; the rest still need confirmation.")}</p>${summary.unfinished.map((x, i) => `<div class="storage-resume"><code>${esc(x.plan_id)}</code><button class="button button-primary" data-storage-action data-resume="${i}" type="button">${tr("重新审核", "Review again")} ${x.kind === "revisions" ? tr("版本", "versions") : tr("试验", "experiments")}</button></div>`).join("")}</section>` : "";
+    const unfinished = summary.unfinished.length ? `<section class="surface-panel report-panel storage-review"><h2>${tr("有未完成的删除记录", "An unfinished deletion is still open")}</h2><p class="panel-note">${tr("先重新审核原清单。已完成的项目不会重复删除，剩余项目仍需确认。", "Review the original list again. Finished items are not deleted twice; the rest still need confirmation.")}</p>${summary.unfinished.map((x, i) => `<div class="storage-resume"><code>${esc(x.plan_id)}</code><button class="button button-primary" data-storage-action data-resume="${i}" type="button">${tr("重新审核", "Review again")} ${x.kind === "revisions" ? tr("版本", "versions") : x.kind === "staging" ? tr("暂存", "staging") : tr("试验", "experiments")}</button></div>`).join("")}</section>` : "";
     setPage(`<section class="page-heading"><div class="eyebrow">${tr("数据湖控制台 / 存储运维", "Lake console / Storage")}</div><div class="heading-row"><div><h1>${tr("存储运维", "Storage")}</h1><p class="sub">${tr("先看可以删除的历史。勾选后点删除，确认单核对通过才会执行。正在使用和受保护的版本分开列出，不能被选中。", "Start with history that can be deleted. Delete opens a confirmation and runs only after that check passes. In-use and protected versions are listed separately and cannot be selected.")}</p></div><span class="status-pill status-pill-fresh">${tr("自动删除已关闭", "Automatic deletion is off")}</span></div></section>
       ${unfinished}
-      ${!summary.registered ? `<p class="panel-note err">${tr("尚未导入生命周期引用清单。请先通过 storage import 完成登记，检查会在缺少保护依据时停止。", "The lifecycle reference list has not been imported. Run storage import first. A check stops when the protection evidence is missing.")}</p>` : ""}
+      ${!summary.registered ? `<p class="panel-note err">${tr("尚未导入生命周期引用清单，按到期规则的检查会因缺少保护依据而停止。先在命令行运行 <code>cne storage import</code> 完成登记。", "The lifecycle reference list has not been imported, so a retention-rule check stops for lack of protection evidence. Run <code>cne storage import</code> first.")}</p>` : ""}
       <div class="storage-metrics">${metric("deletable", tr("可以删除", "Deletable"), deletable, tr(`${size(bytesOf(deletable))} 账面`, `${size(bytesOf(deletable))} logical`))}${metric("current", tr("正在使用", "In use"), live, tr("不会进入删除", "Not deletable"))}${metric("kept", tr("受保护", "Protected"), kept, tr("不能勾选", "Cannot select"))}<div class="storage-metric is-static"><span class="metric-label">${tr("磁盘可用", "Disk free")}</span><span class="metric-value">${size(summary.disk_free_bytes)}</span><span class="metric-note">${tr("共", "of")} ${size(summary.disk_total_bytes)}</span></div></div>
       <p id="storage-message" class="panel-note" role="status" aria-live="polite">${tr("勾选历史版本后点删除。浏览或刷新此页不会删除数据。大小都是账面值，不能当成实际腾出的空间。", "Select history, then delete. Opening or refreshing this page does not delete anything. Sizes are logical values, not space you will get back.")}</p>
       <div id="storage-review" class="storage-review"></div>

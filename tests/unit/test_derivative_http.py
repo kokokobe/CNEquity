@@ -64,6 +64,34 @@ def test_cache_survives_process_cache_clear_and_simultaneous_misses_are_merged(t
         assert len(calls) == 2
 
 
+def test_first_request_removes_disk_entries_past_the_longest_ttl(tmp_path):
+    import os
+    import time
+
+    cfg = Config(data_root=tmp_path / "lake")
+    cache = cfg.meta_root / "derivatives" / "http_cache"
+    cache.mkdir(parents=True)
+    now = time.time()
+    expired, live, other = cache / "old.json", cache / "fresh.json", cache / "notes.txt"
+    for path in (expired, live, other):
+        path.write_text("{}")
+    os.utime(expired, (now - 31 * 86400, now - 31 * 86400))
+    os.utime(other, (now - 31 * 86400, now - 31 * 86400))
+    os.utime(live, (now - 29 * 86400, now - 29 * 86400))
+
+    def handler(request):
+        return httpx.Response(200, content=b"ok")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        common.fetch_bytes("https://example.test/a", config=cfg, client=client)
+        os.utime(live, (now - 31 * 86400, now - 31 * 86400))
+        common.fetch_bytes("https://example.test/b", config=cfg, client=client)
+
+    assert not expired.exists()
+    # Once per process: a later request does not rescan the directory.
+    assert live.exists() and other.exists()
+
+
 def test_retry_event_counts_the_extra_admitted_send(tmp_path, monkeypatch):
     from cnequity.domain.rate_limit import _read_json
 

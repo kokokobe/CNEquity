@@ -10,6 +10,7 @@ import click
 from cnequity.cli._root import cli
 from cnequity.cli._shared import _cfg, config_option
 from cnequity.file_lock import LockUnavailable
+from cnequity.i18n import N_, _
 from cnequity.storage.lifecycle import LifecycleError, LifecycleStore
 from cnequity.storage.revisions import RevisionConsistencyError
 
@@ -38,14 +39,14 @@ def _emit(value: dict) -> None:
 
 @cli.group(cls=_LifecycleGroup)
 def storage():
-    """版本保留登记与观察期；物理删除须在 serve 网页确认。"""
+    """Version retention holds and observation periods; physical deletion must be confirmed on the serve web page."""
 
 
 @storage.command("inspect")
 @config_option
 @click.option("--keep", type=click.IntRange(min=1), default=5, show_default=True)
 def inspect(config_path: str, keep: int):
-    """只读列出版本、保留原因和已登记试验。"""
+    """List versions, retention reasons and registered experiments, read-only."""
     _emit(_store(config_path).inspect(keep=keep))
 
 
@@ -53,7 +54,7 @@ def inspect(config_path: str, keep: int):
 @config_option
 @click.argument("object_id")
 def explain(config_path: str, object_id: str):
-    """显示一个版本的保留依据。"""
+    """Show why one version is retained."""
     report = _store(config_path).inspect()
     for obj in report["objects"]:
         if obj["object_id"] == object_id:
@@ -72,7 +73,7 @@ def explain(config_path: str, object_id: str):
     "--manifest", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True
 )
 def import_references(config_path: str, manifest: Path):
-    """导入已审核引用清单，只增加保护，不自动解除旧 hold。"""
+    """Import a reviewed reference list; only adds protection and never releases old holds automatically."""
     value = _store(config_path).import_manifest(json.loads(manifest.read_text(encoding="utf-8")))
     _emit(
         {
@@ -88,7 +89,7 @@ def import_references(config_path: str, manifest: Path):
 @click.argument("object_id")
 @click.option("--reason", required=True)
 def hold(config_path: str, object_id: str, reason: str):
-    """保留版本、试验、工件或已存在的清理资源，并取消待删除标记。"""
+    """Retain a version, experiment, artifact or existing cleanup resource, and cancel its pending-deletion mark."""
     _store(config_path).hold(object_id, reason)
     _emit({"object_id": object_id, "held": True})
 
@@ -98,7 +99,7 @@ def hold(config_path: str, object_id: str, reason: str):
 @click.option("--keep", type=click.IntRange(min=1), default=5, show_default=True)
 @click.option("--phase", type=click.Choice(["mark", "purge"]), default="mark", show_default=True)
 def plan(config_path: str, keep: int, phase: str):
-    """校验引用并保存不可变版本清理计划，不删除数据。"""
+    """Check references and save an immutable version cleanup plan; deletes no data."""
     result = _store(config_path).plan(keep=keep, phase=phase)
     summary = {
         k: result[k]
@@ -124,18 +125,22 @@ def plan(config_path: str, keep: int, phase: str):
     type=click.Choice(["mark", "purge"]),
     default="mark",
     show_default=True,
-    help="mark 原地标记；purge 已禁用，请转到 serve 存储运维页。",
+    help=N_(
+        "mark marks in place; purge is disabled, use the serve storage operations page instead."
+    ),
 )
 @click.option(
     "--maintenance-window",
     is_flag=True,
-    help="兼容选项；不能绕过网页删除确认。",
+    help=N_("Compatibility option; cannot bypass the web delete confirmation."),
 )
 def apply(config_path: str, plan_id: str, phase: str, maintenance_window: bool):
-    """复查计划后标记；CLI 不允许执行物理删除。"""
+    """Mark after reviewing the plan; the CLI does not allow physical deletion."""
     if phase == "purge":
         raise click.ClickException(
-            "物理删除必须在 cne serve 的存储运维网页中检查并确认；CLI 只允许预览和标记。"
+            _(
+                "Physical deletion must be reviewed and confirmed on the storage operations page of cne serve; the CLI only allows previewing and marking."
+            )
         )
     else:
         _emit(_store(config_path).mark(plan_id))
@@ -146,7 +151,7 @@ def apply(config_path: str, plan_id: str, phase: str, maintenance_window: bool):
 @click.option("--parent", type=click.Path(path_type=Path), required=True)
 @click.option("--case-id", required=True)
 def experiment_create(config_path: str, parent: Path, case_id: str):
-    """创建有独立实例身份的空试验目录，并登记为 active。"""
+    """Create an empty experiment directory with its own instance identity, and register it as active."""
     from cnequity.storage.lifecycle.artifacts import ArtifactStore
 
     _emit(ArtifactStore(_store(config_path)).create_experiment(parent, case_id=case_id))
@@ -157,7 +162,7 @@ def experiment_create(config_path: str, parent: Path, case_id: str):
 @click.argument("object_id")
 @click.option("--destination", type=click.Path(path_type=Path), required=True)
 def archive(config_path: str, object_id: str, destination: Path):
-    """复制登记试验并逐文件校验；封存副本，保留原目录及其保护。"""
+    """Copy a registered experiment and verify it file by file; seal the copy, keeping the original directory and its protection."""
     from cnequity.storage.lifecycle.artifacts import ArtifactStore
 
     _emit(ArtifactStore(_store(config_path)).archive(object_id, destination))
@@ -167,7 +172,7 @@ def archive(config_path: str, object_id: str, destination: Path):
 @config_option
 @click.argument("object_id")
 def artifact_verify(config_path: str, object_id: str):
-    """按封存清单校验归档工件的完整内容。"""
+    """Verify the full contents of an archived artifact against its sealed manifest."""
     from cnequity.storage.lifecycle.artifacts import ArtifactStore
 
     _emit(ArtifactStore(_store(config_path)).verify(object_id))
@@ -176,9 +181,11 @@ def artifact_verify(config_path: str, object_id: str):
 @storage.command("resolve")
 @config_option
 @click.argument("old_path", type=click.Path(path_type=Path))
-@click.option("--artifact-id", help="存在多个封存版本时明确选择一个工件。")
+@click.option(
+    "--artifact-id", help=N_("Explicitly select one artifact when several sealed versions exist.")
+)
 def resolve(config_path: str, old_path: Path, artifact_id: str | None):
-    """校验并解析旧路径的归档位置；不改写报告，不创建符号链接。"""
+    """Verify and resolve the archived location of an old path; does not rewrite reports or create symlinks."""
     from cnequity.storage.lifecycle.artifacts import ArtifactStore
 
     path = ArtifactStore(_store(config_path)).resolve(old_path, artifact_id=artifact_id)
@@ -189,7 +196,7 @@ def resolve(config_path: str, old_path: Path, artifact_id: str | None):
 @config_option
 @click.option("--phase", type=click.Choice(["mark", "purge"]), default="mark", show_default=True)
 def experiment_plan(config_path: str, phase: str):
-    """为无引用、非 active 且已有完整归档的试验原目录生成退出计划。"""
+    """Generate a retirement plan for an experiment's original directory that has no references, is not active, and already has a complete archive."""
     from cnequity.storage.lifecycle.experiments import ExperimentRetirement
 
     _emit(ExperimentRetirement(_store(config_path)).plan(phase=phase))
@@ -198,9 +205,13 @@ def experiment_plan(config_path: str, phase: str):
 @storage.command("experiment-apply")
 @config_option
 @click.argument("plan_id")
-@click.option("--maintenance-window", is_flag=True, help="兼容选项；不能绕过网页删除确认。")
+@click.option(
+    "--maintenance-window",
+    is_flag=True,
+    help=N_("Compatibility option; cannot bypass the web delete confirmation."),
+)
 def experiment_apply(config_path: str, plan_id: str, maintenance_window: bool):
-    """原地标记冗余原目录；CLI 不允许物理删除，须到 serve 网页确认。"""
+    """Mark a redundant original directory in place; the CLI does not allow physical deletion, which must be confirmed on the serve web page."""
     from cnequity.storage.lifecycle.experiments import ExperimentRetirement
 
     cfg = _cfg(config_path)
@@ -210,7 +221,11 @@ def experiment_apply(config_path: str, plan_id: str, maintenance_window: bool):
         raise click.ClickException("Invalid experiment plan ID")
     plan = _read(LifecycleStore(cfg.meta_root).root / "experiment-plans" / f"{plan_id}.json")
     if plan.get("phase") == "purge":
-        raise click.ClickException("物理删除必须在 cne serve 的存储运维网页中检查并确认。")
+        raise click.ClickException(
+            _(
+                "Physical deletion must be reviewed and confirmed on the storage operations page of cne serve."
+            )
+        )
     _emit(
         ExperimentRetirement(LifecycleStore(cfg.meta_root)).apply(
             plan_id, maintenance=maintenance_window, manifest=cfg.manifest_path
@@ -223,7 +238,7 @@ def experiment_apply(config_path: str, plan_id: str, maintenance_window: bool):
 @click.argument("object_id")
 @click.option("--artifact-id", required=True)
 def experiment_seal(config_path: str, object_id: str, artifact_id: str):
-    """显式结束试验工作目录，并将封存状态绑定到已验证的归档。"""
+    """Explicitly end an experiment working directory, and bind its sealed state to the verified archive."""
     from cnequity.storage.lifecycle.artifacts import ArtifactStore
 
     _emit(ArtifactStore(_store(config_path)).seal_experiment(object_id, artifact_id))

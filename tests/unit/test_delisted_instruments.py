@@ -211,3 +211,42 @@ def test_compact_keeps_delist_date_sticky_across_runs(tmp_path):
 
     out = pl.read_parquet(cfg.curated_root / "instruments" / "part-merged.parquet")
     assert out.filter(pl.col("symbol") == "600001.SH")["delist_date"].item() == date(2009, 12, 25)
+
+
+def test_a_backfill_instruments_step_asks_baostock_once(tmp_path, monkeypatch):
+    """Listing dates and the delisted merge each made the ~90s query."""
+    import cnequity.adapters.baostock.instruments as bs_instruments
+    import cnequity.steps.reference as reference
+
+    cfg = Config(
+        data_root=tmp_path / "data",
+        tdx_allow_mock=True,
+        sources={"baostock": True, "bse": False, "eastmoney": False, "exchange": False},
+    )
+    cfg._backfill = True
+    real = bs_instruments.fetch_instrument_basics
+    calls: list[int] = []
+
+    def _counted(**kwargs):
+        calls.append(1)
+        return real(bs=_FakeBaostock(_ROWS), sleep=lambda _s: None)
+
+    monkeypatch.setattr(bs_instruments, "fetch_instrument_basics", _counted)
+    monkeypatch.setattr(
+        reference,
+        "fetch_instruments",
+        lambda **_: _live_snapshot(["600519.SH", "000001.SZ"]).with_columns(
+            pl.lit(None, dtype=pl.Date).alias("list_date")
+        ),
+    )
+    written: dict = {}
+
+    def _capture(config, run_id, dataset, df):
+        written["df"] = df
+        return {}
+
+    monkeypatch.setattr(reference, "write_simple", _capture)
+    reference.step_instruments(cfg, date(2024, 6, 28), "run-1", {})
+
+    assert len(calls) == 1
+    assert "600001.SH" in set(written["df"]["symbol"])

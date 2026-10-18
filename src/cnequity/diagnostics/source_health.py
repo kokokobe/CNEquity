@@ -48,6 +48,7 @@ from cnequity.config import Config
 from cnequity.domain.http_policy import SourceCoolingDown, record_http_response
 from cnequity.domain.market_time import shanghai_today
 from cnequity.domain.rate_limit import source_request
+from cnequity.i18n import N_, Message, _
 from cnequity.storage.atomic import write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -67,19 +68,25 @@ class ProbeStatus(str, Enum):
 
 
 STATUS_LABELS: dict[ProbeStatus, str] = {
-    ProbeStatus.OK: "可用",
-    ProbeStatus.EMPTY: "空响应",
-    ProbeStatus.BLOCKED: "被拒",
-    ProbeStatus.DOWN: "不可达",
-    ProbeStatus.SKIPPED: "未探测",
+    ProbeStatus.OK: N_("available"),
+    ProbeStatus.EMPTY: N_("empty response"),
+    ProbeStatus.BLOCKED: N_("refused"),
+    ProbeStatus.DOWN: N_("unreachable"),
+    ProbeStatus.SKIPPED: N_("not probed"),
 }
 
 STATUS_MEANING: dict[ProbeStatus, str] = {
-    ProbeStatus.OK: "返回了真实数据。",
-    ProbeStatus.EMPTY: "连上了、HTTP 也正常，但没有数据——最危险的一档，回填会静默截断。",
-    ProbeStatus.BLOCKED: "到达了但被拒绝（403 / 风控页 / 人机验证）。常见于非大陆出口。",
-    ProbeStatus.DOWN: "连不上或超时。",
-    ProbeStatus.SKIPPED: "本次未探测（配置关闭、--only 排除，或高成本端点需要显式选择）。",
+    ProbeStatus.OK: N_("Returned real data."),
+    ProbeStatus.EMPTY: N_(
+        "Connected and HTTP was fine, but no data — the most dangerous state: a backfill silently truncates."
+    ),
+    ProbeStatus.BLOCKED: N_(
+        "Reached but refused (403 / risk-control page / CAPTCHA). Common from outside mainland China."
+    ),
+    ProbeStatus.DOWN: N_("Could not connect, or timed out."),
+    ProbeStatus.SKIPPED: N_(
+        "Not probed this time (disabled in the config, excluded by --only, or a costly endpoint that must be selected explicitly)."
+    ),
 }
 
 
@@ -165,6 +172,15 @@ def _recent_weekday(days_back: int = 3) -> date:
 _BLOCKED_STATUS_CODES = frozenset({401, 403, 412, 429, 451, 456})
 
 
+def _detail(exc: Exception) -> str:
+    """The exception's text, kept as a `Message` when it is one.
+
+    A `Message` is its English text, which is what the stored report gets; the
+    CLI shows the same detail in the reader's language.
+    """
+    return exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], Message) else str(exc)
+
+
 def _classify(exc: Exception) -> tuple[ProbeStatus, str]:
     """Blocked, empty or down — the distinction is the whole point of the page."""
     import httpx
@@ -172,9 +188,9 @@ def _classify(exc: Exception) -> tuple[ProbeStatus, str]:
     from cnequity.adapters.eastmoney.host_guard import EastMoneyHostBlockedError
 
     if isinstance(exc, (ProbeBlocked, SourceCoolingDown, EastMoneyHostBlockedError)):
-        return ProbeStatus.BLOCKED, str(exc)
+        return ProbeStatus.BLOCKED, _detail(exc)
     if isinstance(exc, ProbeEmpty):
-        return ProbeStatus.EMPTY, str(exc)
+        return ProbeStatus.EMPTY, _detail(exc)
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
         if code in _BLOCKED_STATUS_CODES:
@@ -200,8 +216,8 @@ def _probe_tdx(config: Config) -> str:
         config=config,
     )
     if df.is_empty():
-        raise ProbeEmpty("行情主机连上了但没有返回 bar")
-    return f"{df.height} 根日线"
+        raise ProbeEmpty(Message(N_("The quote host connected but returned no bars")))
+    return Message(N_("%d daily bars"), df.height)
 
 
 def _eastmoney_json(config: Config, url: str) -> dict:
@@ -243,11 +259,15 @@ def _probe_em_push2(config: Config) -> str:
             continue
         total = int((payload.get("data") or {}).get("total") or 0)
         if not total:
-            last_exc = ProbeEmpty("clist 返回 total=0")
+            last_exc = ProbeEmpty(Message(N_("clist returned total=0")))
             continue
-        suffix = "" if host == PUSH2_CLIST_HOSTS[0] else f"（经 {urlparse(host).hostname}）"
-        return f"全市场 {total} 只{suffix}"
-    raise last_exc if last_exc else ProbeEmpty("clist 无可用主机")
+        suffix = (
+            ""
+            if host == PUSH2_CLIST_HOSTS[0]
+            else Message(N_(" (via %s)"), urlparse(host).hostname)
+        )
+        return Message(N_("%d symbols market-wide%s"), total, suffix)
+    raise last_exc if last_exc else ProbeEmpty(Message(N_("clist has no usable host")))
 
 
 def _probe_em_push2his(config: Config) -> str:
@@ -261,8 +281,8 @@ def _probe_em_push2his(config: Config) -> str:
     payload = _eastmoney_json(config, url)
     klines = (payload.get("data") or {}).get("klines") or []
     if not klines:
-        raise ProbeEmpty("kline 返回空")
-    return f"{len(klines)} 根 K 线"
+        raise ProbeEmpty(Message(N_("kline returned nothing")))
+    return Message(N_("%d K-lines"), len(klines))
 
 
 def _probe_em_datacenter(config: Config) -> str:
@@ -275,8 +295,10 @@ def _probe_em_datacenter(config: Config) -> str:
     payload = _eastmoney_json(config, url)
     rows = (payload.get("result") or {}).get("data") or []
     if not rows:
-        raise ProbeEmpty(f"datacenter 无数据：{payload.get('message') or 'no result'}")
-    return "分红报表 1 行"
+        raise ProbeEmpty(
+            Message(N_("datacenter has no data: %s"), payload.get("message") or "no result")
+        )
+    return Message(N_("1 row of the dividend report"))
 
 
 def _probe_sina(config: Config) -> str:
@@ -284,8 +306,8 @@ def _probe_sina(config: Config) -> str:
 
     last = symbol_exists("600519.SH", config=config)
     if last is None:
-        raise ProbeEmpty("已知标的查不到任何 bar")
-    return f"最新 bar {last.isoformat()}"
+        raise ProbeEmpty(Message(N_("No bars found for a known symbol")))
+    return Message(N_("latest bar %s"), last.isoformat())
 
 
 def _probe_sina_futures(config: Config) -> str:
@@ -317,8 +339,8 @@ def _probe_sina_futures(config: Config) -> str:
         config=config,
     )
     if frame.is_empty():
-        raise ProbeEmpty("主连合约没有返回任何 bar")
-    return f"{DOMESTIC_CONTRACTS[0][1]} 最近 {frame.height} 根日线"
+        raise ProbeEmpty(Message(N_("The continuous contract returned no bars")))
+    return Message(N_("%s: latest %d daily bars"), DOMESTIC_CONTRACTS[0][1], frame.height)
 
 
 def _probe_futures_exchange(exchange: str, reader=None) -> Callable[[Config], str]:
@@ -339,7 +361,7 @@ def _probe_futures_exchange(exchange: str, reader=None) -> Callable[[Config], st
         from cnequity.steps.derivatives import READERS
 
         day = _recent_weekday()
-        for _ in range(2):
+        for _attempt in range(2):
             try:
                 parsed = (reader or READERS[exchange]).fetch(day, kind="futures", config=config)
             except FuturesSourceBlocked as exc:
@@ -350,12 +372,20 @@ def _probe_futures_exchange(exchange: str, reader=None) -> Callable[[Config], st
                     day -= timedelta(days=1)
                 continue
             if parsed.futures.is_empty():
-                raise ProbeEmpty(f"{day.isoformat()} 期货文件无合约")
+                raise ProbeEmpty(Message(N_("%s futures file has no contracts"), day.isoformat()))
             extra = (
-                f"、期权 {parsed.options.height} 个合约" if not parsed.options.is_empty() else ""
+                Message(N_(", %d option contracts"), parsed.options.height)
+                if not parsed.options.is_empty()
+                else ""
             )
-            return f"{day.isoformat()} 期货 {parsed.futures.height} 个合约{extra}"
-        raise ProbeEmpty("最近两个工作日都没有取到期货日行情文件")
+            return Message(
+                N_("%s: %d futures contracts%s"), day.isoformat(), parsed.futures.height, extra
+            )
+        raise ProbeEmpty(
+            Message(
+                N_("No futures daily quote file was fetched for either of the last two weekdays")
+            )
+        )
 
     return probe
 
@@ -396,8 +426,8 @@ def _probe_cninfo(config: Config) -> str:
         payload = resp.json()
     total = int(payload.get("totalAnnouncement") or 0)
     if not total:
-        raise ProbeEmpty(f"{day.isoformat()} 无公告返回")
-    return f"{day.isoformat()} 共 {total} 条"
+        raise ProbeEmpty(Message(N_("%s returned no announcements"), day.isoformat()))
+    return Message(N_("%s: %d in total"), day.isoformat(), total)
 
 
 def _probe_ths_kline(config: Config) -> str:
@@ -410,8 +440,8 @@ def _probe_ths_kline(config: Config) -> str:
         timeout=TIMEOUT_SECONDS,
     )
     if '"data"' not in text:
-        raise ProbeEmpty("kline 响应里没有 data 字段")
-    return f"{len(text)} 字节 K 线"
+        raise ProbeEmpty(Message(N_("The kline response has no data field")))
+    return Message(N_("%d bytes of K-lines"), len(text))
 
 
 def _probe_ths_pages(config: Config) -> str:
@@ -419,8 +449,14 @@ def _probe_ths_pages(config: Config) -> str:
 
     text = _get(_INDUSTRY_URL, config=config, timeout=TIMEOUT_SECONDS)
     if "thshy" not in text:
-        raise ProbeBlocked("行业目录页返回的不是目录（多半是风控页）")
-    return f"{len(text)} 字节目录页"
+        raise ProbeBlocked(
+            Message(
+                N_(
+                    "The industry directory page is not a directory (most likely a risk-control page)"
+                )
+            )
+        )
+    return Message(N_("%d-byte directory page"), len(text))
 
 
 def _probe_baostock(config: Config) -> str:
@@ -462,8 +498,8 @@ def _probe_baostock(config: Config) -> str:
         finally:
             _finish_session(bs, config=config, blacklisted=blacklisted)
     if not rows:
-        raise ProbeEmpty(f"{day.isoformat()} 无行情返回")
-    return f"{rows} 行"
+        raise ProbeEmpty(Message(N_("%s returned no quotes"), day.isoformat()))
+    return Message(N_("%d rows"), rows)
 
 
 def _probe_bse(config: Config) -> str:
@@ -490,8 +526,14 @@ def _probe_bse(config: Config) -> str:
         response.raise_for_status()
         rows, total = _parse_page(response.text)
     if not rows or total <= 0:
-        raise ProbeEmpty("首分页没有行情行")
-    return f"首分页 {len(rows)} 行、全板宣称 {total} 行（未检查余页）"
+        raise ProbeEmpty(Message(N_("The first page has no quote rows")))
+    return Message(
+        N_(
+            "%d rows on the first page, %d claimed for the whole board (remaining pages not checked)"
+        ),
+        len(rows),
+        total,
+    )
 
 
 def _probe_sse(config: Config) -> str:
@@ -509,8 +551,8 @@ def _probe_sse(config: Config) -> str:
     text = resp.content.decode("gbk", "ignore")
     rows = [ln for ln in text.splitlines()[1:] if ln.split("\t")[0].strip().isdigit()]
     if not rows:
-        raise ProbeBlocked("上交所清单返回的不是代码表")
-    return f"{len(rows)} 只"
+        raise ProbeBlocked(Message(N_("The SSE listing did not return a code table")))
+    return Message(N_("%d symbols"), len(rows))
 
 
 def _probe_szse(config: Config) -> str:
@@ -525,17 +567,23 @@ def _probe_szse(config: Config) -> str:
     payload = resp.content
     # An xlsx is a zip; a WAF page is HTML. Length alone would pass either.
     if payload[:2] != b"PK":
-        raise ProbeBlocked("深交所导出返回的不是 xlsx")
-    return f"{len(payload)} 字节 xlsx"
+        raise ProbeBlocked(Message(N_("The SZSE export did not return an xlsx")))
+    return Message(N_("%d bytes of xlsx"), len(payload))
 
 
 def _probe_pboc(config: Config) -> str:
     from cnequity.adapters.pboc._tables import STATS_INDEX, get_text
 
     html = get_text(STATS_INDEX, config=config)
-    if "社会融资" not in html:
-        raise ProbeBlocked("调查统计司索引页里找不到社会融资条目")
-    return f"{len(html)} 字节索引页"
+    if "社会融资" not in html:  # i18n-ignore — text on the PBOC page
+        raise ProbeBlocked(
+            Message(
+                N_(
+                    "No total-social-financing entry on the Survey and Statistics Department index page"
+                )
+            )
+        )
+    return Message(N_("%d-byte index page"), len(html))
 
 
 def _probe_nbs(config: Config) -> str:
@@ -543,9 +591,9 @@ def _probe_nbs(config: Config) -> str:
 
     found = find_latest_release(config=config)
     if not found:
-        raise ProbeEmpty("最新发布列表里没有 PMI")
+        raise ProbeEmpty(Message(N_("No PMI in the latest releases list")))
     released, _url = found
-    return f"最新 PMI 发布 {released.isoformat()}"
+    return Message(N_("latest PMI release %s"), released.isoformat())
 
 
 def _probe_sw(config: Config) -> str:
@@ -566,8 +614,8 @@ def _probe_sw(config: Config) -> str:
         body = resp.content
     # An XLS starts with the OLE2 magic; a WAF page starts with '<'.
     if body[:2] not in (b"\xd0\xcf", b"PK"):
-        raise ProbeBlocked("申万成分下载返回的不是表格文件")
-    return f"{len(body)} 字节表格"
+        raise ProbeBlocked(Message(N_("The SW constituent download did not return a spreadsheet")))
+    return Message(N_("%d-byte spreadsheet"), len(body))
 
 
 def _probe_cni(config: Config) -> str:
@@ -575,44 +623,48 @@ def _probe_cni(config: Config) -> str:
 
     rows = fetch_cni_index_adjustments("399001.SZ", config=config)
     if rows.is_empty():
-        raise ProbeEmpty("国证历史成分文件没有有效行")
-    return f"399001.SZ 历史成分 {rows.height} 行"
+        raise ProbeEmpty(Message(N_("The CNI historical constituent file has no valid rows")))
+    return Message(N_("399001.SZ historical constituents: %d rows"), rows.height)
 
 
 PROBES: tuple[SourceProbe, ...] = (
     SourceProbe(
         key="tdx_protocol",
-        label="通达信行情主机（TCP 7709）",
+        label=N_("TDX quote hosts (TCP 7709)"),
         host="tdx (TCP)",
         powers=("daily_bars", "index_bars", "minute_bars", "trade_ticks", "instruments"),
         run=_probe_tdx,
-        note="二进制 TCP 协议，与所有 HTTP 源不共享风控面。海外直连通常超时。",
+        note=N_(
+            "Binary TCP protocol; shares no risk-control surface with any HTTP source. Direct connections from abroad usually time out."
+        ),
         blast_radius="tdx",
         config_key="tdx_protocol",
     ),
     SourceProbe(
         key="eastmoney_push2",
-        label="东财 push2（实时快照 / clist）",
+        label=N_("EastMoney push2 (live snapshot / clist)"),
         host="push2.eastmoney.com",
         powers=("daily_bars", "valuation_metrics", "trading_status", "hot_rank"),
         run=_probe_em_push2,
-        note="东财系共用一套风控，被封会成片失联。",
+        note=N_("EastMoney hosts share one risk control; a ban takes them out together."),
         blast_radius="eastmoney",
         config_key="eastmoney",
     ),
     SourceProbe(
         key="eastmoney_push2his",
-        label="东财 push2his（历史 K 线）",
+        label=N_("EastMoney push2his (historical K-lines)"),
         host="push2his.eastmoney.com",
         powers=("daily_bars", "commodity_bars", "sector_bars"),
         run=_probe_em_push2his,
-        note="与 push2 共用出口保护；被拒时暂停受影响源，保留状态并等待冷却后小范围验证。",
+        note=N_(
+            "Shares egress protection with push2; on a refusal the affected sources pause, keep their state, and are re-verified on a small scale after the cooldown."
+        ),
         blast_radius="eastmoney",
         config_key="eastmoney",
     ),
     SourceProbe(
         key="eastmoney_datacenter",
-        label="东财 datacenter（报表接口）",
+        label=N_("EastMoney datacenter (report API)"),
         host="datacenter-web.eastmoney.com",
         powers=(
             "corporate_actions",
@@ -622,84 +674,96 @@ PROBES: tuple[SourceProbe, ...] = (
             "share_unlock_schedule",
         ),
         run=_probe_em_datacenter,
-        note="分页返回，空页与结束页长得一样——本项目按 pages/count 对账。",
+        note=N_(
+            "Paginated, and an empty page looks just like the last page — this project reconciles by pages/count."
+        ),
         blast_radius="eastmoney",
         config_key="eastmoney",
     ),
     SourceProbe(
         key="sina",
-        label="新浪财经（日线 / 复权因子）",
+        label=N_("Sina Finance (daily bars / adjustment factors)"),
         host="finance.sina.com.cn",
         powers=("daily_bars", "adj_factors", "delisting_events"),
         run=_probe_sina,
-        note="复权因子唯一来源，覆盖到每只票的上市日。",
+        note=N_(
+            "The only source of adjustment factors, covering every stock back to its listing date."
+        ),
         blast_radius="sina",
         config_key="sina",
     ),
     SourceProbe(
         key="sina_futures",
-        label="新浪期货（主连 / 外盘日线）",
+        label=N_("Sina futures (continuous / overseas daily bars)"),
         host="stock2.finance.sina.com.cn",
         powers=("commodity_bars", "futures_bars", "futures_contracts"),
         run=_probe_sina_futures,
-        note="与 sina 日线不是同一台主机，但共用同一个按账号计的 456 配额。",
+        note=N_("Not the same host as Sina daily bars, but shares the same per-account 456 quota."),
         blast_radius="sina",
         config_key="sina",
     ),
     SourceProbe(
         key="shfe",
-        label="上期所官网（逐合约日行情，含上期能源）",
+        label=N_("SHFE website (per-contract daily quotes, including INE)"),
         host="www.shfe.com.cn",
         powers=("futures_bars", "futures_contracts"),
         run=_probe_futures_exchange("SHF"),
-        note="一次请求同时覆盖上期所与上期能源的品种；休市日返回 404 页面。",
+        note=N_(
+            "One request covers both SHFE and INE products; a non-trading day returns a 404 page."
+        ),
         blast_radius="shfe",
         config_key="futures_exchange",
     ),
     SourceProbe(
         key="dce",
-        label="大商所官网（逐合约日行情，dce_route = official）",
+        label=N_("DCE website (per-contract daily quotes, dce_route = official)"),
         host="www.dce.com.cn",
         powers=("futures_bars", "futures_contracts"),
         run=_probe_dce_official,
-        note="此前观测到 412 挑战，默认路由走新浪；仅显式诊断，绿色只证明期货文件可达，不证明官方字段映射已验收。",
+        note=N_(
+            "A 412 challenge was observed before, so the default route goes through Sina; explicit diagnosis only. Green proves only that the futures file is reachable, not that the official field mapping has been accepted."
+        ),
         blast_radius="dce",
         config_key="futures_exchange",
         manual_only=True,
     ),
     SourceProbe(
         key="czce",
-        label="郑商所官网（逐合约日行情）",
+        label=N_("CZCE website (per-contract daily quotes)"),
         host="www.czce.com.cn",
         powers=("futures_bars", "futures_contracts"),
         run=_probe_futures_exchange("CZC"),
-        note="2015-10 前走逗号分隔旧存档；休市日返回「当日无数据」页。",
+        note=N_(
+            'Before 2015-10 it reads the old comma-separated archive; a non-trading day returns a "no data today" page.'
+        ),
         blast_radius="czce",
         config_key="futures_exchange",
     ),
     SourceProbe(
         key="gfex",
-        label="广期所官网（逐合约日行情）",
+        label=N_("GFEX website (per-contract daily quotes)"),
         host="www.gfex.com.cn",
         powers=("futures_bars", "futures_contracts"),
         run=_probe_futures_exchange("GFE"),
-        note="POST 接口；休市日返回只有全零「总计」的 200。",
+        note=N_('POST API; a non-trading day returns a 200 with only an all-zero "total" row.'),
         blast_radius="gfex",
         config_key="futures_exchange",
     ),
     SourceProbe(
         key="cffex",
-        label="中金所官网（逐合约日行情）",
+        label=N_("CFFEX website (per-contract daily quotes)"),
         host="www.cffex.com.cn",
         powers=("futures_bars", "option_bars", "futures_contracts", "option_contracts"),
         run=_probe_futures_exchange("CFE"),
-        note="交易所自己发布的文件；休市日返回 302 而不是空文件，探针会往前找最近的交易日。",
+        note=N_(
+            "Files the exchange publishes itself; a non-trading day returns a 302 rather than an empty file, so the probe walks back to the latest trading day."
+        ),
         blast_radius="cffex",
         config_key="futures_exchange",
     ),
     SourceProbe(
         key="cninfo",
-        label="巨潮 cninfo（公告全文索引）",
+        label=N_("CNINFO (full-text announcement index)"),
         host="www.cninfo.com.cn",
         powers=("announcement_index", "regulatory_events"),
         run=_probe_cninfo,
@@ -709,92 +773,104 @@ PROBES: tuple[SourceProbe, ...] = (
     ),
     SourceProbe(
         key="ths_kline",
-        label="同花顺 d.10jqka（K 线）",
+        label=N_("THS d.10jqka (K-lines)"),
         host="d.10jqka.com.cn",
         powers=("daily_bars", "sector_bars", "index_bars"),
         run=_probe_ths_kline,
-        note="深历史与板块行情依赖此端点；配置间隔是客户端保护值，不是源方配额。",
+        note=N_(
+            "Deep history and sector quotes depend on this endpoint; the configured interval is client-side protection, not the source's quota."
+        ),
         blast_radius="ths",
         config_key="ths",
     ),
     SourceProbe(
         key="ths_pages",
-        label="同花顺 q.10jqka（板块目录页）",
+        label=N_("THS q.10jqka (sector directory page)"),
         host="q.10jqka.com.cn",
         powers=("sector_bars",),
         run=_probe_ths_pages,
-        note="目录页曾在连续请求后返回 401；仅显式诊断，日常优先复用目录缓存。",
+        note=N_(
+            "The directory page has returned 401 after consecutive requests; explicit diagnosis only, and daily runs prefer the directory cache."
+        ),
         blast_radius="ths_pages",
         config_key="ths_pages",
         manual_only=True,
     ),
     SourceProbe(
         key="baostock",
-        label="baostock（估值 / ST / 退市股历史）",
+        label=N_("baostock (valuation / ST / delisted-stock history)"),
         host="baostock.com",
         powers=("valuation_metrics", "trading_status", "daily_bars"),
         run=_probe_baostock,
-        note="登录、查询、退出均占请求；曾遇到 IP 黑名单，默认只使用被动采集证据。",
+        note=N_(
+            "Login, query and logout each cost a request; it has blacklisted IPs before, so by default only passive ingest evidence is used."
+        ),
         blast_radius="baostock",
         config_key="baostock",
         manual_only=True,
     ),
     SourceProbe(
         key="bse",
-        label="北交所官方行情板（首分页）",
+        label=N_("BSE official quote board (first page)"),
         host="www.bse.cn",
         powers=("instruments", "trading_status", "daily_bars"),
         run=_probe_bse,
-        note="一次页面握手加一页行情；只证明当前接口可达，不证明全板分页完整或某日历史。",
+        note=N_(
+            "One page handshake plus one page of quotes; proves only that the current API is reachable, not that the whole board paginates completely or any past day."
+        ),
         blast_radius="bse",
         config_key="bse",
     ),
     SourceProbe(
         key="exchange_sse",
-        label="上交所官方清单",
+        label=N_("SSE official listing"),
         host="query.sse.com.cn",
         # Also the first link of the daily_bars failover chain: one whole-board
         # request answers for a session's worth of symbols at once.
         powers=("trading_status", "daily_bars"),
         run=_probe_sse,
-        note="交易所官方口径，与东财不同风控面，可作备源。",
+        note=N_(
+            "The exchange's official definition, on a different risk-control surface from EastMoney; usable as a backup source."
+        ),
         blast_radius="exchange",
         config_key="exchange",
     ),
     SourceProbe(
         key="exchange_szse",
-        label="深交所官方清单",
+        label=N_("SZSE official listing"),
         host="www.szse.cn",
         powers=("trading_status", "daily_bars"),
         run=_probe_szse,
-        note="同上。",
+        note=N_("Same as above."),
         blast_radius="exchange",
         config_key="exchange",
     ),
     SourceProbe(
         key="sw",
-        label="申万研究（行业分类历史）",
+        label=N_("SWS Research (industry classification history)"),
         host="www.swsresearch.com",
         powers=("industry_members", "industry_index"),
         run=_probe_sw,
-        note="XLS 下载；返回 HTML 即为风控页。",
+        note=N_("XLS download; an HTML answer is a risk-control page."),
         blast_radius="sw",
         config_key="sw",
     ),
     SourceProbe(
         key="cni",
-        label="国证指数历史成分文件",
+        label=N_("CNI index historical constituent files"),
         host="www.cnindex.com.cn",
         powers=("index_constituents",),
         run=_probe_cni,
-        note="下载并解析完整历史文件；仅显式诊断，日常优先用采集校验证据。",
+        note=N_(
+            "Downloads and parses the full history file; explicit diagnosis only, and daily runs prefer ingest evidence."
+        ),
         blast_radius="cni",
         config_key="cni",
         manual_only=True,
     ),
     SourceProbe(
         key="pboc",
-        label="人民银行 调查统计司（社融）",
+        label=N_("PBOC Survey and Statistics Department (total social financing)"),
         host="www.pbc.gov.cn",
         powers=("macro_indicators",),
         run=_probe_pboc,
@@ -804,11 +880,11 @@ PROBES: tuple[SourceProbe, ...] = (
     ),
     SourceProbe(
         key="nbs",
-        label="国家统计局（PMI 发布）",
+        label=N_("NBS (PMI release)"),
         host="www.stats.gov.cn",
         powers=("macro_indicators",),
         run=_probe_nbs,
-        note="用于交叉核验东财的 PMI 取值。",
+        note=N_("Used to cross-check EastMoney's PMI values."),
         blast_radius="nbs",
         config_key="nbs",
     ),
@@ -895,7 +971,12 @@ def _recent_passive_result(
         powers=list(probe.powers),
         status=ProbeStatus.OK.value,
         latency_ms=None,
-        detail=f"采集校验通过：{payload['dataset']} {payload['rows']} 行 ({when.isoformat()})",
+        detail=Message(
+            N_("Ingest validation passed: %s %s rows (%s)"),
+            payload["dataset"],
+            payload["rows"],
+            when.isoformat(),
+        ),
         note=probe.note,
         blast_radius=probe.blast_radius,
         sample_kind="passive",
@@ -923,7 +1004,7 @@ def run_probe(probe: SourceProbe, config: Config) -> ProbeResult:
             **base,
             status=ProbeStatus.SKIPPED.value,
             latency_ms=None,
-            detail="配置里已关闭",
+            detail=Message(N_("Disabled in the config")),
         )
 
     started = time.monotonic()
@@ -941,7 +1022,12 @@ def validate_vantage(vantage: str) -> None:
     import re
 
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", vantage):
-        raise ValueError("vantage 必须是 1–64 位字母/数字/点/下划线/连字符，且以字母或数字开头")
+        raise ValueError(
+            _(
+                "vantage must be 1–64 letters, digits, dots, underscores or hyphens, "
+                "starting with a letter or digit"
+            )
+        )
 
 
 def run_probes(
@@ -967,7 +1053,11 @@ def run_probes(
     validate_vantage(vantage)
     unknown = sorted(set(only or []) - set(PROBES_BY_KEY))
     if unknown:
-        raise ValueError(f"未知探测源：{', '.join(unknown)}；用 cne sources probe --list 查看")
+        raise ValueError(
+            _("Unknown probe sources: {unknown}; see cne sources probe --list").format(
+                unknown=", ".join(unknown)
+            )
+        )
     selected = PROBES if only is None else tuple(PROBES_BY_KEY[k] for k in dict.fromkeys(only))
     try:
         pkg_version = version("cnequity")
@@ -990,7 +1080,7 @@ def run_probes(
                 powers=list(probe.powers),
                 status=ProbeStatus.SKIPPED.value,
                 latency_ms=None,
-                detail="高风险/高成本端点；需用 --only 显式探测",
+                detail=Message(N_("High-risk/costly endpoint; probe it explicitly with --only")),
                 note=probe.note,
                 blast_radius=probe.blast_radius,
             )

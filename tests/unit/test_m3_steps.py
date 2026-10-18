@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 import pytest
@@ -314,7 +314,44 @@ def test_trading_status_rejects_partial_feed(cfg, monkeypatch):
         reference.step_trading_status(cfg, date(2024, 6, 28), "run-partial", {})
 
 
-def test_trading_status_uses_conservative_cached_snapshot_on_source_outage(cfg, monkeypatch):
+def _write_status_history(cfg, rows: list[tuple[str, date, str, str]]) -> None:
+    """Curated trading_status rows as (symbol, trade_date, status, source)."""
+    for month in sorted({day.strftime("%Y-%m") for _, day, _, _ in rows}):
+        part = cfg.curated_root / "trading_status" / f"trade_date={month}"
+        part.mkdir(parents=True, exist_ok=True)
+        selected = [row for row in rows if row[1].strftime("%Y-%m") == month]
+        pl.DataFrame(
+            {
+                "symbol": [symbol for symbol, *_ in selected],
+                "trade_date": [day for _, day, _, _ in selected],
+                "is_trading": [status == "normal" for *_, status, _ in selected],
+                "status": [status for *_, status, _ in selected],
+                "risk_warning": [False] * len(selected),
+                "source": [source for *_, source in selected],
+                "data_version": ["v1"] * len(selected),
+                "fetched_at": [datetime(2026, 1, 1, tzinfo=timezone.utc)] * len(selected),
+            }
+        ).write_parquet(part / "part-merged.parquet")
+
+
+def _staged_status(cfg) -> pl.DataFrame:
+    staged = list((cfg.staging_root / "trading_status").rglob("*.parquet"))
+    return pl.concat([pl.read_parquet(path) for path in staged], how="diagonal_relaxed").sort(
+        "symbol"
+    )
+
+
+def _eastmoney_down(reference, monkeypatch, symbols: list[str]) -> None:
+    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: symbols)
+    monkeypatch.setattr(
+        reference,
+        "fetch_trading_status",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("EastMoney down")),
+    )
+
+
+def test_trading_status_outage_writes_no_row_for_symbols_without_evidence(cfg, monkeypatch):
+    """An unknown symbol is missing, not halted — and the step says so."""
     from cnequity.domain.schemas import with_provenance
     from cnequity.steps import reference
 
@@ -332,21 +369,83 @@ def test_trading_status_uses_conservative_cached_snapshot_on_source_outage(cfg, 
         source="eastmoney",
         data_version="v1",
     ).write_parquet(status_part / "part-merged.parquet")
-    monkeypatch.setattr(reference, "load_symbols", lambda _cfg: ["600519.SH", "000001.SZ"])
-    monkeypatch.setattr(
-        reference,
-        "fetch_trading_status",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("EastMoney down")),
-    )
+    _eastmoney_down(reference, monkeypatch, ["600519.SH", "000001.SZ"])
 
     result = reference.step_trading_status(cfg, date(2024, 6, 28), "run-cached", {})
 
     finding = result["context_updates"]["audit_findings"][-1]
     assert finding["check"] == "trading_status_cached_fallback"
-    staged = list((cfg.staging_root / "trading_status").rglob("*.parquet"))
-    out = pl.read_parquet(staged[0]).sort("symbol")
-    assert out["status"].to_list() == ["suspended", "normal"]
+    assert finding["coverage"] == [
+        {
+            "trade_date": "2024-06-28",
+            "exchange_boards": 0,
+            "carried_forward": 1,
+            "without_row": 1,
+        }
+    ]
+    assert result["status"] == "warning"
+    assert result["coverage_status"] == "partial"
+    out = _staged_status(cfg)
+    assert out["symbol"].to_list() == ["600519.SH"]
+    assert out["status"].to_list() == ["normal"]
     assert out["source"].unique().to_list() == ["eastmoney_cached"]
+
+
+def test_trading_status_cache_survives_a_long_holiday(cfg, monkeypatch):
+    """09-30 → 10-08 is eight calendar days but one session apart."""
+    from cnequity.steps import reference
+
+    _write_status_history(
+        cfg,
+        [
+            ("600519.SH", date(2026, 9, 30), "normal", "eastmoney"),
+            ("000711.SZ", date(2026, 9, 30), "suspended", "eastmoney"),
+        ],
+    )
+    _eastmoney_down(reference, monkeypatch, ["600519.SH", "000711.SZ"])
+
+    result = reference.step_trading_status(cfg, date(2026, 10, 8), "run-holiday", {})
+
+    assert "coverage_status" not in result
+    out = _staged_status(cfg)
+    assert out["symbol"].to_list() == ["000711.SZ", "600519.SH"]
+    assert out["status"].to_list() == ["suspended", "normal"]
+    assert out["trade_date"].unique().to_list() == [date(2026, 10, 8)]
+
+
+def test_trading_status_cache_never_chains_on_its_own_rows(cfg, monkeypatch):
+    """A carried row is not evidence: only the first-hand reading is carried."""
+    from cnequity.steps import reference
+
+    _write_status_history(
+        cfg,
+        [
+            ("600519.SH", date(2026, 9, 30), "normal", "eastmoney"),
+            ("000001.SZ", date(2026, 9, 30), "normal", "eastmoney"),
+            # The partial 10-08 the old cache produced: one name carried,
+            # the other missing, and a third known only from the cache.
+            ("600519.SH", date(2026, 10, 8), "normal", "eastmoney_cached"),
+            ("300750.SZ", date(2026, 10, 8), "suspended", "eastmoney_cached"),
+        ],
+    )
+    _eastmoney_down(reference, monkeypatch, ["600519.SH", "000001.SZ", "300750.SZ"])
+
+    result = reference.step_trading_status(cfg, date(2026, 10, 9), "run-chain", {})
+
+    out = _staged_status(cfg)
+    assert out["symbol"].to_list() == ["000001.SZ", "600519.SH"]
+    assert out["status"].to_list() == ["normal", "normal"]
+    assert result["coverage_status"] == "partial"
+
+
+def test_trading_status_cache_expires_after_five_sessions(cfg, monkeypatch):
+    from cnequity.steps import reference
+
+    _write_status_history(cfg, [("600519.SH", date(2026, 9, 22), "normal", "eastmoney")])
+    _eastmoney_down(reference, monkeypatch, ["600519.SH"])
+
+    with pytest.raises(RuntimeError, match="EastMoney down"):
+        reference.step_trading_status(cfg, date(2026, 10, 8), "run-expired", {})
 
 
 def test_trading_status_cached_fallback_reads_only_recent_window(cfg, monkeypatch):
@@ -376,7 +475,7 @@ def test_trading_status_cached_fallback_reads_only_recent_window(cfg, monkeypatc
 
     reference.step_trading_status(cfg, date(2024, 6, 28), "run-bounded-cache", {})
 
-    assert requested["start"] == date(2024, 6, 23)
+    assert requested["start"] == date(2024, 6, 21)
     assert requested["end"] == date(2024, 6, 27)
 
 

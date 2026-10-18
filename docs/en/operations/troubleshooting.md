@@ -4,6 +4,10 @@ Locate the problem by symptom: for installation/path problems, start with `docto
 
 For first-time use, see [Quickstart](../getting-started/quickstart.md); for request cost and protection mechanisms, see [Fetch policy](fetch-policy.md).
 
+## Symptom: CNI historical adjustment file does not exist
+
+When the publisher returns “样本历史调样文件不存在”, the client raises `CNI publisher does not serve adjustment history`. The historical file is unavailable; this is not a valid empty membership list. Retain existing history and failure records. Recovery requires complete official historical membership books or a verified chain of adjustment announcements. Current constituents and weights cannot replace historical constituents and weights or justify advancing historical coverage watermarks.
+
 ## Symptom: EastMoney datacenter `code=9501` / `列不存在`
 
 | Observation | Cause | Fix |

@@ -297,3 +297,44 @@ def test_archive_disabled_keeps_write_fetched_compatibility(tmp_path):
     )
     assert result["rows_written"] == 1
     assert list((config.staging_root / "corporate_actions").rglob("*.parquet"))
+
+
+def test_pdf_payloads_are_stored_uncompressed_unless_a_gzip_copy_exists(tmp_path):
+    import gzip
+    import hashlib
+    from datetime import datetime, timezone
+
+    archive = RawPayloadArchive(tmp_path / "meta")
+    stamp = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    pdf = b"%PDF-1.4 report body"
+    record = archive.archive(
+        "financial_statement_items", pdf, source="cninfo", payload_format="pdf", captured_at=stamp
+    )
+    assert record.compression == "none" and record.payload_path.endswith(".bin")
+    assert archive.read(record) == pdf
+    text = archive.archive(
+        "financial_statement_items",
+        b"{}",
+        source="cninfo",
+        payload_format="json",
+        captured_at=stamp,
+    )
+    assert text.compression == "gzip"
+
+    # An observation archived before this change keeps its gzip form.
+    older = b"%PDF-1.4 archived earlier"
+    legacy = RawPayloadArchive(tmp_path / "legacy")
+    base = (
+        tmp_path
+        / "legacy"
+        / "raw"
+        / "financial_statement_items"
+        / "source=cninfo"
+        / "captured_date=2026-10-17"
+    )
+    base.mkdir(parents=True)
+    (base / f"{hashlib.sha256(older).hexdigest()}.gz").write_bytes(gzip.compress(older, mtime=0))
+    again = legacy.archive(
+        "financial_statement_items", older, source="cninfo", payload_format="pdf", captured_at=stamp
+    )
+    assert again.compression == "gzip" and legacy.read(again) == older

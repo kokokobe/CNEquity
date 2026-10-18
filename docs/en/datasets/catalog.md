@@ -1,14 +1,18 @@
 # Dataset catalog
 
-cnequity's registered datasets include curated data and derived data (`adj_factors`, `industry_index`, `futures_continuous`, `option_greeks`, `delisting_events`, plus `minute_bars_15m` / `minute_bars_30m` / `minute_bars_60m`, which are not computed by default and are derived on request), grouped by stock-selection use into ten tiers, L0–L9. There are also **on-demand** datasets that stay off the curated main path. Among them, the intraday datasets `minute_bars` / `minute_bars_5m` are off by default and must be enabled explicitly in `[minute_bars]`; trade ticks (`trade_ticks`) are also off by default, with the switch in a **separate** `[trade_ticks]` section. The futures/options main tables (`futures_contracts`, `option_contracts`, `futures_bars`, `option_bars`) are off by default, are switched on in `[futures]`, and are not part of `cne init` (see [Product boundaries](../architecture/overview.md)).
+This page answers two questions: which datasets the lake registers, and where each one comes from and how far back it goes. Find a dataset by the L0–L9 tiers below, then check its collection semantics and history limits; for query code to copy, go to the [Query guide](query-guide.md).
 
-The registry includes optional entries, compatibility entries and placeholders for retired sources: `flash_news_wire` is a compatibility read for news, and `economic_calendar` is a placeholder for a retired source. The registered count is neither the number of physically separate tables nor the number of datasets collected by default.
+| To look up | Go to |
+|------|--------|
+| Columns, types and units | [Fields and units](schema.md) |
+| Each source's limits and update frequency | [Sources and history limits](sources.md) |
+| Start dates and history mode from code | `list_datasets()` → `coverage_start` / `coverage_end` / `history_mode` / `backfill_source` |
 
-Find data by the L0–L9 tiers below first, then check the collection semantics and history limits; for query examples to copy, go to the [Query guide](query-guide.md).
-
-Authoritative field definitions: [schema.md](schema.md). Per-source limits: [sources.md](sources.md).
-
-Programmatic availability start and history mode: `list_datasets()` → `coverage_start` / `coverage_end` / `history_mode` / `backfill_source`.
+!!! note "Registered does not mean collected by default"
+    - Off by default and enabled explicitly: minute bars `minute_bars` / `minute_bars_5m` (`[minute_bars]`), trade ticks `trade_ticks` (a separate `[trade_ticks]` section), and the four futures/options main tables `futures_contracts`, `option_contracts`, `futures_bars`, `option_bars` (`[futures]`, not part of `cne init`; see [Product boundaries](../architecture/overview.md)).
+    - Derived datasets are computed from ingested data: `adj_factors`, `industry_index`, `futures_continuous`, `option_greeks`, `delisting_events`; `minute_bars_15m` / `30m` / `60m` are not computed by default and are derived on request.
+    - **On-demand** datasets stay off the curated main path. `flash_news_wire` is a compatibility read for news, and `economic_calendar` is a placeholder for a retired source.
+    - So the registered count is neither the number of physical tables nor the number collected by default.
 
 **Legend** (tables below): semantics `by_date` / `snapshot`; watermark ✓ = maintains a `meta/state` watermark.
 
@@ -181,6 +185,10 @@ Registry source code: `domain/datasets.py` (`DatasetSpec`), `domain/schemas.py` 
 | trading_calendar | trade_date | trade_date | by_date | ✓ | tdx_protocol | Fallback source: exchange CSV; seeded for 2016–2027 |
 | trading_status | trade_date (monthly) | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST backfill; derived suspensions are written to monthly partitions. `status` (normal/suspended/**delisted**) and `risk_warning` (ST/*ST) are two columns — the old single column let a suspension overwrite the ST flag; delisted rows are determined from `instruments` and marked `derived_delisted`. Old lakes are read compatibly; for the physical migration see [schema](schema.md#trading_status) |
 
+The daily Beijing instrument catalogue attempts to enrich listing dates from confirmed same-day CNINFO IPO events. Subscription, prospectus and forecast dates do not establish listing dates. If that source is unavailable, the roster and unknown dates remain with a warning; compaction preserves dates already established.
+
+Each day the instrument catalogue asks Baostock, EastMoney and the exchanges only about securities the lake has no listing date for; dates it already holds, including repaired ones, are carried forward. A security no source can date is not asked about again for 7 days, while a new listing is asked about daily until it has a date.
+
 ## L1 Market data
 
 | Dataset | Partition key | Primary key | Semantics | Watermark | Primary source | Notes |
@@ -210,12 +218,20 @@ The two intraday datasets share one set of quality checks: duplicate primary key
 
 | Dataset | Partition key | Primary key | Semantics | Watermark | Primary source | Notes |
 |--------|--------|------|------|------|------|------|
-| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | Partitioned by report period; `cne backfill` starts from 2001 by default (chunked with `--start`/`--end`); PIT is cut off by both `announce_date` and `fetched_at`; baostock is not used for FSI |
+| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | Partitioned by report period; `cne backfill` starts from 2001 by default (chunked with `--start`/`--end`); daily ingestion retains observed announcements and adds explicitly marked original-disclosure reconstructions; baostock is not used for FSI |
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | Backfill: baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 | share_structure | change_date | symbol, change_date, announce_date | by_date PIT | — | eastmoney | Total shares / float / restricted / free float. **Scanned by change date, not by report period**: END_DATE is the share-change date, so requesting only quarter-end dates is not enough |
 | shareholder_counts | count_date | symbol, count_date, announce_date | by_date PIT | — | eastmoney | Number of shareholders and average holding per account, an input for ownership concentration. **Also disclosed at ten-day-period and month ends**: do not filter by quarter-end dates only |
 | top_holders | record_date | symbol, record_date, holder_scope, holder_rank, holder_name, announce_date | by_date PIT | — | eastmoney | One table, two scopes: `holder_scope=total` (top 10 shareholders) / `float` (top 10 float shareholders). Disclosure dates do not necessarily fall at quarter end |
+
+DMSK `NOTICE_DATE` may describe a later republication of comparative figures. LICO supplies the original disclosure date; without a matching LICO record the later date is retained. Daily ingestion preserves the republication and adds `source=eastmoney_backfill` only for items lacking an original-date vintage. Reconstructed values may be restated: default `load(..., as_of=...)` best-effort reads expose them with `pit_is_exact=false`; `pit_mode="strict"` excludes reconstructions and requires observation no later than the query date.
+
+Preview existing-data repairs with `cne repair financial-announcements`, then add `--apply` to publish a retained revision. This only reconstructs existing items with original-date evidence. Missing historical items still require report-period collection with `cne backfill financial_statement_items --start <date> --end <date>`. Check coverage separately by source, item and report period; one complete statement does not establish complete detail coverage.
+
+Vendor zero placeholders in PE, PB, PS and total/float market cap are stored as null; negative valuation ratios remain valid. Preview old-data repairs with `cne repair missing-values valuation_metrics`, then add `--apply` to publish a retained revision.
+
+`cne repair financial-originals --symbols <stock symbols> --start-year 2016 --end-year 2024 --refresh-sources` enumerates the issuer’s complete CNINFO disclosure-date window to identify the earliest original annual report, archives its PDF and extracts identifiable current-year consolidated items. Preview is the default; `--apply` appends `source=cninfo_original` vintages. `--max-reports` bounds each batch, and repeated runs skip reports already containing original items. After a parser upgrade, `--reparse` can replay old archives offline to add newly identified cells; unchanged facts and disclosure times retain their first observation time. Use `--all-stocks` instead of `--symbols` to batch through the lake catalogue; pass the returned `next_cursor` to `--after` so failed reports do not block later issuers. Retrying without a cursor still selects unrecovered failures. Comparative figures, parent-only statements, revised editions, scans and ambiguous columns or units are excluded. `--quarter` selects Q1, Q2 (half-year), Q3 or the default Q4 (annual), locating and archiving each original report separately. Income and cash flow use year-to-date figures only. Four-column Q3 income tables require explicit column order and four populated cells before selecting the cumulative column; quarter-only figures never fill cumulative items. Online evidence collection does not rely on title keywords or category filters to establish first disclosure. The record count determines pagination, including a partial final page, and unique announcements must reconcile; incomplete windows remain failures. Combined group/company annual books additionally require explicit group/group/company/company roles and two current/prior-year date pairs. Only the current consolidated column is used; expense cells with unresolved sign conventions remain missing. Split asset/liability sections and three-column current/restated-opening/prior-end balances also require explicit date order. A bare “yuan” unit is accepted only when the report explicitly establishes both RMB functional currency and translation of foreign statements into RMB presentation; functional currency alone is insufficient. Support remains limited to identifiable items and layouts, not every issuer, quarter or detail. Publication and actual observation times stay separate: an old report retrieved today does not become historically observed strict PIT evidence. Original figures take precedence over later reconstructions for the same announcement date.
 
 ## L4 Capital flows
 
@@ -254,7 +270,17 @@ watermarks and compact never need to know which path was taken.
 Snapshot datasets accumulate only "one membership record per day"; historical percentiles need partitions accumulated over many days.
 
 Historical backfill (C2): `cne backfill industry_members` = Shenwan SwClass2021 monthly (`classification_system=sw`, from 2020);
-`cne backfill index_constituents` = CNI sample-adjustment history (399001/399006, from about 2021-12). CSI 000300/000905 still has only the daily EM snapshot.
+`cne backfill index_constituents` = CNI sample-adjustment history (399001/399006, from about 2021-12). Other indices, including CSI 300 and STAR 50, rely on accumulated EM snapshots and the dated official files described below; earlier history can remain missing. Current membership cannot be backdated without survivorship bias; the EM adapter accepts only the current closed session. Historical reads use retained snapshots, and membership before the earliest snapshot is unknown.
+
+Neither EM nor CNI adjustment history supplies weights: `weight=null` means unavailable and must not be treated as a real zero or inferred equal weight. `cne repair missing-values index_constituents` reports each index/source's snapshot range and count and previews replacement of old zero placeholders. `--apply` publishes a retained revision without inventing historical membership or weights.
+
+`cne repair index-snapshots --refresh-sources` fetches publicly available official files for CSI 300, STAR 50, Shenzhen Component and ChiNext. Preview is the default; `--apply` replaces the complete index snapshot at the file's actual date and retains old revisions. Percentage weights become ratios summing to approximately 1, with source `exchange` or `cni_weights`. Membership and weight files can have different dates; weights are never filled across dates, and later weightless observations cannot erase verified same-date weights. This recovers dated files still offered by the publisher and archived snapshots, not full weights for arbitrary historical dates or backdated current members.
+
+`cne repair index-history --refresh-sources` archives missing official attachments from the reviewed announcement catalog. Subsequent runs replay offline by default; `--apply` updates the selected index. SZSE Component (399001.SZ) is the default, covering 2015-05-20 through 2026-09-30. `--index-symbol 000688.SH` selects STAR 50, covering its live launch on 2020-07-23 through 2026-09-30; the retrospective base date is not treated as a live membership anchor. After-close STAR 50 changes start on the next known trading session, and explicit no-change notices are also verified. It writes whole books on actual effective dates and replaces older membership-only observations within the range, so stale month-end books cannot hide temporary changes. The package includes a fixed-date publisher closing reference with its original URL and payload digest; this reference is not a freshly fetched response. Announcements and date evidence are bound to original-byte digests. Missing or changed attachments, inconsistent transitions, or disagreement with retained official weighted cohorts prevent updates. Unknown historical weights remain null, and complete verified official dated weights are retained. Other indices and dates outside the catalog range remain uncovered; current membership, current weights and fund holdings must not be backdated.
+
+`load("index_constituents", as_of="YYYY-MM-DD")` returns each index's latest whole retained snapshot on or before that date. Removed members are not carried forward individually, and dates before the earliest snapshot return an empty table. Use `start`/`end` to read a multi-date snapshot series.
+
+An EM response containing a future adjustment rejects the whole snapshot: removing future additions cannot recover old members already absent from the current roster. Retry collection once the adjustment takes effect.
 
 ## L6 Macro
 

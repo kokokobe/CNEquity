@@ -30,6 +30,7 @@ from cnequity.domain.pit import (  # noqa: F401
     PitMode,
     PitQuality,
 )
+from cnequity.i18n import N_
 
 FetchSemantics = Literal["by_date", "snapshot"]
 HistoryMode = Literal["by_date", "snapshot_with_backfill", "snapshot_only"]
@@ -217,7 +218,7 @@ _UNIT_CONTRACT_DEFAULTS: dict[str, UnitContract] = {
     "share_unlock_schedule": {"unlock_shares": "share", "unlock_ratio": "fraction"},
     "institutional_holdings": {
         "holding_shares": "share",
-        "holding_ratio": "fraction",
+        "holding_ratio": "percent",
         "holding_mv": "CNY",
     },
     "analyst_consensus": {
@@ -285,17 +286,18 @@ Tier = Literal["L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9"]
 
 TIERS: tuple[Tier, ...] = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
 
+#: Catalog messages: translate where shown, English in JSON.
 TIER_LABELS: dict[Tier, str] = {
-    "L0": "基础参考",
-    "L1": "行情",
-    "L2": "公司事件",
-    "L3": "基本面",
-    "L4": "资金面",
-    "L5": "结构行业",
-    "L6": "宏观",
-    "L7": "舆情 / 轮动",
-    "L8": "风险合规",
-    "L9": "衍生品",
+    "L0": N_("Reference"),
+    "L1": N_("Prices"),
+    "L2": N_("Corporate events"),
+    "L3": N_("Fundamentals"),
+    "L4": N_("Capital flows"),
+    "L5": N_("Industry structure"),
+    "L6": N_("Macro"),
+    "L7": N_("Sentiment / rotation"),
+    "L8": N_("Risk and compliance"),
+    "L9": N_("Derivatives"),
 }
 
 
@@ -1285,6 +1287,7 @@ _SPECS = [
     DatasetSpec(
         "institutional_holdings",
         primary_source="eastmoney",
+        schema_version=2,
         tier="L4",
         partition_col="report_period",
         partition_granularity="quarter",

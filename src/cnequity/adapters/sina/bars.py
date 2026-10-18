@@ -43,6 +43,7 @@ import polars as pl
 from cnequity.adapters.numeric import finite_int64
 from cnequity.adapters.sina.adj_factors import to_sina_symbol
 from cnequity.domain.http_policy import record_http_response
+from cnequity.domain.market_time import shanghai_today
 from cnequity.domain.rate_limit import source_request
 from cnequity.domain.schemas import DAILY_BARS_SCHEMA
 
@@ -190,7 +191,7 @@ def _datalen_for_window(start: date | None, *, today: date | None = None) -> int
     """
     if start is None:
         return _FULL_HISTORY_LEN
-    anchor = today or date.today()
+    anchor = today or shanghai_today()
     calendar_days = max(0, (anchor - start).days) + 1
     return min(
         _FULL_HISTORY_LEN,

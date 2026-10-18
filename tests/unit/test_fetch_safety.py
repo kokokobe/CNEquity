@@ -210,7 +210,7 @@ def test_only_one_recovery_probe_runs_and_success_reopens_source(tmp_path, monke
     with cfg.source_request("sina"):
         # A slow but live probe must retain its sole slot beyond ten minutes.
         now[0] = 1_101
-        with pytest.raises(SourceCoolingDown, match="恢复探测"):
+        with pytest.raises(SourceCoolingDown, match="recovery probe"):
             with Config(data_root=tmp_path, source_intervals={"sina": 0}).source_request("sina"):
                 pytest.fail("parallel probe must not leave process")
     assert cooldown_status(cfg.rate_limit_root, "sina")["probe_required"] is False
@@ -328,6 +328,7 @@ def test_empty_symbol_scope_cannot_start_backfill(scope):
     assert "--symbols" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_clean_dry_run_cannot_reconcile_run_state(tmp_path):
     path = tmp_path / "missing-config.toml"
     result = CliRunner().invoke(
@@ -488,7 +489,7 @@ def test_unknown_probe_names_fail_before_any_probe(tmp_path, monkeypatch, keys):
     from cnequity.diagnostics import source_health
 
     monkeypatch.setattr(source_health, "run_probe", lambda *args: pytest.fail("network probe"))
-    with pytest.raises(ValueError, match="未知探测源"):
+    with pytest.raises(ValueError, match="Unknown probe sources"):
         source_health.run_probes(Config(data_root=tmp_path), vantage="local", only=keys)
 
 

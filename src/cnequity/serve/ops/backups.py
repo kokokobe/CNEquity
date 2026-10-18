@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 
 from cnequity.domain.datasets import DATASETS
+from cnequity.i18n import _
 from cnequity.serve.ops.catalog import OpsError
 from cnequity.storage.snapshots import SnapshotStore, _reject_symlink_path
 
@@ -31,10 +32,12 @@ def create_root(config, root: str | None = None) -> Path:
         allowed = [Path(config.meta_root).resolve() / "snapshots", lake / "backups"]
         if not any(resolved == base or base in resolved.parents for base in allowed):
             raise OpsError(
-                "湖内备份只允许放在 meta/snapshots 或 backups，避免混入业务数据；也可选择湖外目录。"
+                _(
+                    "Backups inside the lake may only go under meta/snapshots or backups, so they never mix with business data; a directory outside the lake also works."
+                )
             )
     if path.exists() and not path.is_dir():
-        raise OpsError("备份目录不是目录。")
+        raise OpsError(_("The backup directory is not a directory."))
     return path
 
 
@@ -60,14 +63,14 @@ def inventory(config, root: str | None = None) -> dict:
     store = store_for(config, root)
     _reject_symlink_path(store.root, label="snapshot root")
     if store.root.exists() and not store.root.is_dir():
-        raise OpsError("备份目录不是目录。")
+        raise OpsError(_("The backup directory is not a directory."))
     rows = []
     if store.root.is_dir():
         for path in sorted(store.root.iterdir(), key=lambda p: p.name, reverse=True):
             if path.name.startswith("."):
                 continue
             try:
-                _, manifest = store._manifest(path.name)
+                _path, manifest = store._manifest(path.name)
                 files = manifest.get("files")
                 datasets = manifest.get("datasets")
                 if not isinstance(datasets, list) or not all(
@@ -94,7 +97,7 @@ def inventory(config, root: str | None = None) -> dict:
 def restore_target(config, text: str, snapshot_root: str | None = None) -> Path:
     path = Path(text).expanduser()
     if not path.is_absolute():
-        raise OpsError("恢复目标必须是绝对路径。")
+        raise OpsError(_("The restore target must be an absolute path."))
     _reject_symlink_path(path, label="restore target")
     resolved = path.resolve()
     for forbidden in (
@@ -102,9 +105,11 @@ def restore_target(config, text: str, snapshot_root: str | None = None) -> Path:
         store_for(config, snapshot_root).root.resolve(),
     ):
         if resolved == forbidden or forbidden in resolved.parents or resolved in forbidden.parents:
-            raise OpsError("恢复目标必须在当前数据湖和备份目录之外。")
+            raise OpsError(
+                _("The restore target must be outside the current lake and the backup directory.")
+            )
     if resolved.exists() and (not resolved.is_dir() or any(resolved.iterdir())):
-        raise OpsError("恢复目标必须是新建的或空目录。")
+        raise OpsError(_("The restore target must be new or an empty directory."))
     return path
 
 
@@ -112,11 +117,11 @@ def describe(config, op: str, params: dict) -> tuple[str, str | None]:
     store = store_for(config, params.get("snapshot_root"))
     if op == "snapshot.create":
         if store.path(params["name"]).exists():
-            raise OpsError("这个备份名已存在，请填写新的名称。")
+            raise OpsError(_("This backup name already exists; enter a new name."))
         return (
-            f"数据备份：{', '.join(params['datasets'])}\n目标：{store.path(params['name'])}\n"
-            "复制所选已发布数据、状态、契约与血缘；不请求数据源。"
-            "这不是系统镜像，不包含原配置、凭据或完整运行数据库。",
+            _(
+                "Data backup: {value}\nTarget: {value2}\nCopies the selected published data, state, contracts and lineage; does not contact data sources. This is not a system image and includes no original config, credentials or full run database."
+            ).format(value=", ".join(params["datasets"]), value2=store.path(params["name"])),
             None,
         )
     path, manifest = store._manifest(params["name"])
@@ -125,15 +130,23 @@ def describe(config, op: str, params: dict) -> tuple[str, str | None]:
         or not all(isinstance(item, str) for item in manifest["datasets"])
         or not isinstance(manifest.get("files"), list)
     ):
-        raise OpsError("备份清单格式无效。")
+        raise OpsError(_("The backup manifest format is invalid."))
     digest = hashlib.sha256((path / "manifest.json").read_bytes()).hexdigest()
     if op == "snapshot.restore":
         restore_target(config, params["target"], params.get("snapshot_root"))
-    text = f"备份：{params['name']}\n数据集：{', '.join(manifest.get('datasets', []))}\n文件：{len(manifest.get('files', []))}"
+    text = _("Backup: {name}\nDatasets: {value}\nFiles: {value2}").format(
+        name=params["name"],
+        value=", ".join(manifest.get("datasets", [])),
+        value2=len(manifest.get("files", [])),
+    )
     if op == "snapshot.restore":
-        text += f"\n恢复目标：{params['target']}\n执行时完整校验摘要，校验失败不恢复；完成后当前服务仍使用原数据湖。"
+        text += _(
+            "\nRestore target: {target}\nDigests are fully verified when it runs, and nothing is restored if verification fails; afterwards the current service still uses the original lake."
+        ).format(target=params["target"])
     else:
-        text += "\n重新计算全部文件摘要，校验结果保存在任务输出中。"
+        text += _(
+            "\nRecomputes every file digest; the verification result is saved in the task output."
+        )
     return text, digest
 
 
@@ -144,6 +157,6 @@ def check_manifest(config, params: dict, expected: str | None) -> None:
         path = store_for(config, params.get("snapshot_root")).path(params["name"]) / "manifest.json"
         matched = hashlib.sha256(path.read_bytes()).hexdigest() == expected
     except (OSError, ValueError) as exc:
-        raise OpsError("备份清单无法读取，请重新预览。") from exc
+        raise OpsError(_("The backup manifest cannot be read; preview again.")) from exc
     if not matched:
-        raise OpsError("备份清单在预览后发生变化，请重新预览。")
+        raise OpsError(_("The backup manifest changed after the preview; preview again."))

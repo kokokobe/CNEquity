@@ -8,7 +8,7 @@
     "build": "npm run build:js && npm run build:css",
     "build:js": "esbuild src/main.js --bundle --minify --format=iife --target=es2020 --outfile=../src/cnequity/serve/static/bundle.js --legal-comments=none",
     "build:css": "esbuild src/styles.css --bundle --minify --outfile=../src/cnequity/serve/static/styles.css --legal-comments=none",
-    "test": "node --test test/",
+    "test": "node --import ./test/chinese-browser.mjs --test test/",
     "check": "npm test && npm run build && git diff --exit-code -- ../src/cnequity/serve/static/bundle.js ../src/cnequity/serve/static/styles.css"
   },
   "devDependencies": {

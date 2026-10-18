@@ -1,4 +1,4 @@
-# 与 AKShare、Tushare 的区别与配合
+# 与 AKShare、Tushare 对比
 
 三者经常被放在一起比较，但它们解决的是不同环节的问题：
 

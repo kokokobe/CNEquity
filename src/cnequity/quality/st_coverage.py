@@ -174,7 +174,10 @@ def current_st_universe(
             bars = set(
                 bar_scan.select("symbol")
                 .unique()
-                .collect(engine="streaming")
+                # Let Polars choose the executor. Forcing streaming on this
+                # canonical multi-file scan can spend minutes scheduling tiny
+                # scans before returning only a few thousand unique symbols.
+                .collect()
                 .get_column("symbol")
                 .to_list()
             )

@@ -1,6 +1,6 @@
 # Maintainer release checklist
 
-This repository is released by the maintainer as needed. Pushing a release tag triggers the [Release workflow](https://github.com/rootSunc/CNEquity/blob/main/.github/workflows/release.yml), which publishes to PyPI once the build passes; ordinary branch commits and manually dispatched workflow runs only build and check, they do not publish. The tag must be `vMAJOR.MINOR.PATCH`, the version must match the package, and the commit the tag points to must already be on `main`.
+This repository is released by the maintainer as needed. Pushing a release tag triggers the [Release workflow](https://github.com/rootSunc/CNEquity/blob/main/.github/workflows/release.yml), which publishes to PyPI once the build passes and then creates (or updates) the matching GitHub Release from the `CHANGELOG.md` section; ordinary branch commits and manually dispatched workflow runs only build and check, they do not publish. The tag must be `vMAJOR.MINOR.PATCH`, the version must match the package, and the commit the tag points to must already be on `main`.
 
 ## Before the release
 
@@ -12,7 +12,7 @@ This repository is released by the maintainer as needed. Pushing a release tag t
 
 ## Release
 
-Create and push the release tag on the verified `main` commit. Confirm that the Release workflow's build, contract and publish jobs all pass, then check the version and description on the PyPI page and `cne --version` after installation. Once published, the tag and the PyPI files must not be treated as rewritable drafts; if a problem is found, publish a fix release and explain the impact.
+Create and push the release tag on the verified `main` commit. Confirm that the Release workflow's build, contract and publish jobs all pass. The `github-release` job then creates the GitHub Release (notes are generated from the CHANGELOG by `scripts/dev/release_notes.py`; no manual `gh release create` is needed). Check the version and description on the PyPI page, the Releases page, and `cne --version` after installation. Once published, the tag and the PyPI files must not be treated as rewritable drafts; if a problem is found, publish a fix release and explain the impact.
 
 Once the release is live on PyPI, register the same version with the [MCP Registry](https://registry.modelcontextprotocol.io): install `mcp-publisher`, run `mcp-publisher login github` in the repository root (authorizing as the rootSunc account), then run `mcp-publisher publish`. The Registry verifies package ownership through the `mcp-name: io.github.rootSunc/cnequity` comment in the PyPI description. That comment sits at the end of `README.md` and is carried into `README.pypi.md` by the sync script; do not remove it.
 

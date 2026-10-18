@@ -1,4 +1,4 @@
-# Recipe: PIT financial statement rebalance cross-section
+# PIT rebalance cross-section
 
 The most common mistake in financial statement research is answering a past rebalance question with revised values seen today. `financial_statement_items` puts `announce_date` in the version key, and strict mode additionally requires that publication, availability and in-lake observation evidence all fall no later than the cutoff date.
 

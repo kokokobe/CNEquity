@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,6 +28,88 @@ from cnequity.domain.schemas import (
 from cnequity.storage.atomic import write_json_atomic, write_parquet_atomic
 from cnequity.storage.changes import summarize_changes
 from cnequity.storage.revisions import sha256_file
+
+logger = logging.getLogger(__name__)
+
+
+def _guard_staged_status(curated_root: Path, rows: pl.DataFrame) -> pl.DataFrame:
+    """Keep an old successful staging batch from resurrecting invalid statuses."""
+    from cnequity.domain.trading_status import (
+        DELISTED_SOURCE,
+        impossible_delistings,
+        split_before_listing,
+    )
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+
+    instruments = curated_root / "instruments"
+    if rows.is_empty() or not dataset_has_parquet(instruments):
+        return rows
+    spans = scan_parquet_root(instruments, hive=False).collect()
+    for column in ("list_date", "delist_date"):
+        if column not in spans.columns:
+            spans = spans.with_columns(pl.lit(None, dtype=pl.Date).alias(column))
+    spans = dedupe_by_primary_key(spans, "instruments").select("symbol", "list_date", "delist_date")
+    impossible = impossible_delistings(spans)
+    flagged = rows.join(spans.select("symbol", "delist_date"), on="symbol", how="left")
+    invalid = (pl.col("source") == DELISTED_SOURCE) & (
+        pl.col("delist_date").is_null()
+        | (pl.col("trade_date") < pl.col("delist_date"))
+        | pl.col("symbol").is_in(sorted(impossible))
+    )
+    kept = flagged.filter(~invalid).drop("delist_date")
+    candidates = kept.join(spans.select("symbol", "list_date"), on="symbol").filter(
+        pl.col("trade_date") < pl.col("list_date")
+    )
+    late = kept.join(spans.select("symbol", "delist_date"), on="symbol").filter(
+        pl.col("is_trading") & (pl.col("trade_date") > pl.col("delist_date"))
+    )
+    if not candidates.is_empty() or not late.is_empty():
+        affected = sorted(set(candidates["symbol"]) | set(late["symbol"]))
+        bars = curated_root / "daily_bars"
+        if dataset_has_parquet(bars):
+            first = (
+                scan_parquet_root(
+                    bars,
+                    partition_col="trade_date",
+                    traded_only=True,
+                    symbols=affected,
+                )
+                .group_by("symbol")
+                .agg(
+                    pl.col("trade_date").min().alias("first_traded"),
+                    pl.col("trade_date").max().alias("last_traded"),
+                )
+                .collect()
+            )
+            spans = spans.join(first, on="symbol", how="left")
+        else:
+            spans = spans.with_columns(
+                pl.lit(None, dtype=pl.Date).alias("first_traded"),
+                pl.lit(None, dtype=pl.Date).alias("last_traded"),
+            )
+        kept, _ = split_before_listing(kept, spans)
+        retired = spans.filter(
+            pl.col("delist_date").is_not_null()
+            & ~pl.col("symbol").is_in(sorted(impossible))
+            & (pl.col("last_traded").is_null() | (pl.col("last_traded") <= pl.col("delist_date")))
+        ).select("symbol", pl.col("delist_date").alias("_delist"))
+        kept = (
+            kept.join(retired, on="symbol", how="left")
+            .filter(
+                ~(
+                    pl.col("is_trading").fill_null(False)
+                    & pl.col("_delist").is_not_null()
+                    & (pl.col("trade_date") > pl.col("_delist"))
+                )
+            )
+            .drop("_delist")
+        )
+    if kept.height < rows.height:
+        logger.warning(
+            "trading_status: dropped %d staged row(s) outside the listed life",
+            rows.height - kept.height,
+        )
+    return kept
 
 
 def _dedupe_storage(frame: pl.DataFrame, dataset: str) -> pl.DataFrame:
@@ -332,6 +415,18 @@ def compact_dataset(
         ],
         how="diagonal_relaxed",
     )
+    if dataset == "trading_status":
+        combined = _guard_staged_status(curated_root, combined)
+        if combined.is_empty():
+            return 0
+    if dataset == "valuation_metrics":
+        from cnequity.domain.valuation import null_missing_valuations
+
+        combined = null_missing_valuations(combined)
+    if dataset == "index_constituents":
+        from cnequity.domain.membership import null_missing_index_weights
+
+        combined = null_missing_index_weights(combined)
     if dataset == "corporate_actions":
         # A payment before the ex-date is a source typo, not a fact, so a new
         # row never stores one.  Only staged rows are cleaned: rewriting the

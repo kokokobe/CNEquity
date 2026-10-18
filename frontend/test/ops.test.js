@@ -350,7 +350,7 @@ test("ops status names the pending session and links an unfinished init", async 
   });
   await renderOps(ctx);
   const pageHtml = html();
-  assert.match(pageHtml, /定时日更 2026-09-30 17:30 已到点，这次会话还没跑。/);
+  assert.match(pageHtml, /2026-09-30 的定时日更（17:30）已到点，还没跑。/);
   assert.match(pageHtml, /op=init.resume&run_id=run%2F1/);
   assert.match(pageHtml, /初始化数据湖/);
   const initAt = pageHtml.indexOf('data-op="init.start"');
@@ -376,7 +376,7 @@ test("a finished scheduled session names that trade date", async (t) => {
     },
   });
   await renderOps(ctx);
-  assert.match(html(), /定时日更 2026-09-30（17:30）这次会话已经跑过。/);
+  assert.match(html(), /2026-09-30 的定时日更（17:30）已经跑过。/);
   assert.doesNotMatch(html(), /ops-secondary/);
   assert.doesNotMatch(html(), /没有需要先处理的占用/);
   assert.doesNotMatch(html(), /ops-side/);
@@ -419,7 +419,7 @@ test("a closed session does not offer run today, and a pending one names that da
   };
   await renderOps(ctx);
   assert.match(daily(), /今天 2026-10-05 不是交易日。/);
-  assert.match(daily(), /定时日更 2026-09-30（17:30）这次会话已经跑过。/);
+  assert.match(daily(), /2026-09-30 的定时日更（17:30）已经跑过。/);
   assert.doesNotMatch(daily(), /data-op="daily.full"/);
   assert.match(daily(), /今天不是交易日，所以没有“现在跑今天”。/);
   assert.match(daily(), /data-op="daily.stale"/);
@@ -478,7 +478,7 @@ test("the daily form says whether this run counts as the scheduled session", asy
   });
   await renderOps(ctx);
   assert.match(ctx.node("ops-form").innerHTML, /今天 2026-10-04 不是交易日。/);
-  assert.match(ctx.node("ops-form").innerHTML, /待跑的定时日更会话是 2026-09-30 17:30。/);
+  assert.match(ctx.node("ops-form").innerHTML, /待跑的定时日更是 2026-09-30（17:30）。/);
   assert.match(ctx.node("ops-form").innerHTML, /这次手跑不会记成那次定时日更。/);
   assert.match(ctx.node("ops-form").innerHTML, /不填日期会按今天提交。/);
   globalThis.location.hash = "#/ops?op=daily.full&trade_date=2026-09-30";

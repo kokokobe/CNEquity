@@ -24,6 +24,7 @@ from cnequity.domain.schemas import with_provenance
 from cnequity.domain.symbols import filter_ingest_universe, in_ingest_universe
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.steps.bars import (
+    _daily_fund_bar_symbols,
     _eligible_etf_bar_symbols,
     _finish_daily_bars,
     _settle_official_etf_prelisting_debts,
@@ -215,7 +216,8 @@ def test_eligible_etf_scope_uses_only_fresh_latest_published_snapshot(tmp_path, 
     )
     assert _eligible_etf_bar_symbols(cfg, D3) == ["512740.SH"]
     assert _eligible_etf_bar_symbols(cfg, D1) == ["512740.SH"]
-    assert _eligible_etf_bar_symbols(cfg, D2 + timedelta(days=15)) == []
+    with pytest.raises(RuntimeError, match="stale"):
+        _eligible_etf_bar_symbols(cfg, D2 + timedelta(days=15))
 
     requested = _capture_fetch_scope(monkeypatch)
     run_id = Manifest(cfg.manifest_path).start_run("daily:core")
@@ -223,6 +225,65 @@ def test_eligible_etf_scope_uses_only_fresh_latest_published_snapshot(tmp_path, 
         step_daily_bars(cfg, D3, run_id, {})
     assert "512740.SH" in requested
     assert "158030.SZ" not in requested
+
+
+def test_listed_funds_do_not_depend_on_research_directory(tmp_path, monkeypatch):
+    cfg = _instrument_lake(tmp_path, ingest_listed_funds=True, ingest_eligible_etfs=True)
+    monkeypatch.setattr(
+        "cnequity.query.dataset_attempt", lambda *a, **k: pytest.fail("research directory read")
+    )
+    assert _daily_fund_bar_symbols(cfg, D3) == ["158030.SZ", "512740.SH"]
+    assert _daily_fund_bar_symbols(cfg, D3, retry=True) == ["158030.SZ", "512740.SH"]
+    requested = _capture_fetch_scope(monkeypatch)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    with pytest.raises(RuntimeError):
+        step_daily_bars(
+            cfg,
+            D3,
+            run_id,
+            {
+                "new_instruments": [
+                    {
+                        "symbol": "159999.SZ",
+                        "asset_type": "lof",
+                        "list_date": D3,
+                        "delist_date": None,
+                    }
+                ]
+            },
+        )
+    assert {"158030.SZ", "512740.SH", "159999.SZ"} <= set(requested)
+
+
+def test_listed_fund_scope_checks_listing_windows_and_quote_types():
+    from cnequity.storage.instrument_catalog import listed_fund_symbols
+
+    frame = pl.DataFrame(
+        {
+            "symbol": [
+                "510010.SH",
+                "510020.SH",
+                "510030.SH",
+                "160001.SZ",
+                "110001.SH",
+                "519001.SH",
+            ],
+            "asset_type": ["etf", "etf", "etf", "lof", "bond", "fund"],
+            "list_date": [D1, D3, None, D1, D1, D1],
+            "delist_date": [D2, None, None, None, None, None],
+        }
+    )
+    assert listed_fund_symbols(frame, D2) == ["160001.SZ", "510030.SH"]
+    assert listed_fund_symbols(frame, D2, start=D1) == ["160001.SZ", "510010.SH", "510030.SH"]
+
+
+def test_listed_fund_config_is_boolean(tmp_path):
+    path = tmp_path / "fund.toml"
+    path.write_text("[universe]\ningest_listed_funds = true\n")
+    assert load_config(path).ingest_listed_funds is True
+    path.write_text('[universe]\ningest_listed_funds = "true"\n')
+    with pytest.raises(ValueError, match="ingest_listed_funds must be true or false"):
+        load_config(path)
 
 
 def test_failed_directory_does_not_admit_etfs_to_daily_bars(tmp_path, monkeypatch):
@@ -235,7 +296,8 @@ def test_failed_directory_does_not_admit_etfs_to_daily_bars(tmp_path, monkeypatc
         "cnequity.query.load_with_receipt",
         lambda *a, **k: pytest.fail("failed directory must not be read for ETF bar scope"),
     )
-    assert _eligible_etf_bar_symbols(cfg, D3) == []
+    with pytest.raises(RuntimeError, match="failed directory"):
+        _eligible_etf_bar_symbols(cfg, D3)
 
     # A failed collector after the original plan cannot silently supersede
     # an ETF batch that the run already committed to fetch.
@@ -908,3 +970,45 @@ def test_the_tip_tolerance_runs_on_the_real_tip_path(tmp_path, monkeypatch):
     assert "UnboundLocal" not in message
     assert "no usable rows" in message
     assert "cne backfill daily_bars --symbols" in message, "the remedy still travels with it"
+
+
+def test_unavailable_fund_scope_holds_funds_but_not_stocks(tmp_path, monkeypatch):
+    cfg = _instrument_lake(tmp_path, ingest_eligible_etfs=True)
+    monkeypatch.setattr(
+        "cnequity.query.dataset_attempt",
+        lambda *a, **k: {"status": "failed", "started_at": "2026-07-21T16:00:00+08:00"},
+    )
+    assert _daily_fund_bar_symbols(cfg, D3) is None
+
+    requested = _capture_fetch_scope(monkeypatch)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    from cnequity.orchestrator.outcomes import SourceUnavailableError
+
+    # The stub serves no rows, so the stock fetch itself ends the step.
+    with pytest.raises(SourceUnavailableError, match="600519.SH"):
+        step_daily_bars(cfg, D3, run_id, {})
+    assert "600519.SH" in requested
+    assert not {"158030.SZ", "512740.SH"} & set(requested)
+
+
+def test_fund_scope_failure_turns_the_step_into_a_warning(tmp_path, monkeypatch):
+    import cnequity.steps.bars as bars
+
+    cfg = _instrument_lake(tmp_path, ingest_eligible_etfs=True)
+    monkeypatch.setattr(
+        "cnequity.query.dataset_attempt",
+        lambda *a, **k: {"status": "failed", "started_at": "2026-07-21T16:00:00+08:00"},
+    )
+
+    def fake_step(config, trade_date, run_id, context):
+        assert bars._daily_fund_bar_symbols(config, trade_date) is None
+        assert bars._daily_fund_bar_symbols(config, trade_date, retry=False) is None
+        return {"status": "success", "rows_written": 3}
+
+    monkeypatch.setattr(bars, "_step_daily_bars", fake_step)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    result = step_daily_bars(cfg, D3, run_id, {})
+    assert result["status"] == "warning"
+    findings = result["context_updates"]["audit_findings"]
+    assert [f["check"] for f in findings] == ["fund_bar_scope_unavailable"]
+    assert bars._FUND_SCOPE_ISSUES.get() is None

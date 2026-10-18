@@ -1,4 +1,4 @@
-# Dataset catalog (per-source limits and update frequency)
+# Sources and history limits
 
 Primary source, update frequency and known limits for each dataset.
 
@@ -47,12 +47,16 @@ Primary source, update frequency and known limits for each dataset.
 
 #### trading_status
 
+Historical status coverage depends on first-hand evidence retained by this lake; a current snapshot cannot establish earlier daily history. The Baostock history path covers SH/SZ stocks, without complete historical status for ETFs or BSE stocks. Preview print-derived missing rows with `cne repair status-traded --start YYYY-MM-DD --end YYYY-MM-DD`; ST remains unknown. See the [status contract](schema.md#trading_status).
+
+Old staging status merges also recheck listing windows: normal status after the catalogue's delisting date cannot be reintroduced. Traded quotes contradicting that date preserve the records for verification.
+
 | Item | Value |
 |------|-------|
 | Wave | `trading_status` (core; depends on `instruments` and runs after it) |
 | Primary | eastmoney (ST board + suspension list) |
 | Fallback | exchange (SSE and SZSE quote boards, an independent failure domain) |
-| Supplementary | derived (`derived_bar_gap` / `derived_delisted`); bse (BSE quote board) |
+| Supplementary | derived (`derived_bar_gap` / `derived_delisted` / `derived_traded`); bse (BSE quote board) |
 | Frequency | Daily |
 | Primary key | (symbol, trade_date) |
 | Historical ST backfill | Baostock covers SH/SZ; optional Tushare Pro `bak_basic` (2016) + `stock_st` (from 2017-01-01) covers BJ and needs a token; without source coverage the audit stays at warning |
@@ -67,6 +71,10 @@ Primary source, update frequency and known limits for each dataset.
 
 #### daily_bars
 
+Fetch planning, batch gap checks and coverage reports use the same suspension evidence: status inferred from bar gaps, carried cached status and current boards restated onto past dates cannot settle bar debts. Conflicting first-hand suspension and trading observations still require a quote check.
+
+Sources counting lots can round a fund trade smaller than one lot down to zero. When a TDX or EastMoney daily bar reports zero volume with positive turnover, that key is withheld from zero-trade publication and checked against another source; shares are never inferred from turnover.
+
 | Item | Value |
 |------|-------|
 | Wave | `daily_bars` (Wave 1, depends on corporate_actions) |
@@ -74,7 +82,7 @@ Primary source, update frequency and known limits for each dataset.
 | Fallback / routing | Currently available exchange board snapshots and TDX batch quotes; gaps go to eastmoney clist/kline. For BJ, the current period prefers BSE and history prefers TDX, with Sina filling the remaining range; explicit small-range requests skip unrelated full-board scans |
 | Frequency | Daily incremental; full backfill at init; deep history is backfilled from THS by listing year (supported for both stocks and ETF/LOF) |
 | Primary key | (symbol, trade_date) |
-| ETF scope | By default `all_a` fetches stocks only; after explicitly enabling `[universe].ingest_eligible_etfs`, only funds from the latest complete exchange ETF catalog that is within the last 14 calendar days, replayable and classified `eligible` are added. When the catalog fails, is missing or is stale, no new fund daily bar requests are added; explicit `--symbols` repairs still follow the specified scope. Classification is not backdated before the first observation date. If the formal catalog's listing date proves that a previously recorded ETF daily bar debt falls before listing, an evidence receipt is saved per key before the debt is written off; other gaps remain. |
+| ETF/LOF scope | By default `all_a` fetches stocks. Enabling `[universe].ingest_listed_funds` adds listed ETF/LOF from the security master independently of research eligibility. Unknown listing dates are still requested and reported separately; unreadable catalogs fail explicitly, and empty source responses remain gaps. Legacy `ingest_eligible_etfs` adds only replayable, `eligible` ETFs from a catalog within 14 days; failed, missing or stale catalogs raise errors. Explicit `--symbols` repairs follow their stated scope. Prelisting debts proved by formal listing dates are retired only after per-key evidence is saved. |
 | Refetch | Securities with an ex-date in that day's `corporate_actions` |
 | Known limits | TDX rate limits; keep workers ≤ 8; clist only has the same-day snapshot and must be stamped with the run's `trade_date`; ETF/LOF without a listing date are treated as not-yet-listed placeholders and their deep history is not fetched blindly. Codes that newly appear in the instruments table that day are merged into that day's request scope through the run context, so data is fetched on the first listing day without waiting for the next compact. **Stocks** with no listing date that have never had a bar are probed once per window: if a bar comes back, the stock is listed and enters the lake as usual; if the source cleanly returns empty, it is recorded as "not yet listed" (`not_yet_listed` negative evidence, covering only this window and probed again the next day) and does not count as an unresolved gap; failed requests reach no conclusion and are still treated as unresolved gaps. |
 
@@ -195,7 +203,7 @@ Generated by `scripts/dev/sync_docs.py` from the reader registry. Start dates ar
 | Frequency | Daily |
 | Primary key | (symbol, ex_date, action_type) |
 | Output | manifest metadata `symbols_to_rebackfill` |
-| Self-healing | The daily update checks securities in the last 10 trading days with "a factor jump but no ex-rights record" and asks TDX `xdxr` for them (the EastMoney daily report does not include unit conversions); those that cannot be filled roll out of the window after ten trading days, and the audit's `unrecorded_ex_event` keeps reporting them |
+| Self-healing | Daily updates check the last 10 trading days: missing events are queried from TDX, while missing steps are evaluated using independent Baostock evidence through the unified repair. Historical contradictions remain advisory, including unassessed events and unavailable sources. Fund cash distributions are separate from unit conversions. |
 | **Known gaps** | Historical dividends and ex-rights of delisted securities may still be missing. The number of gaps varies with the delisted securities in the lake, the adjustment factors and the audit window; **the `missing_corporate_action_delisted` finding in the latest `meta/quality/health-latest.json` is authoritative, and the docs do not fix a sample count**. **Both default sources were verified directly**: `tdx_protocol`'s `xdxr()` may still return 0 records for delisted securities even with the correct market number (market=2); `eastmoney`'s historical snapshots (`meta/source_snapshots/corporate_actions`, covering from 2015-09-29) may likewise have no records. Neither source reliably provides complete history for securities that have disappeared from its online security list. You can now use an explicit `cne backfill corporate_actions --baostock-repair` to fetch Baostock dividend, bonus share and transfer share events for delisted SH/SZ securities, and `--ths-repair` to fetch the THS historical dividend page for delisted BJ securities; for migrated securities whose THS old-code page has no history, `--eastmoney-bj-repair` then queries EastMoney in a targeted way using the BSE old code → 920xxx mapping saved with the codebase. There is also `--eastmoney-date-repair --ex-dates ...`: the primary source for backfill is TDX, and EastMoney only reaches rows before 2015-09-29 with the equality filter of the daily update (the report itself goes back to 1991), so this one fills day by day for the specified ex-dates, each date with its own capture scope and batch. None of the four take part in the daily update or ordinary backfill by default, and all repaired rows keep their own `source` provenance. These default gaps are not caused by rate limiting but by the different historical retention ranges of each source. `cne audit` classifies unrepaired batches separately as `missing_corporate_action_delisted` (info level), not mixed with `missing_corporate_action` (warning level) for securities still trading. Share restructurings such as "缩股/减资/合股" (share consolidation/capital reduction/share merger) are not among this dataset's four kinds of dividend and ex-rights events; the adjusted-return check uses `share_structure.change_reason` as a secondary explanation and records `adjustment_explained_by_share_structure` (info), so that recorded share restructurings are not misreported as missing ex-rights |
 
 #### adj_factors (derived) {#adj_factorsderived}
@@ -206,6 +214,7 @@ Generated by `scripts/dev/sync_docs.py` from the reader registry. Start dates ar
 | Primary | sina (qfq/hfq factor series); for the BSE exchange stage, `derived_actions`: computed from corporate actions and previous closes in the lake according to the exchange's ex-rights rules, with Sina as a cross-check |
 | Fallback | baostock (factor derived from the ratio of raw / hfq close) |
 | Input | daily_bars trading days + external factor API |
+| Listing window | Delisted securities retain historical factors; zero-volume placeholders after their delisting date no longer trigger factor derivation. Traded quotes after that date keep the security in scope for catalogue verification. |
 | Frequency | Daily after compact |
 | Primary key | (symbol, trade_date, adjust_type) |
 | Notes | External cumulative factors are aligned with daily_bars; `adj_close = close * factor` |
@@ -214,6 +223,14 @@ Generated by `scripts/dev/sync_docs.py` from the reader registry. Start dates ar
 | **What to do** | To fail strictly instead of silently degrading: `load(..., strict_adj=True)`. **It is not the default**: newly listed stocks are necessarily missing a factor until they get their first one, so strict mode would make hfq queries with `universe="all_a"` raise errors indefinitely. Tolerance by default + the `adj_is_exact` marker + audit warnings is the trade-off between "no silent contamination" and "queries that work" |
 | **BSE** | Factors after the exchange listing start (the later of `list_date` and 2020-07-27) are computed from corporate actions: each event steps on its effective trading day by `previous close ÷ ex-rights reference price`, and restructuring capitalization issues use the reference price from the announcement; the series starts from the stored level on the security's first exchange trading day, so securities that already match Sina keep their values. Sina is still fetched; when its steps differ from the computed values by more than the verification tolerance, `adj_factor_computed_vendor_divergence` is reported, and a step in Sina with none in the computed values usually means a corporate action is missing from the lake. Factor rows from the NEEQ period keep their original values |
 | **Self-healing** | Each incremental run of `derive_adj_factors` finds securities that "have bars but are not reached by factors" and reschedules their full history, up to 500 per run. So history filled by `cne backfill daily_bars` gets its factors automatically in the following daily update, without `--full` |
+
+### Historical factor repair
+
+`cne repair adj-factors` previews offline and saves a plan. Add `--refresh-sources` to collect independent evidence; `--apply` rechecks the inputs and publishes supported corrections. Use `--symbols`, `--start` and `--end` to scope securities and events, `--max-symbols` to bound a batch, and `--plan` to require the reviewed preview's inputs. Cumulative corrections affect rows after the event; date options do not truncate output. Applying a default historical batch saves progress for subsequent runs.
+
+Missing factors are recovered from the original same-source series without splicing different vendor scales. Replacing an entire stock series requires independent ex-reference prices, complete coverage and agreement on existing event magnitudes. Local stock corrections require event terms to match an independent reference price or independent factor event; actual closing returns alone are insufficient. ETF/LOF unit conversions are rebuilt from original vendor factors. Supported events can publish while unresolved events retain their values. Original data, source choices and event proofs are retained with revisions; repeated application does not compound corrections.
+
+Historical event contradictions never block `audit_gate`, `publication_gate` or repair publication. Invalid factor values, corrupt files and primary-key errors still face structural gates. `strict_adj=True` and `adj_is_exact` check coverage, not historical economic accuracy. `load_with_receipt()`, MCP `query_bars` and row browsing return an `adjustment` summary for the factor revision read, including sources, assessment status and related unresolved events. Reads never fetch evidence or fail because of historical contradictions. Missing diagnostics are explicitly unassessed.
 
 ### v1.0-full (second batch)
 

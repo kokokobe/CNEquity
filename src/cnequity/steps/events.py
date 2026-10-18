@@ -7,6 +7,8 @@ import hashlib
 import inspect
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 
 import polars as pl
@@ -611,6 +613,167 @@ def _heal_unrecorded_ex_events(config: Config, trade_date: date, run_id: str, ra
         return 0
 
 
+def _funds_ingested(config: Config) -> bool:
+    return bool(config.ingest_listed_funds or config.ingest_eligible_etfs)
+
+
+def _sweep_universe(config: Config) -> list[str]:
+    """Symbols a full xdxr sweep asks TDX about.
+
+    Funds are left out while this lake ingests no fund bars: nothing reads their
+    actions, and they were a quarter of a first build's sweep (2,161 of 8,075).
+    Turning fund ingestion on later is caught up by
+    :func:`_sweep_unswept_fund_history`, so leaving them out loses nothing.
+    """
+    symbols = load_symbols(config)
+    if _funds_ingested(config):
+        return symbols
+    from cnequity.steps.common import instrument_metadata
+
+    funds = set(
+        instrument_metadata(config)
+        .filter(pl.col("asset_type").is_in(["etf", "lof"]))
+        .get_column("symbol")
+        .to_list()
+    )
+    kept = [symbol for symbol in symbols if symbol not in funds]
+    if len(kept) < len(symbols):
+        logger.info(
+            "corporate_actions: %d fund code(s) left out of the sweep; this lake ingests no fund bars",
+            len(symbols) - len(kept),
+        )
+    return kept
+
+
+def _swept_symbols(config: Config) -> set[str]:
+    """Every symbol whose whole xdxr history a successful chunk has recorded."""
+    swept: set[str] = set()
+    for row in Manifest(config.manifest_path).successful_batches_for_task(
+        _CORPORATE_ACTIONS_CHUNK_TASK
+    ):
+        swept.update(json.loads(row["symbols_json"] or "[]"))
+    return swept
+
+
+#: Funds caught up per daily run; a lake that just enabled fund ingestion
+#: spreads its one-time ~2,200-code history sweep over a few days.
+FUND_HISTORY_SWEEP_LIMIT = 500
+
+
+def _sweep_unswept_fund_history(
+    config: Config, trade_date: date, run_id: str, rate_limit
+) -> tuple[int, dict | None]:
+    """Fetch the xdxr history of ingested funds no sweep has covered yet.
+
+    The daily source has no history, so a fund's past splits only ever reach
+    the lake through a sweep. A lake whose sweep skipped funds (fund ingestion
+    off) or a fund listed since then would otherwise keep a factor series
+    without its old splits, and nothing would say so. Each chunk records the
+    same receipt as a backfill chunk, so a fund is swept once. Best effort: an
+    unreachable TDX leaves the funds owed for the next run.
+    """
+    if not _funds_ingested(config) or not config.sources.get("tdx_protocol", True):
+        return 0, None
+    try:
+        from cnequity.steps.bars import _daily_fund_bar_symbols
+
+        scope = _daily_fund_bar_symbols(config, trade_date) or []
+        owed = sorted(set(scope) - _swept_symbols(config))
+        if not owed:
+            return 0, None
+        batch = owed[:FUND_HISTORY_SWEEP_LIMIT]
+        logger.info(
+            "corporate_actions: sweeping xdxr history for %d fund(s) never swept (%d owed)",
+            len(batch),
+            len(owed),
+        )
+        manifest = Manifest(config.manifest_path)
+        written = 0
+        swept: set[str] = set()
+        size = max(1, config.batch_size)
+        for index in range(0, len(batch), size):
+            chunk = batch[index : index + size]
+            chunk_batch_id = f"fund-history-{_corporate_actions_chunk_id(chunk)}"
+            scope_id = f"chunk:{chunk_batch_id}"
+            try:
+                frame = fetch_corporate_actions(
+                    trade_date,
+                    symbols=chunk,
+                    backfill=True,
+                    rate_limit=rate_limit,
+                    allow_mock=config.tdx_allow_mock,
+                    primary_only=True,
+                    config=config,
+                    run_id=run_id,
+                    fail_loud=True,
+                    allow_empty=True,
+                    request_scope=scope_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — owed funds wait for the next run
+                logger.warning("corporate_actions: fund history chunk failed: %s", exc)
+                continue
+            if not frame.is_empty():
+                frame = frame.with_columns(pl.col("ex_date").cast(pl.Date, strict=False)).filter(
+                    pl.col("ex_date").is_between(CORPORATE_ACTIONS_BACKFILL_START, trade_date)
+                )
+            if not frame.is_empty():
+                frame = with_provenance(frame, source=_CANONICAL_BACKFILL, data_version="v1")
+                result = write_fetched(
+                    config,
+                    run_id,
+                    "corporate_actions",
+                    frame,
+                    source=_CANONICAL_BACKFILL,
+                    batch_id=chunk_batch_id,
+                    raw_archive_evidence=(
+                        verify_raw_archive(
+                            config,
+                            "corporate_actions",
+                            run_id,
+                            source=_CANONICAL_BACKFILL,
+                            request_scope=scope_id,
+                        )
+                        if config.should_archive_raw("corporate_actions")
+                        else None
+                    ),
+                )
+                written += int(result.get("rows_written", frame.height))
+            manifest.start_batch(
+                run_id,
+                f"{chunk_batch_id}-receipt",
+                task_id=_CORPORATE_ACTIONS_CHUNK_TASK,
+                dataset="corporate_actions",
+                symbols=chunk,
+                window_start=CORPORATE_ACTIONS_BACKFILL_START.isoformat(),
+                window_end=trade_date.isoformat(),
+                blocks_compaction=False,
+            )
+            manifest.finish_batch(
+                run_id,
+                f"{chunk_batch_id}-receipt",
+                "success",
+                rows_read=frame.height,
+                rows_written=frame.height,
+            )
+            swept.update(chunk)
+    except Exception as exc:  # noqa: BLE001 — catch-up, never the day's verdict
+        logger.warning("corporate_actions: fund history catch-up unavailable: %s", exc)
+        return 0, None
+    remaining = sorted(set(owed) - swept)
+    if not remaining:
+        return written, None
+    return written, {
+        "dataset": "corporate_actions",
+        "severity": "warning",
+        "check": "fund_history_unswept",
+        "message": (
+            f"{len(remaining)} ingested fund(s) still lack their xdxr history; old splits are "
+            "missing from their factors until a later run sweeps them"
+        ),
+        "symbols": remaining[:20],
+    }
+
+
 def _window_fetcher(config: Config, trade_date: date, run_id: str):
     """Per-day fetch for the reconciliation window, served by one query.
 
@@ -657,6 +820,22 @@ def _window_fetcher(config: Config, trade_date: date, run_id: str):
     return fetch
 
 
+def _xdxr_lanes(config: Config, chunks: int) -> int:
+    """Parallel TDX connections for a corporate-action sweep.
+
+    The configured TDX in-flight cap, which pacing and the cross-process
+    lease ledger already enforce for every TDX request, and never more than
+    ``_XDXR_MAX_LANES``: measured on a mainland link, one lane spends ~317ms
+    per symbol and four reach ~110ms, the 100ms pacing floor, so a fifth would
+    only queue behind the pacer.
+    """
+    cap = config.source_concurrency_for("tdx_protocol", config.tdx_daily_worker_count())
+    return max(1, min(cap, _XDXR_MAX_LANES, chunks))
+
+
+_XDXR_MAX_LANES = 4
+
+
 @register_step("corporate_actions", group="core", depends_on=["instruments"])
 def step_corporate_actions(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     if getattr(config, "_corporate_actions_payment_repair", False):
@@ -673,7 +852,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
         symbols = list(
             context.get("_retry_symbols")
             or getattr(config, "_backfill_symbols", None)
-            or load_symbols(config)
+            or _sweep_universe(config)
         )
         if getattr(config, "_corporate_actions_eastmoney_date_repair", None) and not getattr(
             config, "_backfill_symbols", None
@@ -790,86 +969,125 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 "corporate_actions",
                 {"chunks_planned": len(chunks), "chunk_symbols": len(remaining_symbols)},
             )
-        for chunk_index in range(0, len(remaining_symbols), batch_size):
-            chunk = remaining_symbols[chunk_index : chunk_index + batch_size]
-            chunk_batch_id = _corporate_actions_chunk_id(chunk)
-            chunk_scope = f"chunk:{chunk_batch_id}"
-            try:
-                df_chunk = fetch_corporate_actions(
-                    trade_date,
-                    symbols=chunk,
-                    backfill=True,
-                    rate_limit=rl,
-                    allow_mock=config.tdx_allow_mock,
-                    primary_only=True,
-                    config=config,
-                    run_id=run_id,
-                    on_progress=lambda done, total, offset=chunk_index: on_progress(
-                        offset + done, len(remaining_symbols)
-                    ),
-                    fail_loud=True,
-                    allow_empty=True,
-                    request_scope=chunk_scope,
-                    progress_report=sweep_report,
-                    progress_offset=chunk_index,
-                )
-            except Exception as exc:  # noqa: BLE001 — preserve completed chunks for retry
-                failed_symbols.extend(chunk)
-                logger.warning(
-                    "corporate_actions chunk %s failed for %d symbols: %s",
-                    chunk_batch_id,
-                    len(chunk),
-                    exc,
-                )
-                continue
+        lanes = _xdxr_lanes(config, len(chunks))
+        stop = threading.Event()
+        progress_lock = threading.Lock()
+        swept = 0
 
+        def tick() -> None:
+            # Lanes finish symbols in any order; one shared count keeps the
+            # progress line and the heartbeat monotonic across them.
+            nonlocal swept
+            with progress_lock:
+                swept += 1
+                done = swept
+            sweep_report(done)
+            on_progress(done, len(remaining_symbols))
+
+        def fetch_chunk(chunk: list[str], chunk_scope: str) -> pl.DataFrame:
+            return fetch_corporate_actions(
+                trade_date,
+                symbols=chunk,
+                backfill=True,
+                rate_limit=rl,
+                allow_mock=config.tdx_allow_mock,
+                primary_only=True,
+                config=config,
+                run_id=run_id,
+                fail_loud=True,
+                allow_empty=True,
+                request_scope=chunk_scope,
+                progress_report=lambda _index: tick(),
+                should_stop=stop.is_set,
+            )
+
+        def record_chunk(chunk: list[str], chunk_batch_id: str, df_chunk: pl.DataFrame) -> None:
             if not df_chunk.is_empty():
                 frames.append(df_chunk)
-            if manifest is not None:
-                # The fetch and staging happen before this success receipt. If
-                # the process dies earlier, the parent batch remains retryable;
-                # an unreceipted chunk is safely fetched again.
-                staged_chunk = with_provenance(
-                    df_chunk,
-                    source=_CANONICAL_BACKFILL,
-                    data_version="v1",
-                )
-                write_fetched(
-                    config,
-                    run_id,
-                    "corporate_actions",
-                    staged_chunk,
-                    source=_CANONICAL_BACKFILL,
-                    batch_id=chunk_batch_id,
-                    raw_archive_evidence=(
-                        verify_raw_archive(
-                            config,
-                            "corporate_actions",
-                            run_id,
-                            source=_CANONICAL_BACKFILL,
-                            request_scope=chunk_scope,
-                        )
-                        if config.should_archive_raw("corporate_actions")
-                        else None
-                    ),
-                )
-                manifest.start_batch(
-                    run_id,
-                    chunk_batch_id,
-                    task_id=_CORPORATE_ACTIONS_CHUNK_TASK,
-                    dataset="corporate_actions",
-                    symbols=chunk,
-                    window_start=chunk_window_start,
-                    window_end=chunk_window_end,
-                    blocks_compaction=False,
-                )
-                manifest.finish_batch(
-                    run_id,
-                    chunk_batch_id,
-                    "success",
-                    rows_read=df_chunk.height,
-                    rows_written=df_chunk.height,
-                )
+            if manifest is None:
+                return
+            # The fetch and staging happen before this success receipt. If
+            # the process dies earlier, the parent batch remains retryable;
+            # an unreceipted chunk is safely fetched again.
+            chunk_scope = f"chunk:{chunk_batch_id}"
+            staged_chunk = with_provenance(
+                df_chunk,
+                source=_CANONICAL_BACKFILL,
+                data_version="v1",
+            )
+            write_fetched(
+                config,
+                run_id,
+                "corporate_actions",
+                staged_chunk,
+                source=_CANONICAL_BACKFILL,
+                batch_id=chunk_batch_id,
+                raw_archive_evidence=(
+                    verify_raw_archive(
+                        config,
+                        "corporate_actions",
+                        run_id,
+                        source=_CANONICAL_BACKFILL,
+                        request_scope=chunk_scope,
+                    )
+                    if config.should_archive_raw("corporate_actions")
+                    else None
+                ),
+            )
+            manifest.start_batch(
+                run_id,
+                chunk_batch_id,
+                task_id=_CORPORATE_ACTIONS_CHUNK_TASK,
+                dataset="corporate_actions",
+                symbols=chunk,
+                window_start=chunk_window_start,
+                window_end=chunk_window_end,
+                blocks_compaction=False,
+            )
+            manifest.finish_batch(
+                run_id,
+                chunk_batch_id,
+                "success",
+                rows_read=df_chunk.height,
+                rows_written=df_chunk.height,
+            )
+
+        def chunk_failed(chunk: list[str], chunk_batch_id: str, exc: Exception) -> None:
+            failed_symbols.extend(chunk)
+            logger.warning(
+                "corporate_actions chunk %s failed for %d symbols: %s",
+                chunk_batch_id,
+                len(chunk),
+                exc,
+            )
+
+        # Each lane owns one TDX connection and fetches whole chunks; every
+        # staging write and ledger receipt stays on this thread, in the order
+        # chunks finish. The shared pacing and in-flight cap still bound the
+        # request rate, so lanes only fill the gaps one connection leaves
+        # waiting on each reply (~0.33s per symbol on one lane, measured).
+        if lanes > 1:
+            logger.info("corporate_actions: %d chunk(s) over %d TDX lane(s)", len(chunks), lanes)
+        pool = ThreadPoolExecutor(max_workers=lanes, thread_name_prefix="xdxr")
+        try:
+            pending = {}
+            for chunk in chunks:
+                chunk_batch_id = _corporate_actions_chunk_id(chunk)
+                future = pool.submit(fetch_chunk, chunk, f"chunk:{chunk_batch_id}")
+                pending[future] = (chunk, chunk_batch_id)
+            for future in as_completed(pending):
+                chunk, chunk_batch_id = pending[future]
+                try:
+                    df_chunk = future.result()
+                except Exception as exc:  # noqa: BLE001 — preserve completed chunks for retry
+                    chunk_failed(chunk, chunk_batch_id, exc)
+                    continue
+                record_chunk(chunk, chunk_batch_id, df_chunk)
+        finally:
+            # On Ctrl-C (or any escape) lanes stop at their next symbol rather
+            # than finishing a 100-symbol chunk nobody will record.
+            stop.set()
+            pool.shutdown(wait=True, cancel_futures=True)
 
         if frames:
             df = pl.concat(frames, how="diagonal_relaxed")
@@ -1275,6 +1493,10 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                         }
                     )
         heal_written = _heal_unrecorded_ex_events(config, trade_date, run_id, rl)
+        fund_written, fund_finding = _sweep_unswept_fund_history(config, trade_date, run_id, rl)
+        heal_written += fund_written
+        if fund_finding:
+            findings.append(fund_finding)
 
     if backfill and not df.is_empty():
         start = getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START

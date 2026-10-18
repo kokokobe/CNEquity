@@ -17,6 +17,7 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
+from cnequity.quality.factor_policy import advisory_factor_findings, factor_advisory
 from cnequity.storage.atomic import write_json_atomic
 from cnequity.storage.read_context import read_root
 
@@ -66,7 +67,9 @@ def _errors(
     )
     findings.extend(run_source_diffs(config, "publication-view", day))
     return [
-        item for item in findings if item.get("severity") == "error" and not coverage_only(item)
+        item
+        for item in findings
+        if item.get("severity") == "error" and not coverage_only(item) and not factor_advisory(item)
     ]
 
 
@@ -373,8 +376,8 @@ def evaluate_publication(
                     closing(sqlite3.connect(view.manifest_path)) as copied,
                 ):
                     original.backup(copied)
-            baseline = _errors(view, day, scope)
-            baseline.extend(_factor_action_errors(view, repair_symbols))
+            baseline = [item for item in _errors(view, day, scope) if not factor_advisory(item)]
+            factor_baseline = advisory_factor_findings(_factor_action_errors(view, repair_symbols))
             guard_actions = "corporate_actions" in candidates and bool(repair_symbols)
             actions_before = _repair_actions(view, repair_symbols) if guard_actions else None
             for name, source in candidates.items():
@@ -385,8 +388,14 @@ def evaluate_publication(
                 if target.exists():
                     shutil.rmtree(target)
                 shutil.copytree(source, target, copy_function=_link_read_only)
-            candidate_errors = _errors(view, day, scope)
-            candidate_errors.extend(_factor_action_errors(view, repair_symbols))
+            candidate_errors = [
+                item for item in _errors(view, day, scope) if not factor_advisory(item)
+            ]
+            report["factor_diagnostics"] = {
+                "baseline": factor_baseline,
+                "candidate": advisory_factor_findings(_factor_action_errors(view, repair_symbols)),
+                "gate_impact": "none",
+            }
             if actions_before is not None:
                 candidate_errors.extend(
                     _halt_dated_removals(

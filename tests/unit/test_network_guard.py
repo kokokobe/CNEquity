@@ -52,12 +52,33 @@ def _child_reaches_loopback(port: int) -> str:
         conn.close()
 
 
-def _loopback_listener() -> tuple[socket.socket, int]:
+@contextmanager
+def _loopback_listener():
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(1)
-    threading.Thread(target=server.accept, daemon=True).start()
-    return server, server.getsockname()[1]
+    server.settimeout(0.1)
+    stopping = threading.Event()
+
+    def accept():
+        while not stopping.is_set():
+            try:
+                conn, _ = server.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            conn.close()
+            return
+
+    thread = threading.Thread(target=accept)
+    thread.start()
+    try:
+        yield server, server.getsockname()[1]
+    finally:
+        stopping.set()
+        thread.join(timeout=1)
+        server.close()
 
 
 @contextmanager
@@ -104,13 +125,10 @@ def test_this_process_cannot_reach_an_external_host():
 
 def test_this_process_can_still_use_loopback():
     """`cne serve` and `cne mcp` are exercised over a real local socket."""
-    server, port = _loopback_listener()
-    try:
+    with _loopback_listener() as (_, port):
         conn = socket.socket()
         conn.connect(("127.0.0.1", port))
         conn.close()
-    finally:
-        server.close()
 
 
 def test_this_process_can_still_use_a_unix_socket():
@@ -127,12 +145,9 @@ def test_a_pool_worker_cannot_reach_an_external_host():
 
 
 def test_a_pool_worker_can_still_use_loopback():
-    server, port = _loopback_listener()
-    try:
+    with _loopback_listener() as (_, port):
         with ProcessPoolExecutor(max_workers=1) as pool:
             assert pool.submit(_child_reaches_loopback, port).result(timeout=30) == "ok"
-    finally:
-        server.close()
 
 
 def test_a_plain_python_subprocess_is_covered_too():

@@ -21,11 +21,10 @@ fallback that can only make data arrive *late*, never early.
 
 **Backfill PIT boundary.** A backfill fetch returns whichever version of a figure
 EastMoney serves at collection time, which for older periods may be restated.
-The step marks those rows as ``eastmoney_backfill``; the reader permits them only
-for ``as_of`` dates on or after their actual ``fetched_at`` date. This keeps the
-historical table useful after collection without claiming that a current
-restatement was knowable on its original announcement date. Vintages accumulated
-by daily runs keep the ordinary announcement-date semantics.
+The step marks those rows as ``eastmoney_backfill``. Best-effort reads expose
+them from the original disclosure with ``pit_is_exact=False``; strict reads
+exclude them. Daily runs preserve the actual NOTICE_DATE vintage and add the
+same explicitly inexact reconstruction when an original-date item is absent.
 """
 
 from __future__ import annotations
@@ -47,7 +46,10 @@ from cnequity.adapters.eastmoney.common import (
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient, rate_limit_if_unconfigured
 from cnequity.config import Config
+from cnequity.domain.financial_statements import original_disclosures, reconstruct_disclosures
+from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 from cnequity.storage.raw_archive import RawPayloadArchive, begin_capture
+from cnequity.storage.read_context import ReadContext
 
 logger = logging.getLogger(__name__)
 
@@ -393,9 +395,9 @@ def fetch_financial_statement_items(
 ) -> pl.DataFrame:
     """Fetch financial statement items with PIT ``announce_date``.
 
-    ``backfill=False`` (daily): rows whose ``NOTICE_DATE`` equals *trade_date* —
-    newly announced reports *and* restatements republished today, both of which
-    genuinely became knowable on that date.
+    ``backfill=False``: observed NOTICE_DATE vintages in the reconciliation
+    window, plus explicitly reconstructed original-disclosure rows. A current
+    restatement is never backdated as an exact observation.
 
     ``backfill=True``: every A-share report for each quarter-end period from
     2001 (or ``config._backfill_start``) through *trade_date* (or
@@ -423,6 +425,7 @@ def fetch_financial_statement_items(
                     request_scope=request_scope,
                 )
     rows: list[dict] = []
+    daily_raw: list[tuple[_Report, list[dict]]] = []
     try:
         if not backfill:
             from cnequity.domain.datasets import DATASETS
@@ -459,8 +462,77 @@ def fetch_financial_statement_items(
                     trade_date,
                 )
                 parsed, _ = _parse_rows(raw, report, default_notice=ds)
-                rows.extend(parsed)
+                rows.extend({**row, "source": "eastmoney"} for row in parsed)
+                daily_raw.append((report, raw))
+            if rows:
+                dates = {}
+                existing = None
+                if config is not None:
+                    context = ReadContext.capture(config, ("financial_statement_items",), {})
+                    root = context.roots["financial_statement_items"]
+                    if dataset_has_parquet(root, committed=False):
+                        existing = (
+                            scan_parquet_root(root, committed=False).select(_PK).unique().collect()
+                        )
+                        known = original_disclosures(
+                            scan_parquet_root(root, committed=False)
+                        ).collect()
+                        dates.update({(sym, period): day for sym, period, day in known.iter_rows()})
+                for report, raw in daily_raw:
+                    if report is _ANNOUNCE_SOURCE:
+                        for key, day in _announce_date_map(raw).items():
+                            dates[key] = min(dates.get(key, day), day)
+                missing: dict[str, set[str]] = {}
+                for report, raw in daily_raw:
+                    if report is _ANNOUNCE_SOURCE:
+                        continue
+                    for item in raw:
+                        symbol = symbol_from_secucode(item.get("SECUCODE"))
+                        period_date = _source_date(item.get(report.report_date_field))
+                        if symbol and period_date:
+                            key = (symbol, _report_period(period_date.isoformat()))
+                            if key not in dates:
+                                missing.setdefault(period_date.isoformat(), set()).add(symbol)
+                for period_date, symbols in sorted(missing.items()):
+                    ordered = sorted(symbols)
+                    for offset in range(0, len(ordered), 100):
+                        scope = ",".join(f'"{symbol}"' for symbol in ordered[offset : offset + 100])
+                        raw = _rows_for_report_period(
+                            _fetch_report(
+                                client,
+                                _ANNOUNCE_SOURCE,
+                                f"(REPORTDATE='{period_date}')(SECUCODE in ({scope}))",
+                                config=config,
+                                run_id=run_id,
+                                request_scope=request_scope,
+                                archive_source=archive_source,
+                                capture_nonce=capture_nonce,
+                            ),
+                            _ANNOUNCE_SOURCE,
+                            period_date,
+                        )
+                        dates.update(_announce_date_map(raw))
+                date_frame = pl.DataFrame(
+                    [(sym, period, day) for (sym, period), day in dates.items()],
+                    schema={
+                        "symbol": pl.String,
+                        "report_period": pl.String,
+                        "original_date": pl.Date,
+                    },
+                    orient="row",
+                )
+                reconstruction = reconstruct_disclosures(pl.DataFrame(rows), date_frame)
+                if existing is not None:
+                    reconstruction = reconstruction.join(existing, on=_PK, how="anti")
+                rows.extend(reconstruction.to_dicts())
         else:
+            known_dates = {}
+            if isinstance(config, Config):
+                context = ReadContext.capture(config, ("financial_statement_items",), {})
+                root = context.roots["financial_statement_items"]
+                if dataset_has_parquet(root, committed=False):
+                    known = original_disclosures(scan_parquet_root(root, committed=False)).collect()
+                    known_dates = {(sym, period): day for sym, period, day in known.iter_rows()}
             range_start = getattr(config, "_backfill_start", None) if config else None
             range_end = getattr(config, "_backfill_end", None) if config else None
             # A scoped repair asks for a handful of securities, not the market.
@@ -507,6 +579,10 @@ def fetch_financial_statement_items(
                     )
                     announce_raw = _rows_for_report_period(announce_raw, _ANNOUNCE_SOURCE, period)
                     announce_dates = _announce_date_map(announce_raw)
+                    quarter = _report_period(period)
+                    for key, day in known_dates.items():
+                        if key[1] == quarter:
+                            announce_dates[key] = min(announce_dates.get(key, day), day)
                     parsed, _ = _parse_rows(announce_raw, _ANNOUNCE_SOURCE, default_notice=ds)
                 except Exception as exc:
                     if failures is None:

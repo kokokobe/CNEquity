@@ -98,6 +98,44 @@ def test_new_evidence_blocks_each_cleaner(protected, kind):
             clean_source_snapshots(cfg.meta_root)
 
 
+def test_a_run_rewriting_lake_state_leaves_the_meta_import_valid(tmp_path):
+    """The import a real lake used scanned all of `meta`; one run broke it."""
+    cfg = Config(data_root=tmp_path / "lake")
+    store = LifecycleStore(cfg.meta_root)
+    (store.meta / "decisions").mkdir(parents=True)
+    (store.meta / "decisions/kept.json").write_text("{}")
+    (store.meta / "state").mkdir()
+    (store.meta / "state/daily_bars.json").write_text('{"revision": 1}')
+    roots = [{"path": str(store.meta)}]
+    store.import_manifest(
+        {
+            "schema_version": 1,
+            "meta_root": str(store.meta),
+            "holds": {},
+            "reference_roots": roots,
+            "reference_fingerprint": reference_fingerprint(roots, meta_root=store.meta),
+        }
+    )
+    (store.meta / "state/daily_bars.json").write_text('{"revision": 2}')
+    (store.meta / "quality/findings").mkdir(parents=True)
+    (store.meta / "quality/findings/run.json").write_text("{}")
+    for directory in (
+        "adj_factor_arbitration_cache",
+        "derivations/minute_bars_30m",
+        "payment_date_repairs",
+        "repairs/etf_prelisting_debts",
+        "stats",
+    ):
+        root = store.meta / directory
+        root.mkdir(parents=True)
+        (root / "run.json").write_text("{}")
+    clean_staging(cfg)
+
+    (store.meta / "decisions/new.json").write_text("{}")
+    with pytest.raises(LifecycleError, match="References changed"):
+        clean_staging(cfg)
+
+
 def test_hold_cannot_target_outside_owned_namespace(protected):
     _, store, _ = protected
     with pytest.raises(LifecycleError, match="Unknown"):

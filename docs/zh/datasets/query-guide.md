@@ -93,6 +93,7 @@ bars = load("daily_bars", start="2024-01-01", adjust="total_return", symbols=["5
 
 - 湖内 `daily_bars` 存**未复权**价
 - `adj_factors` 在 `derived/`，仅存 `hfq`（`adjust_type="hfq"`）
+- ETF/LOF 已记录的拆分和转增会在日常因子派生中校正，历史漏跳可用 `cne repair fund-factors --apply` 重建；修正来源为 `derived_fund_actions`。保留其他来源台阶，现金分红仍由总回报读取单独计入。
 - DuckDB 视图 `daily_bars_adj` / `daily_bars_hfq` / `daily_bars_qfq` 与上述语义一致；`daily_bars_total_return(start, end)` 表宏对应 `adjust="total_return"`，输出 `tr_*` 与 `adj_close`
 
 ## Universe 过滤
@@ -190,9 +191,12 @@ load(
 ```
 
 注意：回填行以 `source=eastmoney_backfill` 标记，并视为
-`pit_quality="reconstructed"`。默认省略 `pit_mode` 是 0.x 兼容模式：仍按
-`fetched_at` 截止，但不提供严格 PIT 保证；研究代码请显式传
-`pit_mode="strict"` 并记录该选择。日更逐日累积、保存真实双时态列的版本才满足
+`pit_quality="reconstructed"`。省略 `pit_mode` 或传 `None` 默认为
+`best_effort`：在 `as_of` 之后采集的历史回填也可读取，并返回
+`pit_is_exact=False`；公告及已知可用/发布时间仍受截止日约束。
+需要湖在当时已有证据的研究代码请显式传 `pit_mode="strict"` 并记录该选择。
+升级前依赖省略参数按采集时间过滤的调用，也应改为显式严格模式。
+日更逐日累积、保存真实双时态列的版本才满足
 严格模式（见 [schema](schema.md#financial_statement_items)）。
 回填默认自 2001 起（东财）；`list_datasets()` 的 `coverage_start` 为盘上实际起点。
 

@@ -7,7 +7,7 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml` | 配置文件路径。 |
-| `--run-id` | `—` | — |
+| `--run-id` | `—` | 运行 ID；可重复指定，合并运行证据并审计一次。 |
 | `--full` | `False` | 整个湖的健康快照（当前状态 + 新鲜度），而不是某一次 run 的文件。 |
 | `--research-start` | `—` | 严格校验从这一天开始的研究窗口（需要 --full）。 |
 | `--quality-only` | `False` | 配合 --full：只按质量 error 判门禁；调度新鲜度请另外用 status 检查。 |
@@ -49,8 +49,11 @@
 | `--bse-tip-repair` | `False` | 仅 daily_bars，历史迁移用：用北交所官网补已有当期交易日的 BJ 成交额，不重抓 Sina。日更已以北交所行情板为 BJ 当期主源。 |
 | `--bj-amount-repair` | `False` | 仅 daily_bars，已由 --tdx-amount-repair 取代：从 TDX 补 Sina 从未发布过的北交所成交额，已存的价格和成交量一律不动。需要 --start/--end。 |
 | `--tdx-amount-repair` | `False` | 仅 daily_bars：新浪补上的沪深北历史行与通达信一起核对，只在开高低收一致且成交量差小于一手时补成交额；通达信没有的代码保留新浪行。已存的价格和成交量一律不动。需要 --start/--end。 |
+| `--qmt-amount-repair` | `False` | 仅 daily_bars：用 BigQMT 桥补退市 BJ 的 Sina 行成交额；开高低收一致且成交量差小于一手时才补，已存价格和成交量不动。需要 --symbols 和 --start/--end。 |
+| `--qmt-bars-repair` | `False` | 仅 daily_bars：用 BigQMT 桥补缺失的北交所日线；只写入 curated 湖缺失的 keys，上市区间外或零成交量行不作为覆盖。需要 --symbols 和 --start/--end。 |
 | `--tdx-volume-repair` | `False` | 仅 daily_bars：重读 TDX，只改写已存 TDX 行的成交量（修 2026-09-17 前的解码错误）；价格须一致，64.5 元以下被放大的成交额一并改写；不新增行。需要 --symbols 和 --start/--end。 |
 | `--turnover-repair` | `False` | 仅 daily_bars：成交额缺失、为 0 或量额单位错位的沪深股票行，用 Baostock 同日行整行替换；开高低收须在半分钱内一致，不一致或未提供的保留原值。需要 --start/--end。 |
+| `--turnover-peer-review` | `False` | 与 --turnover-repair 同用：以交易所历史日线、通达信和东财复查价格冲突，一致证据才整行替换；不拼接交易所汇总量额。 |
 | `--fill-em-outage` | `False` | 仅 valuation_metrics：东财快照中断时，用东财 datacenter 估值报表补东财最后一个完整日之后、今天之前的 --start/--end 窗口；全市场取全才写入。 |
 
 ## `cne check`
@@ -177,6 +180,8 @@
 | `--quiet` | `False` | 只留 warning 及以上，不打逐批进度。 |
 | `--pack` | `—` | 研究包：market 行情、fundamentals 基本面、universe 历史 ST。不改变这次初始化下载的内容。决定结束后要保持更新的调度组，以及 `cne check --pack` 的结论。可重复。不写则沿用已保存的选择，第一次是 market。 |
 | `--schedule` | `False` | 初始化成功结束后，为所选研究包安装定时日更和收尾补抓。不含公告和资讯。 |
+| `--json` | `False` | 结束时输出完整的机器可读结果，而不是摘要；完整结果也总会存到日志目录。 |
+| `--no-preflight` | `False` | 跳过开跑前最多 8 秒的网络预检（通达信、交易所、东财）。也可设环境变量 CNE_SKIP_PREFLIGHT=1。 |
 
 ## `cne mcp`
 
@@ -212,12 +217,105 @@
 | `--symbol` | `—` | 按需抓取的标的代码 |
 | `--refresh` | `False` | 抓取前先刷新按需缓存（需要同时给 --dataset 和 --symbol）。 |
 
+## `cne repair adj-factors`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 应用可确定的因子修正并保留旧版本；未解决项只作提示。 |
+| `--refresh-sources` | `False` | 联网补取独立因子证据；默认仅使用本地缓存。 |
+| `--symbols` | `—` | 逗号分隔的证券代码；默认分批检查历史问题。 |
+| `--start` | `—` | 待修事件起点（YYYY-MM-DD）；累计影响延续到其后。 |
+| `--end` | `—` | 待修事件终点（YYYY-MM-DD）；累计影响延续到其后。 |
+| `--max-symbols` | `100` | 每批最多检查的证券数；应用后保存历史进度。 |
+| `--plan` | `—` | 应用指定预览的计划标识；输入变化时要求重新预览。 |
+
 ## `cne repair corporate-action-gaps`
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml` | 配置文件路径。 |
 | `--apply` | `False` | 向 Baostock 补取并发布新版本；默认只离线输出计划。 |
+
+## `cne repair daily-bar-coverage`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 按已提交数据结清北交所整日欠账和已证明的上市前欠账；默认只预览。 |
+
+## `cne repair financial-announcements`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 追加明确标记的原始公告日重建版本；默认只预览。 |
+
+## `cne repair financial-originals`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--symbols` | `—` | 股票代码，逗号分隔。 |
+| `--all-stocks` | `False` | 使用湖中股票目录；与 --symbols 二选一。 |
+| `--after` | `—` | 接续上一批 next_cursor（YEAR:SYMBOL）；失败项可不带游标重试。 |
+| `--quarter` | `Q4` | 报告期；Q2 为半年报，Q4 为年报，利润和现金流只恢复年初至期末累计数。 |
+| `--start-year` | `2016` | — |
+| `--end-year` | `2024` | — |
+| `--max-reports` | `16` | — |
+| `--reparse` | `False` | 重新解析已有原文报告；内容未变的行保留原始观测时间。 |
+| `--refresh-sources` | `False` | 从巨潮取完整公告查询和原始定期报告；默认回放已归档来源。 |
+| `--apply` | `False` | 追加可核实的原文当期数，保留既有版本及真实采集时间。 |
+
+## `cne repair fund-factors`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 按已记录的拆分、转增条款发布修正因子，保留旧版本；默认只预览。 |
+
+## `cne repair fund-listing-dates`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 归档交易所目录并发布缺失的基金上市日期；默认只预览。 |
+
+## `cne repair fund-no-print`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 保存基金竞价日线覆盖证据并结清对应欠账；不生成日线或停牌行。 |
+| `--refresh-sources` | `False` | 向沪深交易所取历史基金报表；默认离线回放已留存报表。 |
+| `--max-sessions` | `32` | 每批最多核对的欠账交易日。 |
+
+## `cne repair fund-volume`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 核验后替换整行并发布新版本，保留旧版。 |
+| `--refresh-sources` | `False` | 归档官方历史 K 线及必要的独立金额证据；默认离线回放。 |
+| `--max-symbols` | `16` | — |
+
+## `cne repair index-history`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--index-symbol` | `399001.SZ` | 选择已核验的历史成分目录。 |
+| `--apply` | `False` | 替换已核验区间的完整成分历史，保留官方带日期权重及旧版本。 |
+| `--refresh-sources` | `False` | 补采目录中未归档的官方历史附件；默认离线回放。 |
+
+## `cne repair index-snapshots`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--indices` | `—` | 指数代码，逗号分隔；默认沪深300、科创50、深证成指、创业板指。 |
+| `--apply` | `False` | 按文件实际日期替换完整指数快照，保留旧版本。 |
+| `--refresh-sources` | `False` | 取官方成分和权重文件；默认离线回放。 |
 
 ## `cne repair layout`
 
@@ -226,6 +324,21 @@
 | `dataset` | `—` | 必填；位置参数 |
 | `--config` | `configs/cnequity.toml` | 配置文件路径。 |
 | `--apply` | `False` | 写入并发布新版本；默认只输出计划。 |
+
+## `cne repair misdated-valuation`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 向东财 datacenter 取数并发布新版本；默认只离线输出计划。 |
+
+## `cne repair missing-values`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `dataset` | `—` | 必填；位置参数 |
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 将缺失值占位零改为空值并发布新版本；默认只预览。 |
 
 ## `cne repair orphan-symbols`
 
@@ -240,6 +353,41 @@
 |---|---|---|
 | `--config` | `configs/cnequity.toml` | 配置文件路径。 |
 | `--apply` | `False` | 核验后发布新版本；默认只输出计划。 |
+
+## `cne repair status-listing-window`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 核验后发布新版本；默认只输出计划。 |
+
+## `cne repair status-outages`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--start` | `—` | 必填；窗口起点（YYYY-MM-DD）。 |
+| `--end` | `—` | 必填；窗口终点（YYYY-MM-DD）。 |
+| `--apply` | `False` | 核验后发布新版本；默认只输出计划。 |
+
+## `cne repair status-traded`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--start` | `—` | 必填；成交状态补缺起点（YYYY-MM-DD）。 |
+| `--end` | `—` | 必填；成交状态补缺终点（YYYY-MM-DD）。 |
+| `--apply` | `False` | 核验后发布新版本；默认只输出计划。 |
+
+## `cne repair stock-listing-dates`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml` | 配置文件路径。 |
+| `--apply` | `False` | 发布官方 IPO 日历证实的股票上市日期；保留旧版本。 |
+| `--refresh-sources` | `False` | 联网取巨潮 IPO 日历；默认回放已归档来源。 |
+| `--max-sessions` | `32` | — |
+| `--event-date` | `—` | 额外回放指定日的官方上市事件，可重复；不要求证券已有日线。 |
 
 ## `cne repair valuation-basis`
 
@@ -471,6 +619,7 @@
 | `--run` | `—` | 要看的 run id，或 'latest'（默认）。包含各数据集 stage 的结果。 |
 | `--datasets` | `False` | 逐数据集的新鲜度：覆盖区间、水位，以及相对最后交易日是否陈旧。 |
 | `--all-columns` | `False` | 配合 --datasets：打印数据集清单的全部列，而不只是新鲜度。 |
+| `--hide-empty` | `False` | 配合 --datasets：只列有数据或已陈旧的数据集，还没有数据的折成一行。 |
 | `--groups` | `—` | 配合 --datasets：只对这些调度组拥有的数据集判失败（空格或逗号分隔）。其它组的数据集照常列出、照常报为调度缺口，但不会让门禁失败。截面检查同样受它约束——daily_bars 归哪个组，它的覆盖率就归谁判。未跑完的 init 不属于任何调度组，始终判失败。 |
 | `--scope, --no-scope` | `True` | 配合 --datasets：是否做最新交易日的标的截面校验。它要读 daily_bars 的 tip 分区、instruments 和 trading_status，比单纯看水位贵；--no-scope 让这条命令回到纯元数据。 |
 | `--gate` | `False` | 按所选范围和新鲜度执行门禁；默认只报告。 |

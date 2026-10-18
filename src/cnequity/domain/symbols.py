@@ -55,7 +55,7 @@ ETF_PREFIXES = {
 # were securities. They are not tradable equities: a daily instruments compact
 # that sees them vanish invents a delist_date, and they inflate the "delisted"
 # count with noise like ``认购款``. Drop at ingest; purge from curated.
-SUBSCRIPTION_PLACEHOLDER_NAMES = frozenset({"认购款", "申购款"})
+SUBSCRIPTION_PLACEHOLDER_NAMES = frozenset({"认购款", "申购款"})  # i18n-ignore: vendor names
 
 # Numeric bands the exchanges have actually issued equity codes from, as
 # ``(exchange, first, last_exclusive)``. Narrower than PREFIX_WHITELIST, which

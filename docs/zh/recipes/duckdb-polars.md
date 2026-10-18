@@ -1,4 +1,4 @@
-# Recipe：DuckDB 与 Polars
+# DuckDB 与 Polars
 
 同一份 Parquet 湖可以按三种方式消费：`load()` 负责带语义的研究查询，DuckDB 负责跨数据集 SQL，Polars `scan()` 负责 LazyFrame 管道。选择入口，不要复制一份“调整后数据湖”。
 

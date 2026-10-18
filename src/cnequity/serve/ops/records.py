@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from cnequity.file_lock import is_locked
+from cnequity.i18n import N_, _
 from cnequity.orchestrator.scheduler_lock import pid_alive
-from cnequity.serve.labels_en import en
+from cnequity.serve.display import en, local, zh
 from cnequity.storage.atomic import write_json_atomic
 
 # Windows can deny an open that lands on the instant the job process replaces
@@ -44,32 +45,18 @@ TERMINAL = frozenset(
     }
 )
 LABELS = {
-    "starting": "启动中",
-    "running": "运行中",
-    "rejected": "已拒绝",
-    "succeeded": "成功",
-    "partial": "部分交付",
-    "failed": "失败",
-    "skipped": "已跳过",
-    "findings": "未通过",
-    "error": "执行出错",
-    "interrupted": "已中断",
-    "complete": "完成",
-    "lost": "已终止",
-}
-LABELS_EN = {
-    "starting": "Starting",
-    "running": "Running",
-    "rejected": "Rejected",
-    "succeeded": "Succeeded",
-    "partial": "Partly delivered",
-    "failed": "Failed",
-    "skipped": "Skipped",
-    "findings": "Did not pass",
-    "error": "Errored",
-    "interrupted": "Interrupted",
-    "complete": "Complete",
-    "lost": "Terminated",
+    "starting": N_("Starting"),
+    "running": N_("Running"),
+    "rejected": N_("Rejected"),
+    "succeeded": N_("Succeeded"),
+    "partial": N_("Partly delivered"),
+    "failed": N_("Failed"),
+    "skipped": N_("Skipped"),
+    "findings": N_("Did not pass"),
+    "error": N_("Errored"),
+    "interrupted": N_("Interrupted"),
+    "complete": N_("Complete"),
+    "lost": N_("Terminated"),
 }
 WRITE_CLASSES = frozenset({"ingest-daily", "ingest-events", "lake-write", "init"})
 
@@ -189,12 +176,12 @@ def effective(config, record: dict) -> dict:
     state = record.get("state")
     if state not in ACTIVE:
         shown = dict(record)
-        shown["label"] = LABELS.get(state, state)
+        shown["label"] = zh(LABELS.get(state, state))
         return shown
     holder = live_holder(config)
     if holder and holder.get("job_id") == record.get("job_id"):
         shown = dict(record)
-        shown["label"] = LABELS.get(state, state)
+        shown["label"] = zh(LABELS.get(state, state))
         return shown
     # The caller may have read "running" just before the child wrote its
     # ending and released the slot. Re-read before interpreting the unlocked
@@ -208,7 +195,7 @@ def effective(config, record: dict) -> dict:
             return effective(config, latest)
     if state == "starting" and not record.get("pid") and _age_seconds(record) < 15:
         shown = dict(record)
-        shown["label"] = LABELS["starting"]
+        shown["label"] = zh(LABELS["starting"])
         return shown
     shown = dict(record)
     try:
@@ -216,15 +203,17 @@ def effective(config, record: dict) -> dict:
     except KeyError:
         cancelled = False
     shown["state"] = "interrupted" if cancelled else "lost"
-    shown["label"] = LABELS[shown["state"]]
+    shown["label"] = zh(LABELS[shown["state"]])
     shown["finished_at"] = shown.get("finished_at") or _now()
     if not shown.get("outcome"):
         shown["outcome"] = {
             "kind": shown["state"],
             "message": (
-                "已取消。进程没有自行收尾。"
+                _("Cancelled. The process did not wind down on its own.")
                 if cancelled
-                else "进程已经不在。若是强制结束，以关联 run 的状态为准。"
+                else _(
+                    "The process is gone. If it was force-stopped, go by the state of the linked run."
+                )
             ),
         }
     return shown
@@ -232,10 +221,12 @@ def effective(config, record: dict) -> dict:
 
 def public_record(config, record: dict) -> dict:
     shown = effective(config, record)
-    shown["label"] = LABELS.get(shown.get("state"), shown.get("state"))
-    shown["label_en"] = LABELS_EN.get(shown.get("state"), shown.get("state"))
-    # Older records predate title_en; the title is a catalog title either way.
-    shown["title_en"] = en(shown.get("title"))
+    state = shown.get("state")
+    shown["label"] = zh(LABELS.get(state, state))
+    shown["label_en"] = LABELS.get(state, state)
+    # Older records predate title_en and store only the Chinese catalog title,
+    # which `en` maps back to its English source.
+    shown["title_en"] = shown.get("title_en") or en(shown.get("title"))
     return shown
 
 
@@ -245,8 +236,12 @@ def purge_blocked_reason(config) -> str | None:
         return None
     holder = live_holder(config)
     if holder is None:
-        return "面板有任务正在执行，请等它结束后再确认删除。"
+        return _(
+            "A dashboard task is running; wait for it to finish before confirming the deletion."
+        )
     if holder.get("lock_class") in WRITE_CLASSES:
-        title = holder.get("title") or holder.get("op") or "写入"
-        return f"面板正在执行「{title}」，请等它结束后再确认删除。"
+        title = local(holder.get("title")) or holder.get("op") or _("write")
+        return _(
+            'The dashboard is running "{title}"; wait for it to finish before confirming the deletion.'
+        ).format(title=title)
     return None

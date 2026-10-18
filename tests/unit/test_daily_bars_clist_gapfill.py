@@ -1639,9 +1639,8 @@ def test_the_slowest_link_refuses_a_residue_that_is_really_a_dead_primary(tmp_pa
     assert "residue bound" in result["audit_findings"][0]["message"]
 
 
-def test_beijing_keys_never_reach_baostock(tmp_path, monkeypatch):
-    """Baostock serves SH/SZ only: a BJ code comes back as a retried failure,
-    which costs the sweep and evidences nothing about the session."""
+def test_unsupported_keys_never_reach_baostock(tmp_path, monkeypatch):
+    """Only SH/SZ stock responses can certify no-data for this source."""
     from cnequity.steps import bars as bars_mod
 
     cfg = _cfg(tmp_path)
@@ -1659,13 +1658,16 @@ def test_beijing_keys_never_reach_baostock(tmp_path, monkeypatch):
     result = bars_mod._gapfill_missing_keys_via_baostock(
         cfg,
         run_id,
-        missing_keys={("920002.BJ", day), ("600519.SH", day)},
+        missing_keys={
+            (symbol, day)
+            for symbol in ["920002.BJ", "600519.SH", "512390.SH", "163005.SZ", "159231.SZ"]
+        },
         start=day,
         end=day,
     )
 
     assert seen["symbols"] == ["600519.SH"]
-    # The Beijing name is not empty evidence either — it was never asked.
+    # Unsupported securities contribute no empty vote.
     assert result["empty_symbols"] == ["600519.SH"]
 
 
@@ -1844,18 +1846,19 @@ def test_learning_is_skipped_when_there_is_nothing_unexplained(tmp_path, monkeyp
     assert outcome["status"] == "not_needed"
 
 
-def test_beijing_keys_are_not_sent_to_a_vendor_without_beijing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("symbol", ["920002.BJ", "512390.SH", "163005.SZ", "159231.SZ"])
+def test_unsupported_keys_are_not_sent_for_suspension_evidence(tmp_path, monkeypatch, symbol):
     from cnequity.steps import bars as bars_mod
 
     cfg = _cfg(tmp_path)
     cfg.sources.update({"baostock": True})
 
     def _never(*args, **kwargs):
-        raise AssertionError("baostock has no Beijing coverage")
+        raise AssertionError("baostock has no coverage of this security")
 
     monkeypatch.setattr("cnequity.adapters.baostock.st_history.fetch_st_history", _never)
     suspended, outcome = bars_mod._learn_suspensions_from_baostock(
-        cfg, "run-x", {("920002.BJ", date(2010, 3, 30))}, date(2010, 3, 30), date(2010, 3, 30)
+        cfg, "run-x", {(symbol, date(2010, 3, 30))}, date(2010, 3, 30), date(2010, 3, 30)
     )
     assert suspended == set()
     assert outcome["status"] == "skipped"

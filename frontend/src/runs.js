@@ -248,7 +248,7 @@ export async function renderRuns(ctx) {
         : state.view === "success"
           ? tr("没有成功的运行。", "No successful runs.")
           : tr("还没有运行记录。用上面的命令开始一次。", "No runs yet. Start one with the commands above.");
-  const range = tr(
+  const range = !total ? tr("共 0 条。", "0 runs.") : tr(
     `第 ${ctx.fmt(start)}–${ctx.fmt(end)} 条，${state.view === "all" ? "共" : "筛选后"} ${ctx.fmt(total)} 条。点任务名看时间线。`,
     `Rows ${ctx.fmt(start)}–${ctx.fmt(end)} of ${ctx.fmt(total)}${state.view === "all" ? "" : " matching"}. Open a job for the timeline.`,
   );

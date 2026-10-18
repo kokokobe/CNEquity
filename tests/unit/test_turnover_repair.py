@@ -31,6 +31,91 @@ def _row(symbol, *, volume, amount, close=18.26, source="ths", high=18.88, low=1
     }
 
 
+def test_peer_review_corroborates_whole_bars_and_preserves_conflicts():
+    stored = pl.DataFrame([_row(s, volume=5000, amount=None) for s in ["A", "B", "C", "D"]])
+    fresh = pl.DataFrame(
+        [
+            _row(s, volume=5099, amount=93000.0, close=18.4, source="baostock")
+            for s in ["A", "B", "C", "D"]
+        ]
+    )
+    peer = pl.DataFrame(
+        [
+            _row("A", volume=5000, amount=93000.0, close=18.4, source="eastmoney"),
+            _row("B", volume=5000, amount=93000.0, source="eastmoney"),
+            _row("C", volume=5000, amount=130000.0, close=18.4, source="eastmoney"),
+            _row("D", volume=5000, amount=95000.0, close=18.4, source="eastmoney"),
+        ]
+    )
+    bao, em = bars._peer_turnover_replacements(stored, fresh, peer)
+    assert bao["symbol"].to_list() == ["A"]
+    assert bao["volume"].to_list() == [5099]
+    assert em["symbol"].to_list() == ["B"]
+    assert em["close"].to_list() == [18.26]
+
+
+def test_opted_in_peer_review_publishes_matching_source_whole_row(lake, monkeypatch):
+    import cnequity.adapters.baostock.delisted_bars as delisted
+    import cnequity.adapters.eastmoney.bars as eastmoney
+    import cnequity.adapters.exchange.turnover_prices as exchange
+    import cnequity.adapters.tdx_protocol.client as tdx
+
+    monkeypatch.setattr(
+        exchange, "fetch_exchange_turnover_prices", lambda *a, **k: (pl.DataFrame(), [])
+    )
+    monkeypatch.setattr(tdx, "fetch_daily_bars", lambda *a, **k: pl.DataFrame())
+
+    lake._turnover_peer_review = True
+    fresh = _row("600217.SH", volume=500099, amount=9300000.0, close=18.4)
+    plain = {k: v for k, v in fresh.items() if k not in {"source", "data_version", "fetched_at"}}
+    monkeypatch.setattr(delisted, "fetch_delisted_bars", lambda *a, **k: ([plain], []))
+    monkeypatch.setattr(
+        eastmoney,
+        "fetch_daily_bars",
+        lambda *a, **k: pl.DataFrame(
+            [
+                {**plain, "volume": 500000},
+            ]
+        ),
+    )
+    result = bars.repair_daily_bar_turnover(lake, DAY, DAY, "peer-repair", None)
+    assert result["context_updates"]["audit_findings"][0]["rows_replaced"] == 1
+    step_compact(lake, DAY, "peer-repair", {})
+    row = load("daily_bars", config=lake).filter(pl.col("symbol") == "600217.SH").row(0, named=True)
+    assert row["close"] == 18.4 and row["volume"] == 500099 and row["source"] == "baostock"
+
+
+def test_exchange_prices_confirm_whole_bao_bar_without_exchange_turnover():
+    stored = pl.DataFrame([_row("A", volume=100, amount=None)])
+    fresh = pl.DataFrame([_row("A", volume=5099, amount=93000.0, close=18.4)])
+    quotes = fresh.with_columns(pl.lit(999999999).alias("volume"), pl.lit(1.0).alias("amount"))
+    confirmed = bars._authority_turnover_replacements(stored, fresh, quotes)
+    assert confirmed["volume"].to_list() == [5099]
+    assert confirmed["amount"].to_list() == [93000.0]
+    assert bars._authority_turnover_replacements(
+        stored, fresh, quotes.with_columns(pl.lit(18.5).alias("close"))
+    ).is_empty()
+
+
+def test_native_peer_confirms_bao_without_enabling_disabled_http_sources(lake, monkeypatch):
+    import cnequity.adapters.baostock.delisted_bars as delisted
+    import cnequity.adapters.tdx_protocol.client as tdx
+
+    lake._turnover_peer_review = True
+    lake.sources = {"eastmoney": False, "exchange": False}
+    fresh = _row("600217.SH", volume=500099, amount=9300000.0, close=18.4)
+    plain = {k: v for k, v in fresh.items() if k not in {"source", "data_version", "fetched_at"}}
+    monkeypatch.setattr(delisted, "fetch_delisted_bars", lambda *a, **k: ([plain], []))
+    monkeypatch.setattr(
+        tdx, "fetch_daily_bars", lambda *a, **k: pl.DataFrame([{**plain, "volume": 500000}])
+    )
+    result = bars.repair_daily_bar_turnover(lake, DAY, DAY, "native-review", None)
+    assert result["context_updates"]["audit_findings"][0]["rows_tdx_confirmed"] == 1
+    step_compact(lake, DAY, "native-review", {})
+    row = load("daily_bars", config=lake).filter(pl.col("symbol") == "600217.SH").row(0, named=True)
+    assert row["volume"] == 500099 and row["source"] == "baostock"
+
+
 def test_turnover_defects_are_classified_without_flagging_block_trades():
     frame = pl.DataFrame(
         [

@@ -15,6 +15,7 @@ from cnequity.domain.datasets import DatasetSpec, get_dataset
 from cnequity.domain.market_time import shanghai_today
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_horizon_guard_refuses_a_window_the_source_cannot_serve():
     spec = get_dataset("minute_bars")
     today = shanghai_today()
@@ -362,6 +363,7 @@ def test_symbols_flag_scopes_daily_bar_repairs(tmp_path, monkeypatch):
     assert cfg._backfill_symbols == ["600519.SH"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_margin_source_override_is_one_run_only_and_dataset_scoped(monkeypatch):
     from types import SimpleNamespace
 
@@ -385,6 +387,7 @@ def test_margin_source_override_is_one_run_only_and_dataset_scoped(monkeypatch):
     assert "只适用于 margin_trading" in invalid.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_bse_tip_repair_requires_one_session_and_symbols(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
@@ -462,6 +465,7 @@ def test_symbols_flag_lifts_the_tick_ceiling_for_a_hand_typed_list():
     assert cfg.trade_ticks_max_symbols == 3
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_tick_horizon_guard_does_not_suggest_narrowing_the_scope():
     """A fixed floor has no narrower scope that reaches further back.
 
@@ -478,6 +482,7 @@ def test_tick_horizon_guard_does_not_suggest_narrowing_the_scope():
     assert "2024-01-02" in message
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_top_holders_floor_is_the_pit_boundary_not_the_data_boundary():
     """2003 is where the *disclosure dates* start, not where the data starts.
 
@@ -499,6 +504,7 @@ def test_top_holders_floor_is_the_pit_boundary_not_the_data_boundary():
     assert "narrow" not in message, "a fixed floor has no narrower scope that helps"
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_northbound_flows_declares_the_exchange_opening_floor():
     spec = get_dataset("northbound_flows")
     assert spec.history_floor_date == date(2014, 11, 17)
@@ -654,6 +660,7 @@ def test_a_degraded_slice_keeps_the_sweep_going_but_not_its_success_claim(monkey
     assert result["resume_from"] is None
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize(
     ("name", "expected"),
     [

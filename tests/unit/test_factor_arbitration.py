@@ -41,6 +41,7 @@ def _write_bars(cfg: Config, symbol: str, steps: dict[int, float], *, skip=()) -
                 "high": [close],
                 "low": [close],
                 "close": [close],
+                "pre_close": [close],
                 "volume": [100.0],
                 "amount": [close * 100],
             }
@@ -333,3 +334,37 @@ def test_an_action_inside_a_halt_pairs_with_the_step_on_resumption(tmp_path):
 
     contradictions, _ = factor_action_contradictions(cfg)
     assert "600002.SH" not in contradictions.get_column("symbol").to_list()
+
+
+def test_actual_market_closes_alone_cannot_prove_a_whole_source_switch(tmp_path):
+    cfg = _lake(tmp_path)
+    for path in (cfg.curated_root / "daily_bars").rglob("*.parquet"):
+        pl.read_parquet(path).drop("pre_close").write_parquet(path)
+    report = arbitrate_factor_sources(cfg, fetch=_fake_baostock)
+    assert report["switch"] == []
+
+
+def test_peer_must_cover_the_whole_stored_series(tmp_path):
+    cfg = _lake(tmp_path)
+
+    def late(symbols, start, end, *, config=None):
+        frame, failed = _fake_baostock(symbols, start, end, config=config)
+        return frame.filter(pl.col("trade_date") >= DAYS[2]), failed
+
+    assert arbitrate_factor_sources(cfg, fetch=late)["switch"] == []
+
+
+def test_existing_material_event_magnitude_must_agree(tmp_path):
+    cfg = _lake(tmp_path)
+
+    def wrong(symbols, start, end, *, config=None):
+        frame, failed = _fake_baostock(symbols, start, end, config=config)
+        frame = frame.with_columns(
+            pl.when((pl.col("symbol") == "600001.SH") & (pl.col("trade_date") >= DAYS[5]))
+            .then(pl.col("factor") * 1.15 / 1.05)
+            .otherwise(pl.col("factor"))
+            .alias("factor")
+        )
+        return frame, failed
+
+    assert arbitrate_factor_sources(cfg, fetch=wrong)["switch"] == []

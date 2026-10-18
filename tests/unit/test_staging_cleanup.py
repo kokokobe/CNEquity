@@ -74,6 +74,30 @@ def test_clean_skips_incomplete_run(tmp_path):
     result = clean_staging(cfg, orphan_retention_days=999)
     assert run_id in result.skipped_run_ids
     assert run_id in list_staging_run_ids(cfg.staging_root)
+    assert result.skipped_reasons[run_id] == "incomplete_batches"
+    assert result.inventory[0]["incomplete_batches"] == 1
+
+
+def test_clean_preserves_a_locked_terminal_run_even_with_force(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily", {})
+    manifest.start_batch(run_id, "compact-0", "compact", "compact")
+    manifest.finish_batch(run_id, "compact-0", "success")
+    manifest.finish_run(run_id, "success")
+    StagingWriter(cfg.staging_root).write_batch(
+        "daily_bars",
+        run_id,
+        "batch-0",
+        pl.DataFrame([_bar_row("000001.SZ", date(2024, 6, 28))]),
+    )
+    with exclusive_lock(cfg.meta_root / "locks" / f"{run_id}.lock"):
+        for dry_run in (True, False):
+            result = clean_staging(cfg, dry_run=dry_run, force=True)
+            assert result.skipped_reasons == {run_id: "active_run_lock"}
+            assert not result.removed_run_ids
+            assert not result.force_removed_run_ids
+            assert run_id in list_staging_run_ids(cfg.staging_root)
 
 
 def test_clean_never_deletes_failed_run_staging_without_force(tmp_path):
@@ -200,6 +224,28 @@ def test_clean_removes_failed_run_when_compacted_and_settled(tmp_path):
     result = clean_staging(cfg)
     assert run_id in result.removed_run_ids
     assert run_id not in list_staging_run_ids(cfg.staging_root)
+
+
+def test_a_degraded_run_is_cleaned_once_its_batches_settled(tmp_path):
+    """Degraded is terminal; the run's own degraded batches are what keep staging."""
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    settled = manifest.start_run("daily", {})
+    manifest.start_batch(settled, "batch-0", "daily_bars", "daily_bars")
+    manifest.finish_batch(settled, "batch-0", "success", rows_written=1)
+    manifest.start_batch(settled, "compact-0", "compact", "compact")
+    manifest.finish_batch(settled, "compact-0", "success", rows_written=1)
+    manifest.finish_run(settled, "degraded")
+
+    unsettled = manifest.start_run("daily", {})
+    manifest.start_batch(unsettled, "batch-0", "fund_flow", "fund_flow")
+    manifest.finish_batch(unsettled, "batch-0", "degraded", rows_written=1)
+    manifest.start_batch(unsettled, "compact-0", "compact", "compact")
+    manifest.finish_batch(unsettled, "compact-0", "success", rows_written=1)
+    manifest.finish_run(unsettled, "degraded")
+
+    assert run_ready_for_staging_cleanup(manifest, settled) is True
+    assert run_ready_for_staging_cleanup(manifest, unsettled) is False
 
 
 def test_clean_skips_warning_run_without_compact(tmp_path):

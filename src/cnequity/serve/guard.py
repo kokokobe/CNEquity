@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
+from cnequity.i18n import _
+
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -42,12 +44,16 @@ def check_browser(request: Request, *, mutation: bool, scope: str) -> None:
     host = client_host(request)
     if not request.app.state.token and host not in LOOPBACK_HOSTS:
         if scope == "storage":
-            detail = "存储运维请从 localhost 或 127.0.0.1 打开；远程访问须配置令牌。"
+            detail = _(
+                "Open storage operations from localhost or 127.0.0.1; remote access needs a token."
+            )
         else:
-            detail = "面板操作请从 localhost 或 127.0.0.1 打开；远程访问须配置令牌。"
+            detail = _(
+                "Open dashboard operations from localhost or 127.0.0.1; remote access needs a token."
+            )
         raise HTTPException(403, detail)
     if request.app.state.setup and host not in LOOPBACK_HOSTS:
-        raise HTTPException(403, "首次配置只能在本机完成。")
+        raise HTTPException(403, _("First-time setup can only be done on this machine."))
     if (
         scope == "ops"
         and mutation
@@ -55,14 +61,19 @@ def check_browser(request: Request, *, mutation: bool, scope: str) -> None:
         and not request.app.state.allow_remote_ops
     ):
         raise HTTPException(
-            403, "远程访问默认不能从面板发起操作。启动时加上 --allow-remote-ops 才能开启。"
+            403,
+            _(
+                "Remote access cannot start operations from the dashboard by default. Start serve with --allow-remote-ops to enable it."
+            ),
         )
     if not mutation:
         return
     origin = request.headers.get("origin", "")
     expected = f"{request.url.scheme}://{request.headers.get('host', '')}"
     if origin != expected or request.headers.get("sec-fetch-site") not in (None, "same-origin"):
-        raise HTTPException(403, "仅允许从当前运维网页提交。")
+        raise HTTPException(
+            403, _("Submissions are only accepted from the current operations page.")
+        )
     header = "x-cne-storage-csrf" if scope == "storage" else "x-cne-csrf"
     supplied = request.headers.get(header, "")
     expected_token = request.app.state.csrf
@@ -71,4 +82,4 @@ def check_browser(request: Request, *, mutation: bool, scope: str) -> None:
         or len(supplied) != len(expected_token)
         or not secrets.compare_digest(supplied, expected_token)
     ):
-        raise HTTPException(403, "页面确认凭据已失效，请刷新页面。")
+        raise HTTPException(403, _("The page confirmation token has expired; refresh the page."))

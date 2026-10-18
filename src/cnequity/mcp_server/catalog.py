@@ -49,14 +49,18 @@ TOOLS: list[dict] = [
             "before answering anything factual about A-share data, and use its "
             "coverage_start/coverage_end to tell 'this lake has no such data' apart "
             "from 'this did not happen'. It also reports `live_mode` — when that is "
-            "on, some answers come from the vendor rather than the lake and say so."
+            "on, some answers come from the vendor rather than the lake and say so. "
+            "Then pick a tool: resolve_symbol for names, query_bars for prices, "
+            "query_fundamentals for financials, query_dataset for everything else, "
+            "run_sql for aggregation."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "include_empty": {
                     "type": "boolean",
-                    "description": "Also list registered datasets with no data yet.",
+                    "description": "Also list registered datasets with no data yet. Use it to tell "
+                    "an empty dataset from an unknown name.",
                 }
             },
         },
@@ -69,12 +73,19 @@ TOOLS: list[dict] = [
             "'600519' all resolve to 600519.SH. Do this before any query when the "
             "user named a company rather than a code: a guessed suffix returns an "
             "empty result rather than an error. Delisted names are included and "
-            "flagged with delist_date."
+            "flagged with delist_date. Returns the canonical symbol, name and "
+            "delist_date; several rows mean the fragment is ambiguous, so pick by "
+            "name before querying."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Name fragment or code."},
+                "query": {
+                    "type": "string",
+                    "description": "Company-name fragment, or a code prefix with or without "
+                    "the exchange suffix (.SH/.SZ/.BJ). The match returns the canonical "
+                    "suffixed symbol to use in later calls.",
+                },
                 "limit": _LIMIT,
             },
             "required": ["query"],
@@ -95,7 +106,10 @@ TOOLS: list[dict] = [
             "whether 1m or 5m built it). Every response carries "
             "`origin`: 'lake' is stored and validated; 'live' was fetched just now "
             "and cannot be adjusted or universe-filtered — read its warning before "
-            "using the numbers for anything but a current quote."
+            "using the numbers for anything but a current quote. Not for financial "
+            "statements (query_fundamentals), other datasets such as fund flow "
+            "(query_dataset), or ranking and aggregating across many symbols "
+            "(run_sql)."
         ),
         "inputSchema": {
             "type": "object",
@@ -141,7 +155,10 @@ TOOLS: list[dict] = [
             "what prevents look-ahead: only figures publicly announced on or "
             "before that date come back, and a restated figure returns the "
             "vintage that was current then. For a present-day view pass today's "
-            "date; for a historical study pass the date being studied, never today."
+            "date; for a historical study pass the date being studied, never today. "
+            "Results are paged with limit/offset. For prices use query_bars; for "
+            "valuation ratios read valuation_metrics through query_dataset. Set "
+            "pit_mode='strict' only to audit what the lake itself held on that date."
         ),
         "inputSchema": {
             "type": "object",
@@ -162,6 +179,13 @@ TOOLS: list[dict] = [
                     "the one current then. For studying restatements; it double-counts "
                     "a fact in any cross-sectional screen.",
                 },
+                "pit_mode": {
+                    "type": "string",
+                    "enum": ["best_effort", "strict"],
+                    "description": "best_effort (default) also returns rows a later "
+                    "backfill recorded, flagged pit_is_exact=false; strict keeps only "
+                    "rows the lake held by as_of, which is none for a backfilled history.",
+                },
                 "limit": _LIMIT,
                 "offset": _OFFSET,
             },
@@ -177,7 +201,9 @@ TOOLS: list[dict] = [
             "share_unlock_schedule, corporate_actions, valuation_metrics, "
             "index_constituents and the rest. Call describe_lake for the full "
             "list and each one's coverage. Bars go through query_bars and "
-            "financial statements through query_fundamentals."
+            "financial statements through query_fundamentals. Results are paged with "
+            "limit/offset and the response reports the true total and a truncated "
+            "flag; for cross-sectional ranking use run_sql instead of paging."
         ),
         "inputSchema": {
             "type": "object",
@@ -205,12 +231,18 @@ TOOLS: list[dict] = [
             "hfq_open/high/low/close and open-lake qfq_* beside the raw columns; "
             "for a bounded historical qfq window use `daily_bars_qfq(start_date, "
             "end_date)` so the anchor matches that window. Prefer these over "
-            "joining adj_factors yourself. Single SELECT only."
+            "joining adj_factors yourself. Single SELECT only: no writes, DDL or "
+            "multiple statements. For one symbol's bars use query_bars, and for "
+            "plain dataset reads query_dataset."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "sql": {"type": "string", "description": "A single SELECT statement."},
+                "sql": {
+                    "type": "string",
+                    "description": "A single DuckDB SELECT. Table names are dataset names "
+                    "(see describe_lake).",
+                },
                 "limit": _LIMIT,
             },
             "required": ["sql"],

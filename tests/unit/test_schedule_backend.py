@@ -71,6 +71,7 @@ def test_cron_preserves_other_entries_and_escapes_paths(backend, monkeypatch):
     assert not backend.observe()["installed"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cron_refuses_permission_failures_and_unknown_owned_entry(backend, monkeypatch):
     _as_linux_cron(backend)
     monkeypatch.setattr(

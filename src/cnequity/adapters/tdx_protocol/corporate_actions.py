@@ -17,6 +17,10 @@ from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive, beg
 logger = logging.getLogger(__name__)
 
 
+class SweepStopped(RuntimeError):
+    """A parallel xdxr sweep was cancelled while this chunk was still running."""
+
+
 def _configured_archive(
     config,
     dataset: str,
@@ -280,6 +284,7 @@ def fetch_corporate_actions_tdx(
     request_scope: str | None = None,
     progress_report: Callable[[int], None] | None = None,
     progress_offset: int = 0,
+    should_stop: Callable[[], bool] | None = None,
 ) -> pl.DataFrame:
     if archive is None:
         archive = _configured_archive(
@@ -307,6 +312,10 @@ def fetch_corporate_actions_tdx(
         # needed; holding one would block unrelated daily/minute lanes.
         client = client_factory()
         for index, sym in enumerate(symbols, start=1):
+            if should_stop is not None and should_stop():
+                # A parallel sweep is shutting down; this chunk will not be
+                # recorded, so its remaining symbols are not worth a request.
+                raise SweepStopped(f"corporate_actions sweep stopped before {sym}")
             df = fetch_xdxr_for_symbol(
                 client,
                 sym,

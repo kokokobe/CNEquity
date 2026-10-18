@@ -200,15 +200,17 @@ def _pick_reachable_server(config: Config | None = None, timeout: int = 10) -> t
         with source_request(config, "tdx_protocol"):
             return _probe(host, port, timeout)
 
-    with ThreadPoolExecutor(max_workers=min(len(candidates), _TDX_PROBE_CONCURRENCY)) as pool:
-        futures = {pool.submit(_probe_one, h, p): (h, p) for h, p in candidates}
-        try:
-            for fut in _as_completed(futures):
-                if fut.result():
-                    return futures[fut]
-        finally:
-            for fut in futures:
-                fut.cancel()
+    pool = ThreadPoolExecutor(max_workers=min(len(candidates), _TDX_PROBE_CONCURRENCY))
+    futures = {pool.submit(_probe_one, h, p): (h, p) for h, p in candidates}
+    try:
+        for fut in _as_completed(futures):
+            if fut.result():
+                return futures[fut]
+    finally:
+        # Not a `with` block: leaving one waits for every probe already
+        # running, so the first live host (1.6s) was returned only when the
+        # slowest dead one gave up (4s+). The stragglers finish on their own.
+        pool.shutdown(wait=False, cancel_futures=True)
     raise TdxSourceError(
         f"no TDX server responded with data (probed {len(candidates)} host(s); "
         "network down or all feeds degraded)"
@@ -600,16 +602,27 @@ def fetch_instruments(
         # ``Quotes`` is owned by this invocation.  Do not hold a global
         # protocol lock while reading the two security-list pages: another
         # worker owns a different socket and can safely make progress.
-        client = _quotes_client(config)
+        # Retried like every other TDX connect: this is the first request of a
+        # `cne init`, and one dropped handshake used to end the whole build.
+        client = _connect_with_retry(config)
         frames = []
         market_errors: list[str] = []
         for market, exch in _TDX_STOCK_MARKETS:
-            try:
-                with source_request_slot_spec(rate_limit):
-                    wait_spec(rate_limit)
-                    raw = client.stocks(market=market)
-            except Exception as exc:
-                market_errors.append(f"{exch}: {exc}")
+            raw = None
+            failure: Exception | None = None
+            for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+                try:
+                    with source_request_slot_spec(rate_limit):
+                        wait_spec(rate_limit)
+                        raw = client.stocks(market=market)
+                    failure = None
+                    break
+                except Exception as exc:  # noqa: BLE001 — retried once, then reported
+                    failure = exc
+                    if attempt + 1 < _CONNECT_RETRY_ATTEMPTS:
+                        time.sleep(_CONNECT_RETRY_BACKOFF_SEC)
+            if failure is not None:
+                market_errors.append(f"{exch}: {failure}")
                 continue
             if raw is None or len(raw) == 0:
                 market_errors.append(f"{exch}: empty response")
@@ -1110,6 +1123,7 @@ def fetch_corporate_actions(
     request_scope: str | None = None,
     progress_report=None,
     progress_offset: int = 0,
+    should_stop=None,
 ) -> pl.DataFrame:
     if rate_limit is None and config is not None:
         rate_limit = config.tdx_rate_limit_spec()
@@ -1147,6 +1161,7 @@ def fetch_corporate_actions(
                 request_scope=request_scope,
                 progress_report=progress_report,
                 progress_offset=progress_offset,
+                should_stop=should_stop,
             )
             if tdx_df.height:
                 frames.append(tdx_df.with_columns(pl.lit("tdx_protocol").alias("source")))

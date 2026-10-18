@@ -103,10 +103,12 @@ def fetch_news_since(
             if not isinstance(payload, dict):
                 raise RuntimeError("EastMoney news response is not an object")
             data = payload.get("data")
-            if data is not None and not isinstance(data, dict):
+            if not isinstance(data, dict):
                 raise RuntimeError("EastMoney news response data is not an object")
-            items = _object_rows((data or {}).get("fastNewsList"), source="news")
-            next_cursor = str((data or {}).get("sortEnd") or "").strip()
+            if not isinstance(data.get("fastNewsList"), list):
+                raise RuntimeError("EastMoney news response data.fastNewsList is not a list")
+            items = _object_rows(data["fastNewsList"], source="news")
+            next_cursor = str(data.get("sortEnd") or "").strip()
             if recorder is not None:
                 recorder.append(
                     {

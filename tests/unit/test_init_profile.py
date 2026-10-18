@@ -65,6 +65,7 @@ def test_since_overrides_the_profile():
     assert _init_history_start("quick", "2019-01-01", date(2026, 8, 2)) == date(2019, 1, 1)
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize(
     ("universe", "label"),
     [
@@ -77,6 +78,7 @@ def test_ingest_scope_labels_do_not_overstate_the_configured_market(universe, la
     assert ingest_scope_label(universe) == label
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize("resume", [False, True])
 def test_init_plan_explains_optional_st_and_automatic_delisted_recovery(capsys, resume):
     _echo_init_plan(
@@ -111,6 +113,7 @@ def _capture_backfill_start(tmp_path, monkeypatch, args: list[str]):
     return seen.get("start"), result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_quick_profile_reaches_the_engine(tmp_path, monkeypatch):
     start, output = _capture_backfill_start(
         tmp_path, monkeypatch, ["--profile", "quick", "--trade-date", "2026-08-02"]
@@ -124,6 +127,7 @@ def test_quick_profile_reaches_the_engine(tmp_path, monkeypatch):
     assert "cne backfill trading_status" in output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_default_init_is_the_shallow_window(tmp_path, monkeypatch):
     """A bare `cne init` takes the quick window — a usable lake on the first run.
 
@@ -135,7 +139,11 @@ def test_default_init_is_the_shallow_window(tmp_path, monkeypatch):
     # midnight for reasons that have nothing to do with the behaviour under test.
     # The CLI anchors market windows on the exchange-local date, not the host
     # machine's date. Around UTC/local midnight those can differ by one day.
-    today = shanghai_today()
+    # On a weekend or holiday it anchors on the last finished session instead.
+    from cnequity.cli.demo import _last_trading_day
+    from cnequity.config import Config
+
+    today = _last_trading_day(Config(data_root=tmp_path / "anchor"), shanghai_today())
     try:
         expected = today.replace(year=today.year - QUICK_PROFILE_YEARS)
     except ValueError:  # Feb 29 — same fallback the CLI uses
@@ -147,6 +155,7 @@ def test_default_init_is_the_shallow_window(tmp_path, monkeypatch):
     assert "cne backfill daily_bars" in output, "must say how to deepen"
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_full_profile_still_takes_everything(tmp_path, monkeypatch):
     start, output = _capture_backfill_start(tmp_path, monkeypatch, ["--profile", "full"])
     assert start is None
@@ -155,6 +164,7 @@ def test_full_profile_still_takes_everything(tmp_path, monkeypatch):
     assert "深历史需要更多分页" in output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_custom_init_window_does_not_claim_a_fixed_duration(tmp_path, monkeypatch):
     _, output = _capture_backfill_start(
         tmp_path,
@@ -168,6 +178,7 @@ def test_custom_init_window_does_not_claim_a_fixed_duration(tmp_path, monkeypatc
     assert "约 3 小时" not in output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_resume_reports_remaining_work_instead_of_the_full_run_estimate(tmp_path, monkeypatch):
     start, output = _capture_backfill_start(tmp_path, monkeypatch, ["--resume"])
 
@@ -179,6 +190,7 @@ def test_resume_reports_remaining_work_instead_of_the_full_run_estimate(tmp_path
     assert "约 3 小时" not in output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_resume_since_is_the_only_explicit_history_override(tmp_path, monkeypatch):
     start, output = _capture_backfill_start(
         tmp_path,
@@ -350,6 +362,7 @@ def test_a_tiny_lake_profile_needs_no_config(monkeypatch, tmp_path):
     assert seen["runner"] == "sample"
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize(
     ("args", "rejected"),
     [

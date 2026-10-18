@@ -5,7 +5,7 @@
 # command does not enforce it; this does.
 #
 # Install once per clone:
-#   pip install pre-commit && pre-commit install
+#   pip install pre-commit && pre-commit install --hook-type pre-commit --hook-type pre-push
 #
 # The rev is pinned to the same ruff minor line as the `dev` dependency group in
 # pyproject.toml, for the reason stated there: the formatter's line-wrapping
@@ -30,3 +30,22 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+
+  - repo: local
+    hooks:
+      # A Chinese doc edit without the matching English one turned every CI job
+      # red through tests/unit/test_docs_i18n.py; this fails the commit instead.
+      - id: doc-translations
+        name: docs/en is not behind docs/zh
+        entry: python scripts/dev/doc_translations.py
+        language: python
+        files: ^(docs/(zh|en)/|scripts/dev/i18n/doc_sources\.json$)
+        pass_filenames: false
+      # Installed with `pre-commit install --hook-type pre-push`; see the script.
+      - id: unit-tests
+        name: unit tests (repo venv + Python 3.10)
+        entry: scripts/dev/pre_push.sh
+        language: script
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

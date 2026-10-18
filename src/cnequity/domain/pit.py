@@ -228,7 +228,6 @@ def classify_pit_rows(
     *,
     as_of: date,
     pit_mode: PitMode,
-    legacy_cutoff: bool = False,
 ) -> pl.DataFrame:
     """Filter and annotate rows according to the bitemporal PIT contract.
 
@@ -237,9 +236,7 @@ def classify_pit_rows(
     excluded in both modes.  Strict mode additionally requires the lake
     observation (``fetched_at``/``observed_at``) to be no later than ``as_of``
     and rejects rows from a backfill/reconstruction source.  Best-effort keeps
-    such rows for exploratory use and marks them ``pit_is_exact=False``.  The
-    0.x compatibility path sets ``legacy_cutoff`` so an omitted ``pit_mode``
-    keeps the former fetched-at boundary while still exposing the quality flag.
+    such rows for exploratory use and marks them ``pit_is_exact=False``.
     """
 
     if pit_mode not in ("strict", "best_effort"):
@@ -292,10 +289,7 @@ def classify_pit_rows(
         & observed.is_not_null()
         & (observed <= cutoff)
     )
-    selected = (
-        visible if not legacy_cutoff else visible & observed.is_not_null() & (observed <= cutoff)
-    )
-    out = out.filter(selected if pit_mode == "best_effort" else exact).with_columns(
+    out = out.filter(visible if pit_mode == "best_effort" else exact).with_columns(
         exact.alias("pit_is_exact")
         if pit_mode == "best_effort"
         else pl.lit(True).alias("pit_is_exact"),

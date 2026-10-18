@@ -16,11 +16,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from cnequity.i18n import ENV_VAR, _, carry_language, current_language
 from cnequity.serve.ops.catalog import OpsError, command_line, config_file, prepared, spec_for
 from cnequity.serve.ops.environment import command_environment
 from cnequity.serve.ops.job import launch_runs, same_job
 from cnequity.serve.ops.plan import describe_backfill
-from cnequity.serve.ops.preflight import blockers, hints, occupancy
+from cnequity.serve.ops.preflight import blockers, config_drift, drift_blocker, hints, occupancy
 from cnequity.serve.ops.records import (
     atomic_write,
     cancel_path,
@@ -168,18 +169,25 @@ class OpsService:
             self._expire()
             preview = self._previews.get(preview_id)
             if preview is None or preview.used or time.monotonic() > preview.expires:
-                raise OpsError("这次确认已失效，请重新预览。")
+                raise OpsError(_("This confirmation has expired; preview again."))
             if len(token) != len(preview.token) or not secrets.compare_digest(token, preview.token):
-                raise OpsError("确认凭据不匹配，请重新预览。")
+                raise OpsError(_("The confirmation token does not match; preview again."))
             if preview.config_path != self._identity():
-                raise OpsError("配置已经变了，请重新预览。")
+                raise OpsError(_("The config has changed; preview again."))
+            drift = config_drift(self.config)
+            if drift:
+                # Unused, like the maintenance wait: valid again once the file
+                # and the server agree.
+                raise OpsError(drift_blocker(drift))
             if self.storage_busy() and preview.lock_class != "read":
                 # Leave the token unused so the same preview can start once
                 # maintenance finishes.
-                raise OpsError("存储维护正在执行，请等它结束后再启动。")
+                raise OpsError(
+                    _("Storage maintenance is running; wait for it to finish before starting.")
+                )
             required = {item["id"] for item in preview.acknowledgements}
             if not required.issubset(set(acknowledged)):
-                raise OpsError("还没有勾选确认。")
+                raise OpsError(_("The confirmation is not ticked yet."))
             if preview.op.startswith("snapshot."):
                 from cnequity.serve.ops.backups import check_manifest
 
@@ -233,6 +241,9 @@ class OpsService:
         path = jobs_dir(self.config) / f"{job_id}.json"
         atomic_write(path, record)
         env = command_environment()
+        # The job speaks the language of the page that started it: its record
+        # messages, and the `cne` command it runs.
+        env[ENV_VAR] = current_language()
         env["CNE_LAUNCH_ID"] = job_id
         out_handle = open(out, "ab")
         err_handle = open(err, "ab")
@@ -252,7 +263,10 @@ class OpsService:
                 record.update(
                     state="rejected",
                     finished_at=datetime.now(timezone.utc).isoformat(),
-                    outcome={"kind": "rejected", "message": f"无法启动任务进程（{exc}）。"},
+                    outcome={
+                        "kind": "rejected",
+                        "message": _("Could not start the task process ({exc}).").format(exc=exc),
+                    },
                 )
                 atomic_write(path, record)
                 raise OpsError(record["outcome"]["message"]) from exc
@@ -266,7 +280,7 @@ class OpsService:
             current = read_record(path)
         shown = public_record(self.config, current)
         if shown["state"] == "rejected":
-            message = (shown.get("outcome") or {}).get("message") or "任务被拒绝。"
+            message = (shown.get("outcome") or {}).get("message") or _("The task was rejected.")
             raise OpsRejected(message)
         shown["runs"] = launch_runs(self.config, job_id, preview.target_run_id)
         return shown
@@ -278,9 +292,9 @@ class OpsService:
         try:
             path = record_path(self.config, job_id)
         except KeyError as exc:
-            raise OpsError("没有这个任务。") from exc
+            raise OpsError(_("No such task.")) from exc
         if not path.exists():
-            raise OpsError("没有这个任务。")
+            raise OpsError(_("No such task."))
         shown = public_record(self.config, read_record(path))
         shown["runs"] = launch_runs(self.config, job_id, shown.get("target_run_id"))
         return shown
@@ -288,19 +302,23 @@ class OpsService:
     def cancel(self, job_id: str, *, requested_by: str) -> dict:
         shown = self.get_job(job_id)
         if shown["state"] not in {"starting", "running"}:
-            raise OpsError("任务已经结束。")
+            raise OpsError(_("The task has already finished."))
         if (
             IS_WINDOWS
             and shown.get("pid")
             and not same_job(int(shown["pid"]), job_id, shown.get("process_created_at"))
         ):
-            raise OpsError("无法核对任务进程身份，未发送终止信号。请检查系统任务管理器。")
+            raise OpsError(
+                _(
+                    "Could not verify the task process identity, so no stop signal was sent. Check the system task manager."
+                )
+            )
         from datetime import datetime, timezone
 
         cancel = cancel_path(self.config, job_id)
         atomic_write(cancel, {"at": datetime.now(timezone.utc).isoformat(), "by": requested_by})
         threading.Thread(
-            target=_escalate,
+            target=carry_language(_escalate),
             args=(job_id, record_path(self.config, job_id)),
             name="ops-cancel",
             daemon=True,

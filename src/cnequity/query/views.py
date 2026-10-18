@@ -105,6 +105,16 @@ def _canonical_order_sql(name: str, columns: set[str] | dict[str, str]) -> str:
         evidence = evidence_level_sql(set(columns))
         if evidence is not None:
             order_by.append(f"{evidence} DESC")
+    elif name == "financial_statement_items" and "source" in columns:
+        order_by.append(
+            "CASE WHEN source = 'cninfo_original' THEN 2 "
+            "WHEN regexp_matches(coalesce(source, ''), 'backfill|reconstruct|snapshot') "
+            "THEN 0 ELSE 1 END DESC"
+        )
+    elif name == "index_constituents" and "weight" in columns:
+        order_by.append("(weight IS NOT NULL) DESC")
+    elif name == "daily_bars" and {"volume", "amount"} <= set(columns):
+        order_by.append("CASE WHEN volume = 0 AND amount > 0 THEN 0 ELSE 1 END DESC")
     if "fetched_at" in columns:
         order_by.append("fetched_at DESC NULLS LAST")
     if "source" in columns:

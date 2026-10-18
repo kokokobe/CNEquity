@@ -1,4 +1,4 @@
-# 数据集目录（逐源限制与更新频率）
+# 数据源与历史限制
 
 各数据集的主源、更新频率与已知限制。
 
@@ -47,12 +47,16 @@
 
 #### trading_status
 
+历史状态覆盖取决于本湖保存的一手证据，不能用当前快照补写此前每天的状态。Baostock 历史路径覆盖沪深股票，不为 ETF 或北交所提供完整历史状态。可用 `cne repair status-traded --start YYYY-MM-DD --end YYYY-MM-DD` 预览从实际成交补缺的派生行；ST 保持未知，详见 [状态契约](schema.md#trading_status)。
+
+旧 staging 的状态合并也复查上市窗口：目录退市日之后的正常状态不能重新入湖；若实际成交否定退市日期，则保留记录供核查。
+
 | 项 | 值 |
 |------|-------|
 | 波次 | `trading_status`（core；依赖 `instruments`，排在它之后） |
 | 主源 | eastmoney（ST 板 + 停牌名单） |
 | 备源 | exchange（沪深交易所行情板，独立故障域） |
-| 补充源 | derived（`derived_bar_gap` / `derived_delisted`）；bse（北交所行情板） |
+| 补充源 | derived（`derived_bar_gap` / `derived_delisted` / `derived_traded`）；bse（北交所行情板） |
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
 | 历史 ST 回补 | Baostock 覆盖 SH/SZ；可选 Tushare Pro `bak_basic`（2016）+ `stock_st`（2017-01-01 起）覆盖 BJ，需 token；缺少源端覆盖时审计保持 warning |
@@ -67,6 +71,10 @@
 
 #### daily_bars
 
+采集规划、批次缺口检查和覆盖报告使用相同的停牌证据规则：日线缺口推导的状态、缓存沿用状态和回溯套用的当前快照不能免除日线欠账。一手停牌记录与同日交易记录冲突时，仍需补查行情。
+
+按手计量的来源可能把不足一手的基金尾单取整为零。通达信和东财的日线若成交量为零但成交额为正，该键不会按零成交发布，继续由其他来源补查；不能用成交额反推股数。
+
 | 项 | 值 |
 |------|-------|
 | 波次 | `daily_bars`（Wave 1，依赖 corporate_actions） |
@@ -74,7 +82,7 @@
 | 备源 / 路由 | 当期可用交易所板快照与 TDX 批量行情；缺口走 eastmoney clist/kline。BJ 当期优先 BSE、历史优先 TDX，Sina 补剩余范围；显式小范围请求跳过无关全板扫描 |
 | 频率 | 每日增量；init 时全量回填；深历史由同花顺按上市年份回补（股票与 ETF/LOF 均支持） |
 | 主键 | (symbol, trade_date) |
-| ETF 范围 | 默认 `all_a` 只取股票；显式开启 `[universe].ingest_eligible_etfs` 后，仅追加最近 14 个日历日内、可重放且判为 `eligible` 的最新完整交易所 ETF 目录中的基金。目录失败、缺失或过期时不新增基金日线请求；显式 `--symbols` 修复仍按指定范围。分类不倒填到首次观测日前。若正式目录上市日证明先前记录的 ETF 日线欠账发生在上市前，逐键保存证据收据再销账；其他缺口仍保留。 |
+| ETF/LOF 范围 | 默认 `all_a` 只取股票。开启 `[universe].ingest_listed_funds` 后，从证券目录追加已上市 ETF/LOF，研究资格不影响采集。未知上市日期仍尝试取数并单独报告；目录读取失败报错，来源空响应保留为缺口。旧开关 `ingest_eligible_etfs` 只追加最近 14 天内、可重放且为 `eligible` 的 ETF，目录失败、缺失或过期时明确报错。显式 `--symbols` 修复按指定范围。正式目录上市日能证明的上市前欠账，逐键保存证据后销账。 |
 | 重拉 | 当日 `corporate_actions` 的除权日对应标的 |
 | 已知限制 | TDX 限速；建议 workers ≤ 8；clist 只有当日快照，须用 run 的 `trade_date` 打戳；ETF/LOF 无上市日期时按未上市占位符处理，不盲抓深历史。当天证券表新出现的代码经 run 上下文并入当天的请求范围，上市首日即取数，不必等下一次 compact。无上市日期、也从未有过 bar 的**股票**每个窗口探测一次：取到 bar 即已上市照常入湖；源端干净地返回空则记为「未上市」（`not_yet_listed` 负面证据，只覆盖本窗口，次日重新探测），不计入未解决缺口；请求失败的不下结论，仍按未解决缺口处理。 |
 
@@ -195,7 +203,7 @@
 | 频率 | 每日 |
 | 主键 | (symbol, ex_date, action_type) |
 | 输出 | manifest 元数据 `symbols_to_rebackfill` |
-| 自愈 | 日更会检查最近 10 个交易日里「因子跳变但无除权记录」的标的，对它们补问 TDX `xdxr`（东财日更报表不含份额折算）；补不上的十个交易日后滚出窗口，由审计的 `unrecorded_ex_event` 继续报告 |
+| 自愈 | 日更检查最近 10 个交易日的因子与公司行为矛盾：缺事件时补问 TDX，有事件但缺台阶时取 Baostock 独立证据并调用统一修复。历史矛盾始终为非阻断提示，未仲裁或来源不可用也不阻断日更。基金现金分配与份额折算分开处理。 |
 | **已知缺口** | 已退市标的的历史除权除息仍可能缺失。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个默认源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整历史。现在可用显式 `cne backfill corporate_actions --baostock-repair` 对已退市 SH/SZ 标的补抓 Baostock 的分红、送股、转股事件，并用 `--ths-repair` 对已退市 BJ 标的补抓同花顺历史分红页；对同花顺旧码页没有历史记录的迁移标的，再用 `--eastmoney-bj-repair` 按随代码库保存的北交所旧码→920xxx 映射定向查询 EastMoney。另有 `--eastmoney-date-repair --ex-dates ...`：回补主源是 TDX，东财只在日更的等值过滤下才够得到 2015-09-29 以前的行（报表本身回到 1991 年），这条按指定除权日逐日补，每个日期单独 capture scope 与 batch。四者默认都不参与日更或普通回填，所有修复行保留独立 `source` provenance。不是限流导致的默认缺口，而是各源的历史保留范围不同。`cne audit` 将未修复批次单独归为 `missing_corporate_action_delisted`（info 级），不与仍在交易标的的 `missing_corporate_action`（warning 级）混在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
 
 #### adj_factors（derived）
@@ -206,6 +214,7 @@
 | 主源 | sina（qfq/hfq 因子序列）；北交所交易所阶段为 `derived_actions`：按交易所除权规则由湖内公司行为与前收盘计算，新浪作对照 |
 | 备源 | baostock（用 raw / 后复权收盘价之比推导因子） |
 | 输入 | daily_bars 交易日 + 外部因子 API |
+| 上市窗口 | 已退市证券保留历史因子；退市日后的零成交占位日线不再触发因子派生。若退市日后有实际成交，保留该证券并继续核对目录日期。 |
 | 频率 | compact 之后每日 |
 | 主键 | (symbol, trade_date, adjust_type) |
 | 说明 | 外部累计因子对齐 daily_bars；`adj_close = close * factor` |
@@ -214,6 +223,14 @@
 | **怎么办** | 要严格失败而不是静默降级：`load(..., strict_adj=True)`。**它不是默认值**：新上市的票在拿到第一个因子前必然缺，所以严格模式会让 `universe="all_a"` 的 hfq 查询长期抛错。默认容忍 + `adj_is_exact` 标记 + 审计告警，是在「不静默污染」和「查询可用」之间的取舍 |
 | **北交所** | 交易所上市起点（`list_date` 与 2020-07-27 中较晚者）之后的因子由公司行为计算：每个事件在其生效交易日按 `前收盘 ÷ 除权参考价` 出台阶，重整转增用公告的参考价；序列从该证券首个交易所交易日的已存水平起算，因此与新浪一致的证券数值不变。新浪仍会取数，台阶与计算值相差超过核验容差时报 `adj_factor_computed_vendor_divergence`，新浪有台阶而计算值没有，通常意味着湖内漏记了公司行为。新三板时期的因子行保持原值 |
 | **自愈** | `derive_adj_factors` 每次增量运行都会找出「有 bar 但因子够不到」的标的并重排其完整历史，单次上限 500 只。所以 `cne backfill daily_bars` 补的历史会在随后的日更里自动补上因子，无需 `--full` |
+
+### 历史因子修复
+
+`cne repair adj-factors` 默认离线预览并保存计划。加 `--refresh-sources` 补取独立证据；加 `--apply` 重新核对输入并发布确定的修正。可用 `--symbols`、`--start`、`--end` 限定证券及事件窗口，`--max-symbols` 限制单批工作量，`--plan` 要求输入与已审阅的预览一致。累计因子修正会影响事件之后的行，日期选项不是输出截断条件。默认历史批次在应用后保存进度，重复运行继续处理后续批次。
+
+缺失因子优先从同一来源的原始序列恢复，不把不同来源的水平直接拼接。整条股票序列改源要求独立除权参考价支持，并通过覆盖和已有事件幅度核对。局部股票修正要求公司行为条款与独立参考价或独立因子事件吻合；实际收盘涨跌不能单独证明修正。ETF/LOF 份额折算从原始来源序列重算。可修事件单独发布，证据不足的事件保留原值；原始数据、来源选择和事件证据随版本保留，重复应用不会累乘。
+
+历史事件矛盾不参与 `audit_gate`、`publication_gate` 或修复发布的阻断判断。无效因子数值、损坏文件和主键错误仍执行结构门禁。`strict_adj=True` 与 `adj_is_exact` 只检查因子覆盖，不承诺历史经济含义正确。`load_with_receipt()`、MCP `query_bars` 和行浏览提供当前所读因子版本的 `adjustment` 摘要，含来源、诊断是否评估及相关未解决事件；读取不会联网，也不会因历史矛盾失败。没有对应诊断时明确标为未评估。
 
 ### v1.0-full（第二批）
 

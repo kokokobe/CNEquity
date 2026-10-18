@@ -31,25 +31,27 @@ theme:
 nav:
   - Home: index.md
   - Getting started:
-      - Quick start: getting-started/quickstart.md
+      - Quickstart: getting-started/quickstart.md
       - Installation and upgrades: getting-started/installation.md
       - Initialization, scope and resume: getting-started/initialization.md
       - Configuration reference: getting-started/configuration.md
   - Research and data:
-      - Recipe index: recipes/README.md
-      - Adjusted research baseline: recipes/research-baseline.md
-      - PIT financial cross-sections: recipes/pit-rebalance.md
-      - DuckDB and Polars: recipes/duckdb-polars.md
-      - Commodity futures and options: recipes/derivatives.md
-      - 15 / 30 / 60-minute bars: recipes/minute-bars-15-30-60.md
-      - Dataset catalog: datasets/catalog.md
-      - Query guide: datasets/query-guide.md
-      - Fields and units: datasets/schema.md
-      - Data contract: datasets/contract.md
-      - Sources and history limits: datasets/sources.md
-      - Universe profiles: reference/universe-profiles.md
+      - Recipes:
+          - Recipe index: recipes/README.md
+          - Price adjustment research baseline: recipes/research-baseline.md
+          - PIT rebalance cross-section: recipes/pit-rebalance.md
+          - DuckDB and Polars: recipes/duckdb-polars.md
+          - Commodity futures and options: recipes/derivatives.md
+          - 15 / 30 / 60-minute bars: recipes/minute-bars-15-30-60.md
+      - Data reference:
+          - Dataset catalog: datasets/catalog.md
+          - Query guide: datasets/query-guide.md
+          - Fields and units: datasets/schema.md
+          - Data contract: datasets/contract.md
+          - Sources and history limits: datasets/sources.md
+          - Universe profiles: reference/universe-profiles.md
   - Commands and API:
-      - CLI by task: reference/cli.md
+      - CLI reference: reference/cli.md
       - CLI options and defaults: reference/cli-options.md
       - Network and write inventory: reference/cli-surface.md
       - Python API: reference/python-api.md
@@ -57,16 +59,16 @@ nav:
   - Operations:
       - Runbook: operations/runbook.md
       - Troubleshooting: operations/troubleshooting.md
-      - Fetching and source protection: operations/fetch-policy.md
+      - Fetching, speed and source protection: operations/fetch-policy.md
       - Source health: operations/source-health.md
       - Repository scripts: operations/scripts.md
-      - Maintainer release checklist: operations/releasing.md
   - Product design:
-      - Direction and boundaries: architecture/overview.md
-      - Comparison with AKShare / Tushare: architecture/comparison.md
+      - Product direction and scope: architecture/overview.md
+      - Comparison with AKShare and Tushare: architecture/comparison.md
       - Design principles: architecture/design-principles.md
-      - From ingestion to query: architecture/data-flow.md
+      - From collection to query: architecture/data-flow.md
       - Lake layout: architecture/lake-layout.md
-  - Project and license:
+  - Project and maintenance:
       - Changelog: changelog.md
       - License, sources and citation: legal-and-data-sources.md
+      - Maintainer release checklist: operations/releasing.md

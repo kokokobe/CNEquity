@@ -106,6 +106,11 @@ def _parse_bar_rows(
             )
         except ValueError:
             continue
+        # Lot-rounded volume can hide a fund's 1..99-share trade. Positive
+        # turnover disproves zero trading; leave this key for another source
+        # rather than publishing a false suspension bar or guessing shares.
+        if raw_volume == 0 and amount > 0:
+            continue
         rows.append(
             {
                 "symbol": sym,

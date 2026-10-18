@@ -93,6 +93,7 @@ Choose by purpose: unadjusted prices for price action; `hfq` for split-comparabl
 
 - `daily_bars` in the lake stores **unadjusted** prices
 - `adj_factors` lives in `derived/` and stores only `hfq` (`adjust_type="hfq"`)
+- Recorded ETF/LOF splits and share transfers are corrected during daily factor derivation; historical omissions can be rebuilt with `cne repair fund-factors --apply`, using source `derived_fund_actions`. Other vendor steps are preserved, while cash distributions remain separately included by total-return reads.
 - The DuckDB views `daily_bars_adj` / `daily_bars_hfq` / `daily_bars_qfq` follow the semantics above; the table macro `daily_bars_total_return(start, end)` corresponds to `adjust="total_return"` and outputs `tr_*` and `adj_close`
 
 ## Universe filtering
@@ -190,9 +191,13 @@ load(
 ```
 
 Note: backfill rows are marked `source=eastmoney_backfill` and treated as
-`pit_quality="reconstructed"`. Omitting `pit_mode` is the 0.x compatibility mode: it still cuts off by
-`fetched_at`, but gives no strict PIT guarantee; research code should pass
-`pit_mode="strict"` explicitly and record that choice. Only versions accumulated day by day by the daily update, with real bitemporal columns stored, satisfy
+`pit_quality="reconstructed"`. Omitting `pit_mode` or passing `None` defaults to
+`best_effort`: historical backfills collected after `as_of` remain readable with
+`pit_is_exact=False`; announcement and known availability/publication dates still obey the cutoff.
+Research that needs evidence the lake held on that date should pass `pit_mode="strict"`
+explicitly and record that choice. When upgrading calls that relied on the omitted
+mode to filter by collection time, switch them to explicit strict mode as well.
+Only versions accumulated day by day by the daily update, with real bitemporal columns stored, satisfy
 strict mode (see [schema](schema.md#financial_statement_items)).
 Backfill starts from 2001 by default (EastMoney); `coverage_start` in `list_datasets()` is the actual start on disk.
 

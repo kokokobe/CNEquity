@@ -14,7 +14,8 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-def test_renderer_preserves_host_groups_cadence_and_event_scope(tmp_path):
+def test_renderer_preserves_host_groups_cadence_and_event_scope(tmp_path, monkeypatch):
+    monkeypatch.delenv("CNE_LANG", raising=False)
     old = {
         "StartCalendarInterval": {"Hour": 11, "Minute": 15},
         "EnvironmentVariables": {
@@ -43,6 +44,19 @@ def test_renderer_preserves_host_groups_cadence_and_event_scope(tmp_path):
     assert jobs["com.cnequity.events"]["EnvironmentVariables"]["CNE_EVENTS_GROUP"] == "disclosures"
     changed = module.render_jobs(ROOT, tmp_path, groups="core,capital", vantage="cn")
     assert changed["com.cnequity.daily"]["EnvironmentVariables"]["CNE_GROUPS"] == "core capital"
+
+
+def test_the_installing_shells_language_reaches_the_agents(tmp_path, monkeypatch):
+    """launchd gives a job no LANG; without this a Chinese setup reports in English."""
+    monkeypatch.setenv("CNE_LANG", "zh_CN")
+    jobs = module.render_jobs(ROOT, tmp_path, groups="core", vantage=None)
+    for label in ("daily", "stale", "events", "events-news"):
+        assert jobs[f"com.cnequity.{label}"]["EnvironmentVariables"]["CNE_LANG"] == "zh_CN"
+    # An operator's own choice in the installed plist wins over the shell.
+    old = {"EnvironmentVariables": {"CNE_LANG": "en"}}
+    (tmp_path / "com.cnequity.events.plist").write_bytes(plistlib.dumps(old))
+    again = module.render_jobs(ROOT, tmp_path, groups="core", vantage=None)
+    assert again["com.cnequity.events"]["EnvironmentVariables"]["CNE_LANG"] == "en"
 
 
 def test_check_and_dry_run_do_not_install_or_overwrite_host_files(tmp_path):

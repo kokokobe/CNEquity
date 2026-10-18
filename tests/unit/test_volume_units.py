@@ -85,6 +85,66 @@ def test_tdx_index_bars_keep_the_vendor_unit():
     assert row["volume"] == LOTS
 
 
+@pytest.mark.parametrize("volume", [0.0, 2**-127])
+@pytest.mark.parametrize("amount", [0.0, 201.025])
+def test_tdx_lot_rounded_zero_with_turnover_needs_another_source(volume, amount):
+    pdf = pl.DataFrame(
+        [
+            {
+                "datetime": date(2026, 9, 8),
+                "open": 2.04,
+                "high": 2.053,
+                "low": 2.04,
+                "close": 2.053,
+                "volume": volume,
+                "amount": amount,
+            }
+        ]
+    )
+    rows = _parse_bar_rows(pdf, "160806.SZ", date(2026, 9, 8), date(2026, 9, 8))
+    if amount > 0:
+        assert rows == []
+    else:
+        assert rows[0]["volume"] == 0
+        assert rows[0]["amount"] == 0
+
+
+@pytest.mark.parametrize("amount", ["0", "-", "201.025"])
+def test_eastmoney_zero_lots_only_proves_no_trade_without_positive_turnover(amount, monkeypatch):
+    class Client:
+        def get(self, *args, **kwargs):
+            class Response:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"data": {"klines": [f"20260908,2.04,2.053,2.053,2.04,0,{amount}"]}}
+
+            return Response()
+
+    monkeypatch.setattr(em_bars, "fetch_clist_pages", lambda client, fields: [{}])
+    monkeypatch.setattr(
+        em_bars,
+        "clist_rows_to_symbols",
+        lambda rows: [
+            (
+                "160806.SZ",
+                {"f17": 2.04, "f15": 2.053, "f16": 2.04, "f2": 2.053, "f5": 0, "f6": amount},
+            )
+        ],
+    )
+    on = date(2026, 9, 8)
+    for frame in (
+        em_bars.fetch_daily_bars(["160806.SZ"], on, on, client=Client()),
+        em_bars.fetch_daily_bars_clist(on, client=Client()),
+    ):
+        if amount == "201.025":
+            assert frame.is_empty()
+        else:
+            assert frame["volume"].to_list() == [0]
+            assert frame["amount"].to_list() == [None if amount == "-" else 0]
+
+
 def test_eastmoney_kline_converts_lots_to_shares():
     class _Resp:
         def raise_for_status(self):

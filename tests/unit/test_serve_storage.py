@@ -176,6 +176,177 @@ def can_pick(obj):
     return not obj["current"] and set(obj["reasons"]) <= {"recent_generation"}
 
 
+def staged_run(cfg, *, incomplete=False):
+    from cnequity.orchestrator.manifest import Manifest
+
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("daily", {})
+    manifest.start_batch(run_id, "data", "daily_bars", "daily_bars")
+    manifest.finish_batch(run_id, "data", "failed" if incomplete else "success")
+    manifest.start_batch(run_id, "compact", "compact", "compact")
+    manifest.finish_batch(run_id, "compact", "success")
+    manifest.finish_run(run_id, "failed" if incomplete else "warning")
+    path = cfg.staging_root / "daily_bars" / f"run_id={run_id}"
+    path.mkdir(parents=True)
+    (path / "batch.parquet").write_bytes(b"retained staging bytes")
+    return run_id, path
+
+
+def test_staging_browser_confirmation_is_selected_and_leaves_incomplete_batches(web):
+    client, cfg, _, writer = web
+    current = writer.current_root("daily_bars")
+    selected, path = staged_run(cfg)
+    other, other_path = staged_run(cfg)
+    incomplete, unfinished_path = staged_run(cfg, incomplete=True)
+    summary = client.get("/api/storage").json()
+    staging = {o["object_id"]: o for o in summary["objects"] if o["kind"] == "staging"}
+    assert staging[f"staging/{selected}"]["reasons"] == []
+    assert staging[f"staging/{incomplete}"]["reasons"] == ["incomplete_batches"]
+    assert review(client, kind="staging", phase="mark")["status"] == "error"
+    assert review(client, kind="staging", object_ids=[f"staging/{incomplete}"])["status"] == "error"
+    job = review(client, kind="staging", object_ids=[f"staging/{selected}"])
+    assert job["status"] == "ready", job
+    assert path.exists() and other_path.exists() and unfinished_path.exists()
+    assert confirm(client, job, maintenance_confirmed=False).status_code == 409
+    assert confirm(client, job, confirmation_token="wrong").status_code == 409
+    result = wait(client, confirm(client, job))
+    assert result["status"] == "complete", result
+    assert result["result"]["logical_bytes_deleted"] == len(b"retained staging bytes")
+    assert result["result"]["items"] == {f"daily_bars/run_id={selected}": "deleted"}
+    assert not path.exists() and other_path.exists() and unfinished_path.exists()
+    assert writer.current_root("daily_bars") == current
+    assert f"staging/{other}" in {
+        o["object_id"] for o in client.get("/api/storage").json()["objects"]
+    }
+    assert confirm(client, job).status_code == 409
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "content",
+        "extra_path",
+        "hold",
+        "resume",
+        "run_lock",
+        "symlink",
+        "reference",
+        "lake_identity",
+    ],
+)
+def test_staging_rechecks_all_selected_objects_before_deletion(web, change):
+    from cnequity.file_lock import exclusive_lock
+    from cnequity.orchestrator.manifest import Manifest
+
+    client, cfg, store, _ = web
+    first, first_path = staged_run(cfg)
+    second, path = staged_run(cfg)
+    job = review(client, kind="staging", object_ids=[f"staging/{first}", f"staging/{second}"])
+    assert job["status"] == "ready", job
+    lock = None
+    if change == "content":
+        (path / "batch.parquet").write_bytes(b"altered bytes")
+    elif change == "extra_path":
+        (cfg.staging_root / "adj_factors" / f"run_id={second}").mkdir(parents=True)
+    elif change == "hold":
+        store.hold(f"staging/{second}", "review")
+    elif change == "resume":
+        Manifest(cfg.manifest_path).resume_run(second)
+    elif change == "symlink":
+        (path / "link").symlink_to(first_path, target_is_directory=True)
+    elif change == "reference":
+        registered = cfg.data_root / "research"
+        registered.mkdir()
+        registry = store.registry()
+        registry["reference_roots"] = [{"path": str(registered), "exclude": []}]
+        store._save(registry)
+        (registered / "new-reference.json").write_text("{}")
+    elif change == "lake_identity":
+        registry = store.registry()
+        registry["lake_id"] = "another-lake"
+        store._save(registry)
+    else:
+        lock = exclusive_lock(cfg.meta_root / "locks" / f"{second}.lock")
+        lock.__enter__()
+    try:
+        result = wait(client, confirm(client, job))
+        assert result["status"] == "error", result
+        assert first_path.exists() and path.exists()
+    finally:
+        if lock:
+            lock.__exit__(None, None, None)
+
+
+def test_staging_interrupted_deletion_requires_fresh_browser_review_and_resumes(web, monkeypatch):
+    from cnequity.storage.lifecycle.staging import StagingRetirement
+
+    client, cfg, _, _ = web
+    run_id, path = staged_run(cfg)
+    (path / "other.parquet").write_bytes(b"more bytes")
+    job = review(client, kind="staging", object_ids=[f"staging/{run_id}"])
+    import shutil
+
+    actual = shutil.rmtree
+
+    def interrupted(target, *args, **kwargs):
+        if "staging-trash" in str(target):
+            (target / "batch.parquet").unlink()
+            raise OSError("interrupted after one deletion")
+        return actual(target, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("cnequity.storage.lifecycle.staging.shutil.rmtree", interrupted)
+        result = wait(client, confirm(client, job))
+    assert result["status"] == "error", result
+    assert not path.exists()
+    summary = client.get("/api/storage").json()
+    assert {"kind": "staging", "plan_id": job["plan_id"]} in summary["unfinished"]
+    assert review(client, kind="revisions", resume_plan_id=job["plan_id"])["status"] == "error"
+    assert review(client, kind="staging")["status"] == "error"
+    resumed = review(client, kind="staging", resume_plan_id=job["plan_id"])
+    assert resumed["status"] == "ready", resumed
+    result = wait(client, confirm(client, resumed))
+    assert result["status"] == "complete", result
+    assert result["result"]["logical_bytes_deleted"] == len(b"retained staging bytesmore bytes")
+    assert not client.get("/api/storage").json()["unfinished"]
+    assert StagingRetirement(cfg).apply(job["plan_id"], maintenance=True) == result["result"]
+
+
+def test_staging_orphans_and_linked_content_are_not_browser_deletable(web):
+    client, cfg, _, _ = web
+    orphan = cfg.staging_root / "daily_bars/run_id=orphan"
+    orphan.mkdir(parents=True)
+    (orphan / "part").write_bytes(b"keep")
+    assert review(client, kind="staging", object_ids=["staging/orphan"])["status"] == "error"
+    run_id, path = staged_run(cfg)
+    (path / "link").symlink_to(orphan, target_is_directory=True)
+    assert review(client, kind="staging", object_ids=[f"staging/{run_id}"])["status"] == "error"
+    assert orphan.exists() and path.exists()
+
+
+def test_staging_purge_requires_import_and_rejects_paths_outside_selected_run(web):
+    import json
+
+    from cnequity.storage.lifecycle import LifecycleError
+    from cnequity.storage.lifecycle.staging import StagingRetirement
+
+    _, cfg, store, _ = web
+    _, path = staged_run(cfg)
+    retirement = StagingRetirement(cfg)
+    plan = retirement.plan()
+    plan.pop("plan_id")
+    item = plan["objects"][0]
+    item["paths"] = {"../curated": next(iter(item["paths"].values()))}
+    forged_id = digest(plan)
+    (store.root / "staging-plans" / f"{forged_id}.json").write_text(json.dumps(plan))
+    with pytest.raises(LifecycleError, match="escapes"):
+        retirement.apply(forged_id, maintenance=True)
+    store.registry_path.unlink()
+    with pytest.raises(LifecycleError):
+        retirement.plan()
+    assert path.exists()
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -264,6 +435,7 @@ def test_mark_requires_confirmation_and_cannot_delete_before_grace(web):
     assert len(store.inspect()["objects"]) == 8
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_experiment_web_delete_keeps_archive_and_cli_is_blocked(web, tmp_path, monkeypatch):
     client, cfg, store, _ = web
     source = tmp_path / "cne-old"

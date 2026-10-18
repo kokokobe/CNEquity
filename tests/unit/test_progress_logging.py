@@ -306,6 +306,7 @@ def test_eta_waits_for_a_full_round_of_lanes(caplog, config, monkeypatch):
     assert all("left" in line for line in lines[4:])
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_run_leaves_a_log_file_behind(tmp_path, capsys):
     """Terminal progress only helps someone watching it; a run that failed
     after three hours has to leave something to read."""
@@ -591,6 +592,7 @@ def test_a_job_log_keeps_info_under_a_host_root_at_warning(tmp_path, monkeypatch
         package.setLevel(prior[2])
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_the_log_notice_never_contaminates_the_json_on_stdout(tmp_path, monkeypatch):
     """`cne ... | jq` has to keep working after a command learns to log.
 
@@ -689,6 +691,7 @@ def _lake_config(tmp_path):
     return str(cfg)
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize(
     ("argv", "level", "needle"),
     [
@@ -862,3 +865,39 @@ def test_the_interior_gap_message_says_what_to_do(tmp_path):
     assert "cne sources probe" in message
     assert "cne run retry --run-id run-7" in message
     assert "cne backfill daily_bars --symbols" in message
+
+
+def test_a_staged_step_names_each_call_as_it_starts(caplog):
+    from cnequity.progress import stage_progress
+
+    log = logging.getLogger("cnequity.test.stages")
+    with caplog.at_level(logging.INFO, logger="cnequity.test.stages"):
+        stage = stage_progress(log, "instruments", 3)
+        stage("TDX security list")
+        stage("Beijing board", held=8015)
+        stage("write", held=8103)
+    messages = [r.message for r in caplog.records]
+    assert [m.split(" · ")[0] for m in messages] == [
+        "instruments 1/3 TDX security list",
+        "instruments 2/3 Beijing board",
+        "instruments 3/3 write",
+    ]
+    assert messages[1].endswith("8015 so far")
+
+
+def test_the_instruments_step_is_not_silent(tmp_path, monkeypatch, caplog):
+    """It ran 234s on a full-market init without one log line of its own."""
+    from cnequity.config import Config
+    from cnequity.steps import reference
+
+    cfg = Config(
+        data_root=tmp_path / "data",
+        tdx_allow_mock=True,
+        sources={"bse": False, "eastmoney": False, "exchange": False, "baostock": False},
+    )
+    monkeypatch.setattr(reference, "write_simple", lambda *a, **k: {"rows_written": 4})
+    with caplog.at_level(logging.INFO, logger="cnequity.steps.reference"):
+        reference.step_instruments(cfg, date(2026, 9, 15), "run-1", {})
+    stages = [r.message.split(" · ")[0] for r in caplog.records if r.message.startswith("instr")]
+    assert stages[0] == "instruments 1/5 TDX security list"
+    assert stages[-1] == "instruments 5/5 write"

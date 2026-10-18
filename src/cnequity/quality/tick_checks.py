@@ -330,7 +330,7 @@ def daily_reconciliation_findings(
                     f"only {joined.height} symbol-day(s) in {start}..{end} could be "
                     f"reconciled against daily_bars (need {RECONCILE_MIN_SYMBOL_DAYS}); "
                     f"daily rows must be data_version={DAILY_BARS_SHARES_VERSION} to be "
-                    "comparable in 股"
+                    "comparable in 股"  # i18n-ignore: Chinese term in an English message
                 ),
                 "symbol_days": joined.height,
             }
@@ -338,7 +338,13 @@ def daily_reconciliation_findings(
 
     findings: list[dict] = []
     for column, label, unit, low, high in (
-        ("volume_ratio", "volume", "股", RECONCILE_VOLUME_LOW, RECONCILE_VOLUME_HIGH),
+        (
+            "volume_ratio",
+            "volume",
+            "股",  # i18n-ignore: Chinese term in an English message
+            RECONCILE_VOLUME_LOW,
+            RECONCILE_VOLUME_HIGH,
+        ),
         ("amount_ratio", "amount", "yuan", RECONCILE_AMOUNT_LOW, RECONCILE_AMOUNT_HIGH),
     ):
         series = joined[column].drop_nulls()

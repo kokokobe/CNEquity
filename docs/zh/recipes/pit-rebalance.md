@@ -1,4 +1,4 @@
-# Recipe：PIT 财报调仓截面
+# PIT 财报调仓截面
 
 财报研究最容易出现的错误，是用今天看到的修订值回答过去的调仓问题。`financial_statement_items` 把 `announce_date` 放进版本键，严格模式还要求发布、可用和湖内观察证据均不晚于截止日。
 

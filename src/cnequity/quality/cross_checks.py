@@ -25,8 +25,12 @@ from cnequity.adapters.exchange.st_lists import is_st_name
 from cnequity.config import Config
 from cnequity.domain.action_sessions import effective_session
 from cnequity.domain.symbols import parse_symbol
-from cnequity.domain.trading_status import risk_warning_expr
-from cnequity.quality.ex_events import EX_EVENT_LOOKBACK_SESSIONS, unexplained_factor_steps
+from cnequity.domain.trading_status import not_trading_expr, risk_warning_expr
+from cnequity.quality.ex_events import (
+    EX_EVENT_LOOKBACK_SESSIONS,
+    recent_sessions,
+    unexplained_factor_steps,
+)
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import (
     dataset_has_parquet,
@@ -55,7 +59,9 @@ MISSING_EVENT_MIN_DIVERGENCE = 0.11
 # buybacks, and debt conversion do not make an ex-price adjustment by
 # themselves.  Without this reconciliation, a verified ``缩股`` on 000887.SZ
 # was incorrectly reported as an unrecorded corporate action.
-_STRUCTURAL_ADJUSTMENT_RE = "缩股|减资|合股|并股|拆股"
+_STRUCTURAL_ADJUSTMENT_RE = (
+    "缩股|减资|合股|并股|拆股"  # i18n-ignore: data: corporate-action wording
+)
 
 _MAX_RECON_FINDINGS = 50
 ADJ_RECON_LOOKBACK_DAYS = 30
@@ -1153,7 +1159,7 @@ def _symbol_last_bar(config: Config, trade_date: date) -> pl.DataFrame | None:
             pl.col("trade_date").min().alias("first_bar"),
             pl.col("trade_date").max().alias("last_bar"),
         )
-        .collect(engine="streaming")
+        .collect()
     )
     return None if out.is_empty() else out
 
@@ -1574,6 +1580,97 @@ def st_label_crosscheck_findings(config: Config, trade_date: date) -> list[dict]
     ]
 
 
+# --- trading_status × daily_bars ---------------------------------------------
+# EastMoney's halt board and the exchange's own session record disagree on a
+# handful of names a day (4 of 5,219 on 2026-09-15). Past that, the day's
+# status rows are not a reading of the session.
+STATUS_BARS_WARN_CONFLICTS = 5
+STATUS_BARS_ERROR_CONFLICTS = 50
+STATUS_BARS_LOOKBACK_SESSIONS = 5
+_STATUS_BARS_SEARCH_DAYS = 30
+
+
+def trading_status_bars_findings(config: Config, trade_date: date) -> list[dict]:
+    """``trading_status`` against what actually traded in ``daily_bars``.
+
+    Judged per session over the last few status days, on two contradictions: a
+    symbol recorded as not trading that has a bar with volume, and a symbol the
+    status feed covers that traded with no status row at all. Both shapes went
+    unreported when a cached fallback marked 4,863 trading names suspended.
+    """
+    status_root = config.curated_root / "trading_status"
+    bars_root = config.curated_root / "daily_bars"
+    if not dataset_has_parquet(status_root) or not dataset_has_parquet(bars_root):
+        return []
+    start = trade_date - timedelta(days=_STATUS_BARS_SEARCH_DAYS)
+    status = (
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(status_root, partition_col="trade_date", start=start, end=trade_date),
+            "trading_status",
+        )
+        .filter(pl.col("trade_date").is_between(start, trade_date))
+        .collect()
+    )
+    if status.is_empty():
+        return []
+    days = sorted(set(status.get_column("trade_date").to_list()))[-STATUS_BARS_LOOKBACK_SESSIONS:]
+    traded = (
+        dedupe_lazy_by_primary_key(
+            scan_parquet_root(bars_root, partition_col="trade_date", start=days[0], end=days[-1]),
+            "daily_bars",
+        )
+        .filter(pl.col("trade_date").is_in(days) & (pl.col("volume") > 0))
+        .select("symbol", "trade_date")
+        .collect()
+    )
+    if traded.is_empty():
+        return []
+    status_keys = status.select("symbol", "trade_date")
+    not_trading = status.filter(not_trading_expr(status.columns)).select("symbol", "trade_date")
+    contradicted = not_trading.join(traded, on=["symbol", "trade_date"], how="semi")
+    # Judged only from a symbol's first status row: a feed widening its scope
+    # (Beijing names joined on 2026-09-15) is not a missing reading.
+    first_seen = status.group_by("symbol").agg(pl.col("trade_date").min().alias("first_seen"))
+    unanswered = (
+        traded.join(first_seen, on="symbol", how="inner")
+        .filter(pl.col("trade_date") >= pl.col("first_seen"))
+        .select("symbol", "trade_date")
+        .join(status_keys, on=["symbol", "trade_date"], how="anti")
+    )
+
+    findings: list[dict] = []
+    for check, frame, what in (
+        ("trading_status_contradicts_bars", contradicted, "recorded as not trading but traded"),
+        ("trading_status_missing_traded", unanswered, "traded with no trading_status row"),
+    ):
+        per_day = frame.group_by("trade_date").len().sort("trade_date")
+        worst = int(per_day.get_column("len").max() or 0) if per_day.height else 0
+        if worst <= STATUS_BARS_WARN_CONFLICTS:
+            continue
+        findings.append(
+            {
+                "dataset": "trading_status",
+                "severity": "error" if worst > STATUS_BARS_ERROR_CONFLICTS else "warning",
+                "check": check,
+                "message": (
+                    f"up to {worst} symbol(s) per session {what} in daily_bars over "
+                    f"{days[0].isoformat()}..{days[-1].isoformat()}"
+                ),
+                "by_date": {
+                    day.isoformat(): count
+                    for day, count in per_day.iter_rows()
+                    if count > STATUS_BARS_WARN_CONFLICTS
+                },
+                "symbols": frame.sort("trade_date", descending=True)
+                .get_column("symbol")
+                .unique(maintain_order=True)
+                .head(_SAMPLE)
+                .to_list(),
+            }
+        )
+    return findings
+
+
 def instrument_listing_order_findings(config: Config) -> list[dict]:
     """A security cannot stop trading before it starts.
 
@@ -1679,8 +1776,8 @@ def corporate_action_classification_findings(config: Config, start: date, end: d
                 "severity": "warning",
                 "check": "corporate_action_duplicate_classification",
                 "message": (
-                    f"{duplicated_events} ex-date(s) carry the same ratio as 送 from one "
-                    "source and 转 from another — one event stored twice. Anything that "
+                    f"{duplicated_events} ex-date(s) carry the same ratio as 送 from one "  # i18n-ignore: Chinese term in an English message
+                    "source and 转 from another — one event stored twice. Anything that "  # i18n-ignore: Chinese term in an English message
                     "adds bonus_ratio and transfer_ratio double-counts the dilution"
                 ),
                 "rows": duplicated_events,
@@ -1694,7 +1791,7 @@ def corporate_action_classification_findings(config: Config, start: date, end: d
                 "check": "corporate_action_ratio_scale",
                 "message": (
                     f"{scaled_events} ex-date(s) carry a transfer_ratio exactly 10x the "
-                    "bonus_ratio another source reports — a 每10股/每股 unit confusion"
+                    "bonus_ratio another source reports — a 每10股/每股 unit confusion"  # i18n-ignore: Chinese term in an English message
                 ),
                 "rows": scaled_events,
                 "sample": [
@@ -2017,7 +2114,11 @@ def _fund_symbols(config: Config) -> list[str]:
     instruments = _instruments_frame(config)
     if instruments is None or "asset_type" not in instruments.columns:
         return []
-    return instruments.filter(pl.col("asset_type") == "etf").get_column("symbol").to_list()
+    return (
+        instruments.filter(pl.col("asset_type").is_in(["etf", "lof"]))
+        .get_column("symbol")
+        .to_list()
+    )
 
 
 _CONTRADICTION_SCHEMA = {"symbol": pl.Utf8, "ex_date": pl.Date, "kind": pl.Utf8}
@@ -2362,7 +2463,7 @@ def unrecorded_ex_event_findings(
             "message": (
                 f"{row['symbol']}: the hfq factor stepped x{row['factor_ratio']:.4f} on "
                 f"{_iso(row['ex_date'])} with no corporate action on record; the daily "
-                "dividend report carries no unit splits, so a 份额折算 arrives only from "
+                "dividend report carries no unit splits, so a 份额折算 arrives only from "  # i18n-ignore: Chinese term in an English message
                 "`cne backfill corporate_actions --symbols "
                 f"{row['symbol']}`"
             ),
@@ -2375,6 +2476,142 @@ def unrecorded_ex_event_findings(
         severity="warning",
         noun="a factor step with no recorded action",
     )
+
+
+def recent_unstepped_actions(config: Config, trade_date: date) -> pl.DataFrame:
+    """Recent (symbol, ex_date) where a recorded action never moved the hfq factor.
+
+    Fund cash distributions are the vendor's convention and stay out. The
+    window is the same ten sessions as `unrecorded_ex_event`.
+    """
+    empty = pl.DataFrame(schema={"symbol": pl.Utf8, "ex_date": pl.Date})
+    window = recent_sessions(config, trade_date, EX_EVENT_LOOKBACK_SESSIONS)
+    actions_root = config.curated_root / "corporate_actions"
+    if not window or not dataset_has_parquet(actions_root):
+        return empty
+    # An action dated inside a halt takes effect on the resumed session, so
+    # scope symbols by a year of actions, not only those dated in the window.
+    symbols = (
+        scan_parquet_root(
+            actions_root,
+            partition_col="ex_date",
+            start=window[0] - timedelta(days=366),
+            end=trade_date,
+        )
+        .select("symbol")
+        .unique()
+        .collect()
+        .get_column("symbol")
+        .to_list()
+    )
+    if not symbols:
+        return empty
+    contradictions, _ = factor_action_contradictions(config, symbols=symbols)
+    return (
+        contradictions.filter(
+            (pl.col("kind") == "action_without_step")
+            & pl.col("ex_date").is_between(window[0], trade_date)
+        )
+        .select("symbol", "ex_date")
+        .sort(["ex_date", "symbol"])
+    )
+
+
+def _unstepped_severity(
+    symbol: str,
+    ex_date: str,
+    *,
+    verdicts: dict[tuple[str, str], dict],
+    unanswered: set[str],
+    asked: set[str],
+) -> str:
+    """Unresolved factor semantics never fail a run, with or without a peer."""
+    return "warning"
+
+
+def unstepped_corporate_action_findings(config: Config, trade_date: date) -> list[dict]:
+    """A recent corporate action the hfq factor never stepped on.
+
+    The reverse of `unrecorded_ex_event`. The daily derive already asks
+    Baostock to arbitrate these and switches a stock when the price proves
+    Sina missed the step. Remaining disagreements are advisory, including
+    unarbitrated stocks and independently confirmed misses.
+    """
+    silent = recent_unstepped_actions(config, trade_date)
+    if silent.is_empty():
+        return []
+    from cnequity.derive.factor_arbitration import latest_factor_arbitration
+
+    payload = latest_factor_arbitration(config)
+    verdicts = {
+        (row.get("symbol"), row.get("ex_date")): row
+        for row in payload.get("verdict_rows") or []
+        if isinstance(row, dict)
+    }
+    unanswered = {str(symbol) for symbol in payload.get("unanswered") or []}
+    # Symbols this evidence file actually sent to Baostock. An older file that
+    # judged other securities must not absolve a stock it never asked about.
+    asked = {str(symbol) for symbol in payload.get("asked") or []}
+
+    def _message(row: dict, severity: str) -> str:
+        day = _iso(row["ex_date"])
+        if severity == "error":
+            return (
+                f"{row['symbol']}: a corporate action takes effect on {day} but the hfq "
+                "factor did not step; adjusted prices across it are off by the action's "
+                "ratio. Baostock arbitration has not run, or it proved Sina missed the "
+                "step and the refreshed series still does not step"
+            )
+        if row["symbol"] in unanswered or (row["symbol"], day) not in verdicts:
+            return (
+                f"{row['symbol']}: a corporate action takes effect on {day} but the hfq "
+                "factor did not step. Baostock's factor table does not cover this "
+                "security or did not answer, so the series stays on Sina and the miss "
+                "does not fail the run"
+            )
+        return (
+            f"{row['symbol']}: a corporate action takes effect on {day} but the hfq "
+            "factor did not step. Baostock arbitration did not prove Sina missed it, "
+            "so the series stays and the miss does not fail the run"
+        )
+
+    annotated = [
+        {
+            **row,
+            "_severity": _unstepped_severity(
+                row["symbol"],
+                _iso(row["ex_date"]),
+                verdicts=verdicts,
+                unanswered=unanswered,
+                asked=asked,
+            ),
+        }
+        for row in silent.iter_rows(named=True)
+    ]
+    findings: list[dict] = []
+    for severity in ("error", "warning"):
+        rows = [row for row in annotated if row["_severity"] == severity]
+        if not rows:
+            continue
+        findings.extend(
+            _capped_findings(
+                pl.DataFrame(rows).drop("_severity"),
+                lambda row, severity=severity: {
+                    "dataset": "adj_factors",
+                    "symbol": row["symbol"],
+                    "severity": severity,
+                    "check": "unstepped_corporate_action",
+                    "message": _message(row, severity),
+                    "trade_date": _iso(row["ex_date"]),
+                    "lookback_sessions": EX_EVENT_LOOKBACK_SESSIONS,
+                },
+                dataset="adj_factors",
+                check="unstepped_corporate_action",
+                severity=severity,
+                noun="a recorded corporate action with no factor step",
+            )
+        )
+    return findings
 
 
 # One tick on a ten-yuan share is 10bps, so a tie-break threshold below that

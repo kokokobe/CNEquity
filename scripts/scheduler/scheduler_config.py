@@ -100,10 +100,15 @@ def render_jobs(root: Path, dest: Path, *, groups: str | None, vantage: str | No
                 "CNE_LOG_DIR",
                 "CNE_DATA_ROOT",
                 "CNE_SCHEDULER_LOCK_DIR",
+                "CNE_LANG",
             ):
                 if key in host_env:
                     env[key] = host_env[key]
         env.update(old.get("EnvironmentVariables", {}))
+        # launchd gives a job no LANG, so it would report in English; keep the
+        # language of the shell that installs it unless the plist already says.
+        if os.environ.get("CNE_LANG"):
+            env.setdefault("CNE_LANG", os.environ["CNE_LANG"])
         env["CNE_SOURCE_VANTAGE"] = vantage
         if name in {"daily", "stale"}:
             env["CNE_GROUPS"] = groups

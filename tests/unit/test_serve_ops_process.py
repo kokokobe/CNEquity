@@ -45,6 +45,7 @@ def test_windows_taskkill_only_runs_while_verified_handle_is_held(
     assert held == []
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_windows_refuses_cancel_without_identity_and_writes_no_marker(config, monkeypatch):
     service = runner.OpsService(config, storage_busy=lambda: False)
     job_id = "ab" * 16

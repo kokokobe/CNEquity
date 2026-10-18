@@ -3,12 +3,13 @@
   <h1>CNEquity · 中国市场金融数据湖</h1>
   <p><strong>打破数据垄断，构建属于每个人的本地金融数据集</strong></p>
 
-CNEquity 将股票行情、期货合约、财报、公司事件和资金面等多源数据整理为本地 Parquet 数据湖，提供增量采集、失败续跑、质量审计与统一查询。适合反复回测、积累历史数据。提供个人研究者和AI Agent一套完整的金融数据解决方案。
+CNEquity 将股票行情、期货合约、财报、公司事件和资金面等多源数据整理为本地 Parquet 数据湖，提供增量采集、失败续跑、质量审计与统一查询。适合反复回测、长期积累历史数据，为个人研究者和 AI Agent 提供一套完整的本地金融数据方案。
 
 [![CI](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cnequity?logo=pypi&logoColor=white)](https://pypi.org/project/cnequity/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](docs/zh/getting-started/installation.md)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Glama MCP score](https://glama.ai/mcp/servers/rootSunc/CNEquity/badges/score.svg)](https://glama.ai/mcp/servers/rootSunc/CNEquity)
 
 [English](README.en.md) · [完整文档](https://rootsunc.github.io/CNEquity/) · [数据集目录](docs/zh/datasets/catalog.md) · [更新日志](CHANGELOG.md)
 </div>
@@ -19,7 +20,7 @@ CNEquity 将股票行情、期货合约、财报、公司事件和资金面等�
 
 ## 快速开始
 
-需要 Python 3.10+（macOS / Linux / Windows），不需要账号或 token。
+需要 Python 3.10+（macOS / Linux / Windows），不需要账号或 token。命令行和控制台支持中英文，默认跟随系统语言，`export CNE_LANG=zh_CN` 可固定为中文。
 
 **① 一分钟试用。** 用真实数据源抓 5 只股票最近 30 个交易日，建在独立目录里，不影响以后的正式湖：
 
@@ -41,6 +42,7 @@ claude mcp add cnequity -- cne mcp --config /abs/path/to/configs/cnequity.demo.t
 
 ```bash
 cne init     # 第一次可能需要几个小时；中途断了再运行一次即可续跑，已下载的部分不会重来
+             # 开跑前几秒内做网络预检；公司行为等非关键步骤出错不会中断建湖，结束时列出未完成的步骤
 cne check    # 检查数据是否完整、可用
 ```
 
@@ -179,7 +181,7 @@ CNEquity 在数据层保留退市身份，并让复权、历史成分和 PIT 口
 cne run daily
 ```
 
-每天（含周末）用系统调度器运行这一条：交易日跑行情及其他已启用的日更组，然后更新公告、监管事件和资讯；非交易日只更新事件流。`cne serve` 的操作页也可以为当前用户安装定时日更和收尾补抓，不必复制仓库脚本。验收用 `cne check`，有缺口或质量 error 时返回非零。
+每天（含周末）用系统调度器运行这一条：交易日跑行情及其他已启用的日更组，然后更新公告、监管事件和资讯；非交易日只更新事件流。也可以在 `cne serve` 的操作页完成：打开日更、补抓或回填就能看到将执行的命令，点「启动」即运行；同一页还能为当前用户安装定时日更和收尾补抓，不必复制仓库脚本。验收用 `cne check`，有缺口或质量 error 时返回非零。
 
 升级版本时：
 

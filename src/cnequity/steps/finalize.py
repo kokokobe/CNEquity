@@ -170,6 +170,7 @@ def _publish_derived_revision(
     *,
     input_revisions: dict | None = None,
     coverage_status: str = "unknown",
+    factor_findings: list[dict] | None = None,
 ) -> dict | None:
     """Publish one immutable COW generation for a derived dataset."""
     from cnequity.domain.contracts import contract_fingerprint, dataset_contract
@@ -211,6 +212,14 @@ def _publish_derived_revision(
             raise RuntimeError(
                 f"publication gate blocked {dataset}: {publication.get('report_path')}"
             )
+        factor_metadata = {}
+        if dataset == "adj_factors" and factor_findings:
+            previous = revisions.latest(dataset)
+            proofs = dict(previous.metadata.get("factor_event_proofs", {})) if previous else {}
+            for item in factor_findings:
+                if item.get("check") == "stock_event_factor" and "correction" in item:
+                    proofs[f"{item['symbol']}|{item['trade_date']}"] = item
+            factor_metadata["factor_event_proofs"] = proofs
         contract = dataset_contract(dataset)
         revision = revisions.commit(
             dataset,
@@ -227,6 +236,7 @@ def _publish_derived_revision(
                     key: publication.get(key) for key in ("mode", "blocked", "report_path")
                 },
                 "changed_files_count": len(changed),
+                **factor_metadata,
             },
             _locked=True,
         )
@@ -319,6 +329,21 @@ def _update_watermarks(
     for dataset, pcol in _watermarked_datasets():
         if datasets is not None and dataset not in datasets:
             continue
+        if dataset == "daily_bars":
+            from cnequity.storage.fund_no_print import reconcile_no_print_coverage
+
+            reconcile_no_print_coverage(config)
+            from cnequity.storage.coverage import (
+                resolved_bj_session_dates,
+                resolved_prelisting_keys,
+            )
+
+            state.clear_missing_dates(
+                dataset, resolved_bj_session_dates(config, state.get_payload(dataset))
+            )
+            state.clear_outstanding_keys(
+                dataset, resolved_prelisting_keys(config, state.get_outstanding_keys(dataset))
+            )
         max_dt = _watermark_date_for(config, dataset, pcol)
         if max_dt is not None:
             state.update_max_date(dataset, max_dt)
@@ -946,7 +971,14 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
 def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     from cnequity.derive.adj_factors import AdjFactorsDeriveError, compute_adj_factors
 
-    rebackfill = context.get("symbols_to_rebackfill") or []
+    rebackfill = list(context.get("symbols_to_rebackfill") or [])
+    from cnequity.derive.factor_arbitration import settle_recent_unstepped_factors
+
+    # Before the audit gate. A price-proven miss switches onto Baostock and is
+    # refreshed below; a miss Baostock cannot repair stays a warning.
+    switched = settle_recent_unstepped_factors(config, trade_date)
+    if switched:
+        rebackfill = sorted(set(rebackfill) | set(switched))
     from cnequity.storage.revisions import RevisionStore
 
     derived_revisions = RevisionStore(
@@ -972,6 +1004,7 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
             before_files,
             input_revisions=input_revisions,
             coverage_status="partial" if result.failed else "unknown",
+            factor_findings=result.findings,
         )
     except Exception as exc:
         _record_dataset_result(
@@ -1225,6 +1258,7 @@ def step_derive_industry_index(
 )
 def step_audit(config: Config, trade_date: date, run_id: str, context: dict) -> dict:
     from cnequity.quality.audit import run_audit
+    from cnequity.quality.factor_policy import factor_advisory
     from cnequity.quality.publication import coverage_only
 
     findings = run_audit(config, run_id, trade_date, context)
@@ -1232,6 +1266,7 @@ def step_audit(config: Config, trade_date: date, run_id: str, context: dict) -> 
     errors = int(by_severity.get("error", 0))
     coverage_errors = sum(coverage_only(item) for item in context.get("audit_error_findings", []))
     errors -= coverage_errors
+    errors -= sum(factor_advisory(item) for item in context.get("audit_error_findings", []))
 
     # This step depends on `compact`, so by the time it runs the rows are
     # already in curated: the audit has never been able to *prevent* anything,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -30,6 +31,8 @@ from cnequity.query.reader import (
 )
 from cnequity.query.state import DatasetState, dataset_state
 from cnequity.storage.revisions import RevisionStore
+
+logger = logging.getLogger(__name__)
 
 
 class ReadReceiptError(RuntimeError):
@@ -199,7 +202,7 @@ def load_with_receipt(
     request = {key: _request_value(options[key]) for key in request_keys if key in options}
     pit_mode = options.get("pit_mode") if dataset in PIT_DATASETS else "not_applicable"
     if dataset in PIT_DATASETS and pit_mode is None:
-        pit_mode = "compatibility"
+        pit_mode = "best_effort"
     payload: dict[str, Any] = {
         "schema_version": 1,
         "dataset": dataset,
@@ -229,6 +232,36 @@ def load_with_receipt(
             "exact_counts": _counts(frame, "pit_is_exact"),
         },
     }
+    if options.get("adjust") and dataset in ADJUSTABLE_DATASETS:
+        from cnequity.quality.factor_diagnostics import factor_read_quality
+        from cnequity.query.reader import _read_dataset
+        from cnequity.storage.read_context import ReadContext
+
+        context = ReadContext.capture(cfg, ("adj_factors",), pins)
+        factors = None
+        if not frame.is_empty():
+            try:
+                factors = _read_dataset(
+                    cfg,
+                    "adj_factors",
+                    symbols=frame["symbol"].unique().to_list(),
+                    start=frame["trade_date"].min(),
+                    end=frame["trade_date"].max(),
+                    read_context=context,
+                )
+            except (OSError, ValueError, pl.exceptions.PolarsError):
+                pass  # Optional diagnostics cannot invalidate a successful read.
+        try:
+            payload["adjustment"] = factor_read_quality(
+                cfg, frame, factor_root=context.roots["adj_factors"], factors=factors
+            )
+        except Exception as exc:  # noqa: BLE001 — diagnostics never fail a read
+            logger.warning("factor diagnostics unavailable for this read: %s", exc)
+            payload["adjustment"] = {
+                "gate_impact": "none",
+                "historical_accuracy": "not_certified",
+                "diagnostics_assessed": False,
+            }
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     payload["receipt_id"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return ReadResult(frame=frame, receipt=payload)

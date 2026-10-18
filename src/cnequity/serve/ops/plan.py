@@ -9,6 +9,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
+from cnequity.i18n import _
 from cnequity.serve.ops.catalog import OpsError
 from cnequity.serve.ops.environment import command_environment
 
@@ -29,10 +30,12 @@ def describe_backfill(argv: list[str]) -> str:
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise OpsError("回填预览超过 60 秒，没有启动。") from exc
+        raise OpsError(
+            _("The backfill preview took over 60 seconds, so it did not start.")
+        ) from exc
     except OSError as exc:
-        raise OpsError(f"无法启动回填预览（{exc}）。") from exc
+        raise OpsError(_("Could not start the backfill preview ({exc}).").format(exc=exc)) from exc
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
-        raise OpsError(detail or "回填预览失败，没有启动。")
+        raise OpsError(detail or _("The backfill preview failed, so it did not start."))
     return completed.stdout.strip()

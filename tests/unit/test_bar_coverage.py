@@ -10,6 +10,30 @@ from cnequity.quality.bar_coverage import KEYS, missing_bar_keys
 DAYS = [date(2026, 9, 14), date(2026, 9, 15)]
 
 
+def test_listed_fund_obligations_include_absent_series_and_unknown_dates(tmp_path, monkeypatch):
+    from cnequity.config import Config
+    from cnequity.quality.bar_coverage import daily_bar_coverage
+
+    cfg = Config(data_root=tmp_path / "lake", ingest_listed_funds=True)
+    instruments = pl.DataFrame(
+        {
+            "symbol": ["600001.SH", "510300.SH", "160001.SZ", "510500.SH", "110001.SH"],
+            "asset_type": ["stock", "etf", "lof", "etf", "bond"],
+            "list_date": [DAYS[0], DAYS[0], DAYS[0], None, DAYS[0]],
+            "delist_date": [None, DAYS[1], None, None, None],
+        }
+    )
+    monkeypatch.setattr(
+        "cnequity.quality.bar_coverage.load_curated_instruments", lambda *a: instruments
+    )
+    monkeypatch.setattr("cnequity.quality.bar_coverage.list_trading_dates", lambda *a: DAYS)
+    result = daily_bar_coverage(cfg, *DAYS)
+    assert result["scope_symbols"] == 4
+    assert result["unresolved_keys"] == 5
+    assert result["unknown_listing_symbols"] == ["510500.SH"]
+    assert not result["complete"]
+
+
 def test_per_security_gaps_include_wholly_absent_series_and_respect_spans():
     instruments = pl.DataFrame(
         {
@@ -95,6 +119,8 @@ def test_an_untrusted_row_cannot_veto_a_vendors_explicit_halt():
         ("eastmoney", datetime(2026, 9, 15, 8, tzinfo=timezone.utc), 1),
         ("eastmoney", datetime(2026, 9, 14, 6, tzinfo=timezone.utc), 1),
         ("eastmoney", datetime(2026, 9, 14, 7, tzinfo=timezone.utc), 0),
+        # An outage carry written after the close repeats an earlier session.
+        ("eastmoney_cached", datetime(2026, 9, 14, 7, tzinfo=timezone.utc), 1),
         ("baostock", None, 0),
     ],
 )
@@ -119,6 +145,7 @@ def test_suspension_requires_independent_session_evidence(source, observed, expe
     )
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_verify_bars_exits_nonzero_for_unresolved_coverage(monkeypatch):
     monkeypatch.setattr("cnequity.cli.quality_cmds._cfg", lambda path: object())
     monkeypatch.setattr(

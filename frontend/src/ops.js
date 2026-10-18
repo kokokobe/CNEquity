@@ -28,20 +28,20 @@ export function opsIsCurrent(ticket) {
 function dailyScheduleText(schedule) {
   if (schedule.daily_pending) {
     return tr(
-      `定时日更 ${schedule.daily_pending} ${schedule.daily_run_at} 已到点，这次会话还没跑。`,
-      `Scheduled daily update ${schedule.daily_pending} ${schedule.daily_run_at} is due and has not run in this session.`,
+      `${schedule.daily_pending} 的定时日更（${schedule.daily_run_at}）已到点，还没跑。`,
+      `The scheduled daily update for ${schedule.daily_pending} (${schedule.daily_run_at}) is due and has not run yet.`,
     );
   }
   if (schedule.daily_done) {
     const session = schedule.daily_due ? `${schedule.daily_due}` : "";
     return session
       ? tr(
-          `定时日更 ${session}（${schedule.daily_run_at}）这次会话已经跑过。`,
-          `Scheduled daily update ${session} (${schedule.daily_run_at}) already ran in this session.`,
+          `${session} 的定时日更（${schedule.daily_run_at}）已经跑过。`,
+          `The scheduled daily update for ${session} (${schedule.daily_run_at}) already ran.`,
         )
       : tr(
-          `定时日更（${schedule.daily_run_at}）这次会话已经跑过。`,
-          `The scheduled daily update (${schedule.daily_run_at}) already ran in this session.`,
+          `今天的定时日更（${schedule.daily_run_at}）已经跑过。`,
+          `Today's scheduled daily update (${schedule.daily_run_at}) already ran.`,
         );
   }
   if (schedule.daily_run_at) {
@@ -67,9 +67,9 @@ function dailySessionText(schedule, opId, params) {
       ? tr(`今天 ${today} 是交易日。`, `Today ${today} is a trading session.`)
       : tr(`今天 ${today} 不是交易日。`, `Today ${today} is not a trading session.`));
   }
-  if (pending) parts.push(tr(`待跑的定时日更会话是 ${pending} ${runAt}。`, `The due scheduled session is ${pending} ${runAt}.`));
+  if (pending) parts.push(tr(`待跑的定时日更是 ${pending}（${runAt}）。`, `The scheduled daily update due is ${pending} (${runAt}).`));
   else if (schedule.daily_done && schedule.daily_due) {
-    parts.push(tr(`定时日更 ${schedule.daily_due}（${runAt}）这次会话已经跑过。`, `Scheduled daily update ${schedule.daily_due} (${runAt}) already ran in this session.`));
+    parts.push(tr(`${schedule.daily_due} 的定时日更（${runAt}）已经跑过。`, `The scheduled daily update for ${schedule.daily_due} (${runAt}) already ran.`));
   } else parts.push(tr(`定时日更时间 ${runAt}（北京时间）。`, `Scheduled daily update at ${runAt} (Beijing time).`));
   if (opId === "daily.full") {
     const date = String(params.trade_date || "").trim();
@@ -154,6 +154,26 @@ function fieldValue(spec, source) {
   return preset || "";
 }
 
+// A preview has no side effects, so it runs as soon as the required fields are
+// filled and again after each edit; the reader only has to press Start.
+function previewReady(params, specs) {
+  return specs.every((spec) => !spec.required || (Array.isArray(params[spec.name]) ? params[spec.name].length : params[spec.name]));
+}
+
+function autoPreview(form, specs, run) {
+  if (!form || typeof form.addEventListener !== "function" || typeof form.querySelector !== "function") return;
+  let timer = 0;
+  const fire = () => {
+    const params = readForm(form, specs);
+    if (previewReady(params, specs)) void run();
+  };
+  form.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(fire, 450);
+  });
+  fire();
+}
+
 function readForm(form, specs) {
   const params = {};
   for (const spec of specs) {
@@ -161,7 +181,9 @@ function readForm(form, specs) {
     if (!input) continue;
     if (spec.kind === "bool") params[spec.name] = input.checked;
     else if (spec.kind === "multi") {
-      params[spec.name] = [...input.selectedOptions].map((option) => option.value);
+      params[spec.name] = typeof form.querySelectorAll === "function" && input.type === "checkbox"
+        ? [...form.querySelectorAll(`[name="${CSS.escape(spec.name)}"]:checked`)].map((box) => box.value)
+        : [...(input.selectedOptions || [])].map((option) => option.value);
     } else if (input.value) params[spec.name] = input.value.trim();
   }
   return params;
@@ -180,10 +202,10 @@ function control(spec, source) {
     return `<label>${pick(spec, "label")}<select name="${spec.name}"><option value="">${spec.required ? tr("请选择", "Select") : tr("不限", "Any")}</option>${options}</select></label>${help}`;
   }
   if (spec.kind === "multi") {
-    const options = (spec.choices || [])
-      .map((choice) => `<option value="${esc(choice)}" ${value.includes(choice) ? "selected" : ""}>${esc(choiceLabel(spec.name, choice))}</option>`)
+    const boxes = (spec.choices || [])
+      .map((choice) => `<label class="ops-chip"><input type="checkbox" name="${esc(spec.name)}" value="${esc(choice)}" ${value.includes(choice) ? "checked" : ""}><span>${esc(choiceLabel(spec.name, choice))}</span></label>`)
       .join("");
-    return `<label>${pick(spec, "label")}<select name="${spec.name}" multiple size="${Math.min(6, (spec.choices || []).length || 1)}">${options}</select></label>${help}`;
+    return `<fieldset class="ops-chips"><legend>${pick(spec, "label")}</legend>${boxes}</fieldset>${help}`;
   }
   const type = spec.kind === "date" ? "date" : "text";
   return `<label>${esc(pick(spec, "label"))}<input name="${esc(spec.name)}" type="${type}" value="${esc(value)}" ${spec.required ? "required" : ""}></label>${help}`;
@@ -362,7 +384,7 @@ function dailyBlock(home, escapeHtml) {
     <p class="ops-lead">${header ? escapeHtml(header) : tr("还没有定时日更时间。", "No scheduled daily time yet.")}</p>
     ${actions ? `<div class="ops-actions">${actions}</div>` : ""}
     ${closedToday}
-    <p class="ops-hint">${tr("要补一段日线，用", "To fill a range of daily bars, use")} <a href="#/ops?op=backfill.run&dataset=daily_bars">${tr("回填", "backfill")} ${ds("daily_bars")}</a>.</p>
+    <p class="ops-hint">${tr("要补一段日线，请用", "To fill a range of daily bars, use")} <a href="#/ops?op=backfill.run&dataset=daily_bars">${tr("回填", "Backfill")} ${ds("daily_bars")}</a>${tr("。", ".")}</p>
     <details class="ops-fold ops-nested"><summary>${tr("定时设置", "Schedule")}${when}</summary><section class="surface-panel report-panel" id="ops-schedule">${tr("正在读取定时任务状态…", "Reading schedule status…")}</section></details>
   </section>`;
 }
@@ -372,7 +394,7 @@ function manualFields(home, scope, preset) {
   if (!card) return `<p class="panel-note">${tr("当前没有这项操作。", "This operation is not available.")}</p>`;
   const disabled = !card.available || !home.mode.ops_enabled;
   return `${card.params.map((spec) => control(spec, preset)).join("")}
-    <div class="action-row"><button class="button button-primary" type="submit" ${disabled ? "disabled" : ""}>${tr("预览", "Preview")}</button></div>`;
+    <div class="action-row"><button class="button button-ghost" type="submit" ${disabled ? "disabled" : ""}>${tr("预览", "Preview")}</button></div>`;
 }
 
 function manualBlock(home, escapeHtml, preset) {
@@ -414,7 +436,7 @@ function commandBlock(home, escapeHtml) {
     ([command, why]) => `<div class="ops-command ops-cli-only"><div><code>${escapeHtml(command)}</code><div class="muted">${escapeHtml(why)}</div></div></div>`,
   ).join("");
   return `<section class="ops-workflow" id="ops-commands" data-workflow="commands">
-    <p class="ops-hint">${tr("和页面启动的是同一套白名单。点「用这个」打开表单，先预览再启动。", "This is the same allowlist the page can start. Use this opens the form; preview before starting.")}</p>
+    <p class="ops-hint">${tr("和页面启动的是同一套白名单。点「用这个」打开表单，确认命令后启动。", "This is the same allowlist the page can start. Use this opens the form; check the command, then start.")}</p>
     ${groups}
     <section class="ops-command-group"><h3>${tr("仅命令行", "Terminal only")}</h3>${cli}</section>
   </section>`;
@@ -453,6 +475,7 @@ export async function renderOps(ctx) {
     alerts.push(`<li>${tr("正在执行", "Running")} <a href="#/ops/jobs/${encodeURIComponent(slot.job_id)}">${esc(pick(slot, "title") || slot.op)}</a></li>`);
   }
   if (!home.mode.ops_enabled) alerts.push(`<li>${tr("当前模式不能从面板启动命令。", "This mode cannot start commands from the panel.")}</li>`);
+  if (home.mode.config_drift) alerts.push(`<li>${tr("配置文件和这个控制台用的不是同一个数据湖，处理好之前不能从这里启动任务，见页面顶部的提示。", "The config file and this console disagree about the lake. Jobs cannot start from here until that is resolved; see the notice at the top of the page.")}</li>`);
   const attention = alerts.length
     ? `<section class="surface-panel report-panel ops-attention"><ul class="ops-status">${alerts.join("")}</ul></section>`
     : "";
@@ -462,7 +485,8 @@ export async function renderOps(ctx) {
   const deferredClose = emptyLake ? "</details>" : "";
   setPage(
     `<section class="page-heading"><div class="eyebrow">${tr("数据湖控制台 / 操作", "Lake console / Operations")}</div>
-      <div class="heading-row"><div><h1>${tr("操作", "Operations")}</h1><p class="sub">${tr("先预览，再启动。同一时间只跑一个。", "Preview, then start. Only one job runs at a time.")}</p></div>
+      <div class="heading-row"><div><h1>${tr("操作", "Operations")}</h1><p class="sub">${tr("打开操作即显示将执行的命令，点启动才会运行。同一时间只跑一个。", "Opening an action shows the command it will run; nothing runs until you press Start. Only one job runs at a time.")}</p>
+        <p class="ops-lake">${tr("数据目录", "Data directory")} <code>${esc(home.mode.data_root || "—")}</code></p></div>
       <span class="status-pill">${esc(modeLabel(home.mode.label))}</span></div></section>
     ${attention}
     <div id="ops-recent" hidden></div>
@@ -543,9 +567,7 @@ function bindManual(ctx, home, current) {
     session.hidden = !text;
     session.textContent = text;
   };
-  select.onchange = paint;
-  form.onsubmit = async (event) => {
-    event.preventDefault();
+  const run = async () => {
     const scope = scopeById(select.value || "packs");
     const card = home.operations.find((item) => item.id === scope.op);
     if (!card || typeof form.querySelector !== "function") return;
@@ -558,7 +580,27 @@ function bindManual(ctx, home, current) {
     }
     await previewCard(ctx, home, card, params, current, document.getElementById("ops-manual-preview"));
   };
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    await run();
+  };
+  let timer = 0;
+  const maybeRun = () => {
+    if (!home.mode.ops_enabled || typeof form.querySelector !== "function") return;
+    const card = home.operations.find((item) => item.id === scopeById(select.value || "packs").op);
+    if (card && previewReady(readForm(form, card.params), card.params)) void run();
+  };
+  select.onchange = () => {
+    paint();
+    const target = document.getElementById("ops-manual-preview");
+    if (target) target.innerHTML = "";
+    maybeRun();
+  };
   if (typeof form.addEventListener === "function") {
+    form.addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(maybeRun, 450);
+    });
     form.addEventListener("input", () => {
       const scope = scopeById(select.value || "packs");
       const card = home.operations.find((item) => item.id === scope.op);
@@ -588,7 +630,7 @@ export function mountOpForm(ctx, home, opId, preset, host, current) {
     ${rangeNote}
     ${sessionText ? `<p class="panel-note" id="ops-session">${ctx.esc(sessionText)}</p>` : `<p class="panel-note" id="ops-session" hidden></p>`}
     <form id="ops-fields" class="ops-fields">${card.params.map((spec) => control(spec, preset)).join("")}
-      <div class="action-row"><button class="button button-primary" type="submit" ${home.mode.ops_enabled ? "" : "disabled"}>${tr("预览", "Preview")}</button></div>
+      <div class="action-row"><button class="button button-ghost" type="submit" ${home.mode.ops_enabled ? "" : "disabled"}>${tr("重新预览", "Preview again")}</button></div>
     </form>
     <div id="ops-preview"></div>
   </section>`;
@@ -609,6 +651,7 @@ export function mountOpForm(ctx, home, opId, preset, host, current) {
       event.preventDefault();
       await preview(ctx, home, card, current);
     };
+    if (home.mode.ops_enabled) autoPreview(form, card.params, () => preview(ctx, home, card, current));
   }
   return card;
 }

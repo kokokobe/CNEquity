@@ -77,6 +77,7 @@ def test_generated_demo_config_validates_without_enabling_daily_jobs(tmp_path, p
     assert "job.daily.waves" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cne_demo_offline(tmp_path, monkeypatch):
     symbols = ["600519.SH", "000001.SZ"]
     monkeypatch.setattr("cnequity.cli.demo._probe_tdx", lambda cfg: None)
@@ -186,6 +187,7 @@ def test_demo_help_lists_command():
     assert "demo|sample|quick|full" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cne_demo_sample_needs_no_network(tmp_path, monkeypatch):
     def fail_on_network(*args, **kwargs):
         raise AssertionError("sample mode must not touch TDX")
@@ -282,6 +284,7 @@ def test_star_hint_shows_once_per_lake_and_only_on_a_terminal(tmp_path, monkeypa
     assert "Star" not in capsys.readouterr().err
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_sample_preserves_a_different_existing_config_without_force(tmp_path):
     data_root = tmp_path / "sample-lake"
     config_out = tmp_path / "existing.toml"
@@ -384,6 +387,7 @@ def test_sample_allows_an_identical_existing_config_without_force(tmp_path):
     assert result.exit_code == 0, result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cne_demo_sample_rejects_live_only_modes(tmp_path):
     result = CliRunner().invoke(
         cli,
@@ -541,6 +545,7 @@ def _minute_frame(symbols: list[str], day: date, bars: int = 240) -> pl.DataFram
     return with_provenance(pl.DataFrame(rows), source="tdx_protocol", data_version="v1")
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cne_demo_intraday_offline(tmp_path, monkeypatch):
     """`cne init --profile demo --intraday` adds a 7th step and prints a real session."""
     symbols = ["600519.SH", "000001.SZ"]
@@ -652,6 +657,7 @@ def test_cne_demo_without_intraday_stays_six_steps(tmp_path, monkeypatch):
     assert called == []
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_run_intraday_demo_raises_when_the_step_fails(tmp_path):
     from cnequity.cli.demo import _run_intraday_demo
     from cnequity.config import Config
@@ -668,6 +674,7 @@ def test_run_intraday_demo_raises_when_the_step_fails(tmp_path):
         _run_intraday_demo(cfg, FailingEngine(), ["600519.SH"], date(2024, 6, 28), days=5)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_run_intraday_demo_raises_when_no_rows_come_back(tmp_path, monkeypatch):
     from cnequity.cli.demo import _run_intraday_demo
     from cnequity.config import Config
@@ -706,6 +713,7 @@ def test_run_intraday_demo_retains_lake_when_source_cannot_serve_history(tmp_pat
     assert result["fallback"] == [{"reason_codes": ["capability_limit"]}]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_research_demo_keeps_bars_when_no_factor_source_is_available(monkeypatch):
     from types import SimpleNamespace
 
@@ -721,9 +729,10 @@ def test_research_demo_keeps_bars_when_no_factor_source_is_available(monkeypatch
     result = _run_research_demo(None, ["600519.SH"], date(2024, 6, 27), date(2024, 6, 28))
     assert result["execution_status"] == "completed"
     assert result["rows"] == 0
-    assert "未复权日线" in result["fallback"]
+    assert "unadjusted daily bars" in result["fallback"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_research_demo_does_not_hide_factor_integrity_errors(monkeypatch):
     from types import SimpleNamespace
 
@@ -778,6 +787,7 @@ def test_research_demo_uses_a_later_symbol_with_exact_inputs(monkeypatch, missin
     assert result["exact"] is True
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_research_demo_finishes_when_derived_factors_do_not_cover_requested_bars(monkeypatch):
     from types import SimpleNamespace
 
@@ -798,7 +808,7 @@ def test_research_demo_finishes_when_derived_factors_do_not_cover_requested_bars
     result = _run_research_demo(None, ["600519.SH"], date(2024, 6, 27), date(2024, 6, 28))
     assert result["execution_status"] == "completed"
     assert result["status"] == "degraded"
-    assert "未复权日线" in result["fallback"]
+    assert "unadjusted daily bars" in result["fallback"]
 
 
 def test_research_demo_does_not_hide_other_reader_errors(monkeypatch):

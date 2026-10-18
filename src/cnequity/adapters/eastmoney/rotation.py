@@ -310,14 +310,12 @@ def fetch_news_headlines(
             if not isinstance(payload, dict):
                 raise RuntimeError("EastMoney news response is not an object")
             raw_data = payload.get("data")
-            if raw_data is None:
-                items = []
-                next_cursor = ""
-            elif not isinstance(raw_data, dict):
+            if not isinstance(raw_data, dict):
                 raise RuntimeError("EastMoney news response data is not an object")
-            else:
-                items = _object_rows(raw_data.get("fastNewsList"), source="news")
-                next_cursor = str(raw_data.get("sortEnd") or "").strip()
+            if not isinstance(raw_data.get("fastNewsList"), list):
+                raise RuntimeError("EastMoney news response rows are not a list")
+            items = _object_rows(raw_data["fastNewsList"], source="news")
+            next_cursor = str(raw_data.get("sortEnd") or "").strip()
 
             archive_response(
                 archive,

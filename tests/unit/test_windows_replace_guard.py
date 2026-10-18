@@ -21,8 +21,6 @@ ALLOWED_DIRECT_REPLACES = {
     # The retry helpers themselves.
     "storage/atomic.py": 1,
     "domain/rate_limit.py": 1,
-    # Atomic claim of a stale scheduler pid file; failure means "not ours".
-    "orchestrator/scheduler_lock.py": 1,
 }
 
 

@@ -18,6 +18,7 @@ from dataclasses import replace
 from datetime import date
 
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
@@ -491,6 +492,7 @@ def test_cli_repair_does_not_claim_success_when_the_step_failed(tmp_path, monkey
     assert "全部修复完成" not in res.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cli_repair_says_so_when_the_window_is_genuinely_empty(tmp_path, monkeypatch):
     """Succeeded but wrote nothing is not a repair — re-running will not help."""
     from click.testing import CliRunner
@@ -511,6 +513,7 @@ def test_cli_repair_says_so_when_the_window_is_genuinely_empty(tmp_path, monkeyp
     assert "源在该区间没有数据" in res.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cli_repair_rechecks_the_coverage_itself(tmp_path, monkeypatch):
     """No second `cne verify`: the repair run says whether the gap is closed."""
     from click.testing import CliRunner
@@ -542,6 +545,7 @@ def test_cli_repair_rechecks_the_coverage_itself(tmp_path, monkeypatch):
     assert "复查：修复过的数据集已没有可修复缺口" in res.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cli_repair_fails_when_a_reported_success_left_the_gap(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
@@ -576,6 +580,7 @@ def test_cli_repair_fails_when_a_reported_success_left_the_gap(tmp_path, monkeyp
 # check a new user runs reported 35 gaps and exited 1.
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_verify_on_a_demo_lake_checks_only_what_the_lake_holds(tmp_path):
     from click.testing import CliRunner
 
@@ -600,6 +605,7 @@ def test_verify_on_a_demo_lake_checks_only_what_the_lake_holds(tmp_path):
     assert "financial_statement_items" not in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_verify_on_a_sample_lake_does_not_offer_to_repair_synthetic_rows(tmp_path):
     """Its rows are dated by the generator, so it is stale the moment it exists.
 

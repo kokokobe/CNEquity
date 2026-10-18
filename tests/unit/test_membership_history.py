@@ -24,6 +24,45 @@ def test_index_constituents_declares_cni_backfill_source():
     assert spec.backfill_source == "cni"
 
 
+def test_index_as_of_reads_one_past_snapshot_and_never_future_members(tmp_path):
+    from cnequity.config import Config
+    from cnequity.domain.schemas import with_provenance
+    from cnequity.query import load
+
+    cfg = Config(data_root=tmp_path / "lake")
+    frame = with_provenance(
+        pl.DataFrame(
+            {
+                "index_symbol": ["000300.SH"] * 3 + ["000688.SH"],
+                "symbol": ["600000.SH", "600519.SH", "600519.SH", "688001.SH"],
+                "as_of_date": [
+                    date(2026, 7, 7),
+                    date(2026, 7, 7),
+                    date(2026, 7, 8),
+                    date(2026, 7, 8),
+                ],
+                "weight": [None] * 4,
+            },
+            schema_overrides={"weight": pl.Float64},
+        ),
+        source="eastmoney",
+        data_version="v1",
+    )
+    path = cfg.curated_root / "index_constituents" / "as_of_date=2026-07" / "part-merged.parquet"
+    path.parent.mkdir(parents=True)
+    frame.write_parquet(path)
+    assert load("index_constituents", config=cfg, as_of="2026-07-06").is_empty()
+    assert set(load("index_constituents", config=cfg, as_of="2026-07-07")["symbol"]) == {
+        "600000.SH",
+        "600519.SH",
+    }
+    # A removed member must not be carried into the later snapshot.
+    assert set(load("index_constituents", config=cfg, as_of="2026-07-09")["symbol"]) == {
+        "600519.SH",
+        "688001.SH",
+    }
+
+
 def test_expand_sw_industry_as_of_picks_latest_spell():
     intervals = pl.DataFrame(
         {
@@ -69,6 +108,8 @@ def test_expand_cni_constituents_as_of_uses_open_interval():
     assert jan == {"000001.SZ", "000002.SZ"}
     # 000001's first spell ends on 2022-06-13 (exclusive end); + spell starts same day.
     assert jun == {"000001.SZ", "000002.SZ"}
+    assert out["weight"].dtype == pl.Float64
+    assert out["weight"].null_count() == out.height
     validate_dataframe(
         out.with_columns(
             pl.lit("cni").alias("source"),

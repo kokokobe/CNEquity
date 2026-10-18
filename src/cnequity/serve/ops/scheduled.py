@@ -10,6 +10,7 @@ from pathlib import Path
 
 from cnequity.config import load_config
 from cnequity.file_lock import LockUnavailable, exclusive_lock
+from cnequity.i18n import _, use_language
 from cnequity.orchestrator.run_window import CST, is_done, mark_done, parse_run_at, pending_session
 from cnequity.serve.ops.catalog import OpsError
 from cnequity.serve.ops.records import atomic_write, read_record
@@ -53,12 +54,16 @@ def events_due(config, saved: dict, now: datetime | None = None) -> bool:
         return True
     last = read_record(path)
     if not isinstance(last, dict) or not isinstance(last.get("at"), str):
-        raise OpsError("事件流检查记录无效，无法判断运行间隔。")
+        raise OpsError(
+            _("The event-stream check record is invalid, so the run interval cannot be judged.")
+        )
     if last.get("group") != saved.get("events_group"):
         return True
     stamp = datetime.fromisoformat(last["at"])
     if stamp.tzinfo is None:
-        raise OpsError("事件流检查时间无时区，无法判断运行间隔。")
+        raise OpsError(
+            _("The event-stream check time has no time zone, so the run interval cannot be judged.")
+        )
     return (now or datetime.now(timezone.utc)) >= stamp + timedelta(
         minutes=saved.get("events_interval_minutes", 60)
     )
@@ -68,18 +73,22 @@ def claim_session(config, scheduled: dict) -> None:
     """Recheck under both the child's scheduler lock and the control lock."""
     job = scheduled.get("job")
     if job not in {"daily", "stale", "backup", "events"}:
-        raise OpsError("定时任务类型无效。")
+        raise OpsError(_("Invalid scheduled task type."))
     with exclusive_lock(state_dir(config) / "control.lock", blocking=False):
         saved = settings(config)
         if not saved.get(job):
-            raise OpsError("定时任务已经暂停，没有开始取数。")
+            raise OpsError(_("The scheduled task is paused, so no fetch started."))
         if job == "events":
             if (
                 saved.get("events_group") != scheduled.get("group")
                 or saved.get("events_interval_minutes", 60) != scheduled.get("interval_minutes")
                 or not events_due(config, saved)
             ):
-                raise OpsError("事件流设置或运行间隔已变化，没有重复取数。")
+                raise OpsError(
+                    _(
+                        "The event-stream settings or run interval changed, so nothing was fetched twice."
+                    )
+                )
             atomic_write(
                 state_dir(config) / "events_last.json",
                 {
@@ -92,12 +101,18 @@ def claim_session(config, scheduled: dict) -> None:
             if saved.get("backup_datasets", []) != scheduled.get("datasets") or saved.get(
                 "backup_root"
             ) != scheduled.get("root"):
-                raise OpsError("备份范围在启动前已变化，请等待下一次检查。")
+                raise OpsError(
+                    _("The backup scope changed before starting; wait for the next check.")
+                )
             session = backup_session(config, saved)
         else:
             session = pending_session(config, job)
         if session is None or session.isoformat() != scheduled.get("session"):
-            raise OpsError("这个交易日已执行或不在当前运行窗口，没有重复取数。")
+            raise OpsError(
+                _(
+                    "This trading day already ran or is outside the current run window, so nothing was fetched twice."
+                )
+            )
         mark_done(config.meta_root, job, session)
 
 
@@ -122,7 +137,11 @@ def tick(config, *, now: datetime | None = None) -> dict:
                             continue
                         group = saved.get("events_group")
                         if group not in config.events_groups:
-                            raise OpsError("已配置的定时事件组不再存在，请重新设置。")
+                            raise OpsError(
+                                _(
+                                    "The configured scheduled event groups no longer exist; set them up again."
+                                )
+                            )
                         params = {"group": group}
                         scheduled = {
                             "job": job,
@@ -192,10 +211,18 @@ def main() -> int:
             parser.error("--scheduler-lock-dir must be absolute")
         os.environ["CNE_SCHEDULER_LOCK_DIR"] = str(args.scheduler_lock_dir)
     try:
-        report = tick(load_config(args.config))
+        config = load_config(args.config)
     except (OSError, ValueError) as exc:
         print(f"scheduler: cannot load config ({type(exc).__name__})")
         return 1
+    # Run in the language the schedule was set up in; a bad settings file is
+    # reported by `tick` itself.
+    try:
+        language = settings(config).get("language")
+    except (OpsError, OSError, ValueError):
+        language = None
+    with use_language(language):
+        report = tick(config)
     return int(report["status"] == "error")
 
 

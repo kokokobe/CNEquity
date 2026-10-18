@@ -1,17 +1,19 @@
-"""The dashboard's server-side display text exists in English too.
+"""The dashboard's server-side display text exists in English and in Chinese.
 
 Operation titles, summaries, form labels, confirmations and the settings page
-come from Python in Chinese; each payload adds a ``*_en`` sibling from
-``cnequity.serve.labels_en``. A new operation or setting without an entry
-would show Chinese on the English page, so it fails here instead.
+are English in Python, marked with `N_()`, and Chinese in the package catalog.
+Each payload carries both: ``key`` in Chinese and ``key_en`` in English.
+`test_i18n_catalog` fails when a marked string has no Chinese; this file fails
+when display text is not marked, or a payload loses a language.
 """
 
 from __future__ import annotations
 
 import re
 
-from cnequity.serve.labels_en import EN, en
+from cnequity.serve.display import en, zh
 from cnequity.serve.ops import catalog, settings
+from cnequity.serve.ops.records import public_record
 
 _CJK = re.compile(r"[一-鿿]")
 
@@ -29,37 +31,55 @@ def _display_strings() -> list[str]:
         settings.NOTE_UNCHANGED,
         settings.ACKNOWLEDGEMENT,
         settings.PUSH2_ENV_NOTE,
-        "开",
-        "关",
     ]
     found += [title for _, title in settings.GROUPS]
     for spec in settings.SETTINGS:
         found += [spec.label, spec.help, *(label for _, label in spec.choices)]
-    return [text for text in found if text and _CJK.search(text)]
+    return [text for text in found if text]
 
 
-def test_every_display_string_has_english():
-    missing = sorted({text for text in _display_strings() if text not in EN})
-    assert missing == []
+def test_display_text_is_english_source():
+    chinese = sorted(text for text in _display_strings() if _CJK.search(text))
+    assert chinese == []
 
 
-def test_english_entries_are_english():
-    chinese = {key: value for key, value in EN.items() if _CJK.search(value)}
-    assert chinese == {}
+# Labels that are command or record names, read the same in both languages.
+SAME_IN_BOTH = {"init run"}
 
 
-def test_no_stale_entries():
-    """An entry whose Chinese left the code is dead weight and hides renames."""
-    stale = sorted(set(EN) - set(_display_strings()))
-    assert stale == []
+def _is_name(text: str) -> bool:
+    """A source or flag name such as `Baostock` or `run` reads the same in both."""
+    return " " not in text.strip() or text in SAME_IN_BOTH
 
 
-def test_cards_carry_english_siblings():
+def test_every_display_string_has_chinese():
+    untranslated = sorted(
+        text for text in _display_strings() if zh(text) == text and not _is_name(text)
+    )
+    assert untranslated == []
+
+
+def test_cards_carry_both_languages():
     cards = catalog.describe(None, setup=True)
     assert cards
     for card in cards:
         for key in ("title", "summary", "group"):
-            assert card[f"{key}_en"] == en(card[key])
-            assert not _CJK.search(card[f"{key}_en"] or ""), (card["id"], key)
+            assert card[f"{key}_en"] and not _CJK.search(card[f"{key}_en"]), (card["id"], key)
+            assert card[key] == zh(card[f"{key}_en"])
+            assert _CJK.search(card[key]) or _is_name(card[key]), (card["id"], key)
         for param in card["params"]:
             assert not _CJK.search(param["label_en"] or ""), (card["id"], param["name"])
+            assert param["label"] == zh(param["label_en"])
+            assert _CJK.search(param["label"]) or _is_name(param["label"]), (
+                card["id"],
+                param["name"],
+            )
+
+
+def test_a_record_written_before_english_source_still_shows_english(config):
+    spec = catalog.OPS[0]
+    legacy = {"job_id": "ab" * 16, "state": "complete", "title": zh(spec.title)}
+    shown = public_record(config, legacy)
+    assert shown["title"] == zh(spec.title)
+    assert shown["title_en"] == spec.title
+    assert en(zh(spec.title)) == spec.title

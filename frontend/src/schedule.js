@@ -1,4 +1,5 @@
 // Current-user OS schedules, with a separate preview before registration.
+import { driftHeldNote } from "./drift.js";
 import { dsWithCode, pick, tr } from "./i18n.js";
 export async function renderSchedule(ctx, home, alive) {
   const { api, esc } = ctx;
@@ -8,6 +9,11 @@ export async function renderSchedule(ctx, home, alive) {
   host.scheduleRevision = revision;
   const pageAlive = alive;
   alive = () => pageAlive() && host.scheduleRevision === revision;
+  const held = driftHeldNote(home, tr("定时任务", "Schedule"));
+  if (held) {
+    host.innerHTML = held;
+    return;
+  }
   let value;
   try {
     value = await api("/api/ops/schedule");

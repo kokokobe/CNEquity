@@ -1,4 +1,4 @@
-# Product design principles
+# Design principles
 
 ## Data quality first
 

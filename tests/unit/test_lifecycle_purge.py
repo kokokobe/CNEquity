@@ -299,6 +299,7 @@ def test_case_registration_checks_evidence_and_cancels_pending(lake, monkeypatch
         store.register_case(case)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cli_cannot_bypass_web_confirmation(lake, monkeypatch):
     from click.testing import CliRunner
 

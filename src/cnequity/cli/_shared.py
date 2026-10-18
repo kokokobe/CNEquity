@@ -14,6 +14,7 @@ from pathlib import Path
 import click
 
 from cnequity.config import load_config
+from cnequity.i18n import N_, _
 
 USER_CONFIG = "configs/cnequity.toml"
 EXAMPLE_CONFIG = "configs/cnequity.example.toml"
@@ -24,10 +25,10 @@ DEFAULT_CONFIG = USER_CONFIG
 def ingest_scope_label(universe: str) -> str:
     """Human-readable ingest scope without overstating configured coverage."""
     return {
-        "all_a": "沪深京全市场 A 股",
-        "all_a_sh_sz": "沪深 A 股（配置排除北交所）",
-        "all_instruments": "instruments 全部场内标的（含 ETF/LOF）",
-    }.get(universe, f"配置范围 {universe}")
+        "all_a": _("all A shares in Shanghai, Shenzhen and Beijing"),
+        "all_a_sh_sz": _("Shanghai and Shenzhen A shares (config excludes Beijing)"),
+        "all_instruments": _("every exchange-traded instrument in instruments (including ETF/LOF)"),
+    }.get(universe, _("configured scope {universe}").format(universe=universe))
 
 
 def config_option(func):
@@ -41,7 +42,7 @@ def config_option(func):
         "config_path",
         default=DEFAULT_CONFIG,
         show_default=True,
-        help="配置文件路径。",
+        help=N_("Path to the config file."),
         # The default is relative, so every command had to be run from the
         # directory holding `configs/`. The shell pipelines already read
         # `CNE_CONFIG` and passed it through as `--config`; the CLI itself did
@@ -64,18 +65,16 @@ def resolve_config_path(config_path: str):
         # choice has to stay the user's.
         hint = ""
         if Path(DEMO_CONFIG).exists():
-            hint = (
-                f"\n找到 `cne init --profile demo` 写的 {DEMO_CONFIG} —— "
-                f"要对 demo 湖操作，请加上 `--config {DEMO_CONFIG}`。"
-            )
+            hint = _(
+                "\nFound {DEMO_CONFIG}, written by `cne init --profile demo`. To work on the demo lake, add `--config {DEMO_CONFIG}`."
+            ).format(DEMO_CONFIG=DEMO_CONFIG)
         raise click.ClickException(
-            f"找不到配置：{USER_CONFIG}。"
-            "首次使用直接跑 `cne init`，它会生成这份配置并开始初始化；只想生成配置用 `cne config create`"
-            f"（有仓库 checkout 也可以直接复制 {EXAMPLE_CONFIG}）。"
-            f"{hint}"
+            _(
+                "No config found at {USER_CONFIG}. On first use, just run `cne init`: it writes this config and starts initializing. To only write the config, use `cne config create` (with a repository checkout you can also copy {EXAMPLE_CONFIG}).{hint}"
+            ).format(USER_CONFIG=USER_CONFIG, EXAMPLE_CONFIG=EXAMPLE_CONFIG, hint=hint)
         )
     if not path.exists():
-        raise click.ClickException(f"找不到配置：{path}")
+        raise click.ClickException(_("Config not found: {path}").format(path=path))
     return path
 
 
@@ -87,7 +86,9 @@ def _cfg(config: str):
         # Parser messages may contain a literal token/proxy from the TOML.
         # Keep the path and error type, never echo the configuration text.
         raise click.ClickException(
-            f"无法加载配置 {path}（{type(exc).__name__}）；请检查 TOML 语法、数值类型和非负有限限速。"
+            _(
+                "Could not load config {path} ({name}); check the TOML syntax, value types, and that rate limits are finite and non-negative."
+            ).format(path=path, name=type(exc).__name__)
         ) from None
     try:
         cfg._validate_source_limits()
@@ -102,8 +103,33 @@ def comma_values(value: str | None, flag: str) -> list[str] | None:
         return None
     parts = list(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
     if not parts:
-        raise click.BadParameter("必须至少指定一项，不能是空字符串或只有逗号", param_hint=flag)
+        raise click.BadParameter(
+            _("Give at least one item; an empty string or only commas is not allowed"),
+            param_hint=flag,
+        )
     return parts
+
+
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def terminal_formatter(stream) -> logging.Formatter:
+    """The short, translated view for a person at a terminal; the log format otherwise.
+
+    Output that is redirected — a scheduler capturing stderr, CI, a pipe into
+    `tee` — is a log someone reads later, and keeps dates, levels and logger
+    names in English like the log file.
+    """
+    isatty = getattr(stream, "isatty", None)
+    try:
+        interactive = bool(isatty and isatty())
+    except (OSError, ValueError):
+        interactive = False
+    if interactive:
+        from cnequity.terminal_log import TerminalFormatter
+
+        return TerminalFormatter()
+    return logging.Formatter(LOG_FORMAT)
 
 
 def _progress_logging(quiet: bool = False, *, take_over: bool = True) -> bool:
@@ -133,9 +159,11 @@ def _progress_logging(quiet: bool = False, *, take_over: bool = True) -> bool:
     root = logging.getLogger()
     if not take_over and root.handlers:
         return False
+    handler = logging.StreamHandler()
+    handler.setFormatter(terminal_formatter(handler.stream))
     logging.basicConfig(
         level=logging.WARNING if quiet else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[handler],
         force=True,
     )
     for noisy in ("httpx", "httpcore", "urllib3", "curl_cffi"):
@@ -176,7 +204,7 @@ def attach_log_file(cfg, command: str, *, quiet: bool = False) -> Path | None:
     except OSError as exc:
         logging.getLogger(__name__).warning("no log file at %s: %s", path, exc)
         return None
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
     handler.setLevel(logging.WARNING if quiet else logging.INFO)
     logging.getLogger().addHandler(handler)
     # The CLI leaves a root logger someone else configured alone, and that
@@ -191,7 +219,7 @@ def attach_log_file(cfg, command: str, *, quiet: bool = False) -> Path | None:
         from cnequity.progress import start_heartbeat
 
         start_heartbeat()
-    click.echo(f"日志写到 {path}", err=True)
+    click.echo(_("Log written to {path}").format(path=path), err=True)
     return path
 
 
@@ -208,7 +236,7 @@ def parse_date_option(value: str | None, flag: str) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         raise click.BadParameter(
-            f"{value!r} 不是 ISO 日期（YYYY-MM-DD）", param_hint=flag
+            _("{value!r} is not an ISO date (YYYY-MM-DD)").format(value=value), param_hint=flag
         ) from None
 
 
@@ -241,5 +269,8 @@ def star_hint_once(cfg) -> None:
     except OSError:
         return
     click.echo(
-        f"\n觉得有用？欢迎到 {STAR_URL} 点一个 Star，或分享给同样在维护 A 股数据的人。", err=True
+        _(
+            "\nFind it useful? A Star at {STAR_URL} helps, or share it with others maintaining A-share data."
+        ).format(STAR_URL=STAR_URL),
+        err=True,
     )

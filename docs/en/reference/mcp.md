@@ -1,4 +1,4 @@
-# MCP: connecting the lake to AI agents
+# MCP integration: connecting the lake to AI agents
 
 `cne serve` shows the lake to people, and its operations page can also start allowlisted fetches and daily updates. `cne mcp` gives the lake to models, and it is **read-only**: there is no entry point here that triggers fetching, retries, or cleanup.
 
@@ -139,6 +139,7 @@ Models do not read `docs/`. So the three rules most likely to produce "confident
 - The `contract` field of `describe_lake` lists what price adjustment, PIT, `snapshot_only`, `history_horizon_days`, and `universe` mean.
 - `query_bars` returns a `warning` when called without `adjust`; when `adjust` is given but some rows lack factors, it reports "N/M rows `adj_is_exact=false`". The response also echoes `adjust` and `universe`, so an explicit `all_a_sh_sz` Shanghai/Shenzhen-subset scope is not lost during pagination or downstream processing.
 - `query_fundamentals` without `as_of` fails with an error that explains why there is no default: defaulting to today means answering a historical question with today's information, and the agent would have no way to notice.
+- `query_fundamentals` defaults to `pit_mode="best_effort"`: history that a backfill recorded later is returned with `pit_is_exact=false`, and `exact_rows` counts the exact ones. `pit_mode="strict"` returns only rows the lake held on `as_of`; when that is empty but backfilled rows exist, `note` says so and points at best_effort.
 
 ### Pagination always tells the truth
 

@@ -7,6 +7,7 @@ directory.
 
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import shutil
@@ -16,6 +17,8 @@ import time
 from pathlib import Path
 
 import pytest
+
+from cnequity.orchestrator.scheduler_lock import host_identity
 
 ROOT = Path(__file__).resolve().parents[2]
 DAILY = ROOT / "scripts" / "scheduler" / "daily_pipeline.sh"
@@ -60,7 +63,7 @@ printf 'argc=%s\\n' "$#" >> "$CNE_CALL_LOG"
 for arg in "$@"; do printf '<%s>\\n' "$arg" >> "$CNE_CALL_LOG"; done
 sleep "${CNE_STUB_SLEEP:-0}"
 case "$1" in
-  run) exit "${CNE_STUB_STATUS:-0}" ;;
+  run) printf '{"run_id":"stub-%s"}\\n' "$$"; exit "${CNE_STUB_STATUS:-0}" ;;
   *) exit "${CNE_STUB_CHECK_STATUS:-0}" ;;
 esac
 """,
@@ -223,7 +226,9 @@ def test_stale_pipeline_recovers_lock_owned_by_dead_process(tmp_path):
     env = _stale_env(tmp_path, cne, calls)
     lock = tmp_path / "locks" / "daily.lock"
     lock.mkdir(parents=True)
-    (lock / "pid").write_text("99999999\n", encoding="utf-8")
+    (lock / "pid").write_text(
+        json.dumps({"pid": 99999999, "host": host_identity(), "start": "old"}), encoding="utf-8"
+    )
 
     result = _run(STALE, env=env)
 
@@ -319,6 +324,7 @@ for arg in "$@"; do
   if [ "$prev" = "--group" ]; then group="$arg"; fi
   prev="$arg"
 done
+if [ "$1" = "run" ]; then printf '{"run_id":"stub-%s"}\\n' "$group"; fi
 for bad in ${CNE_STUB_FAIL_GROUPS:-}; do
   if [ "$bad" = "$group" ]; then exit 1; fi
 done
@@ -582,6 +588,22 @@ def test_daily_health_scopes_freshness_to_scheduled_hard_groups(tmp_path):
     assert _run(DAILY, env=env).returncode == 0
     args = _call_args(calls)
     assert args[args.index("--groups") + 1] == "core"
+
+
+def test_daily_health_audits_every_group_in_one_call(tmp_path):
+    calls = tmp_path / "calls"
+    env = _daily_env(tmp_path, _stub_cne_failing_groups(tmp_path), calls)
+    env["CNE_FULL_AUDIT_DOW"] = "0"
+    result = _run(DAILY, env=env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    args = _call_args(calls)
+    assert args.count("audit") == 1
+    assert args[args.index("audit") + 1 : args.index("audit") + 5] == [
+        "--run-id",
+        "stub-core",
+        "--run-id",
+        "stub-research",
+    ]
 
 
 def test_non_trading_skip_does_not_erase_a_soft_outage(tmp_path):

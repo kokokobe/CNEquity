@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from cnequity.file_lock import LockUnavailable, exclusive_lock
+from cnequity.i18n import _
 from cnequity.orchestrator.scheduler_lock import SchedulerLockError, lock_directory, scheduler_lock
 from cnequity.serve.ops.preflight import engine_blockers, mark_due_daily_session, scheduler_names
 from cnequity.serve.ops.records import read_record, update_record
@@ -191,10 +192,12 @@ def classify(result_kind: str, exit_code: int, runs: list[dict], stdout: str) ->
     """``(state, message)`` after a command returned. Exceptions are handled earlier."""
     if result_kind == "gate":
         if exit_code == 0:
-            return "complete", "检查通过。"
+            return "complete", _("The check passed.")
         if exit_code == 1:
-            return "findings", "检查未通过。这是发现的问题，不是命令执行失败。"
-        return "failed", f"检查退出码 {exit_code}。"
+            return "findings", _(
+                "The check did not pass. These are findings, not a failed command."
+            )
+        return "failed", _("The check exited with code {exit_code}.").format(exit_code=exit_code)
     if result_kind == "run_json":
         state = aggregate([str(run["status"]) for run in runs if run.get("status")])
         if state is None:
@@ -202,17 +205,23 @@ def classify(result_kind: str, exit_code: int, runs: list[dict], stdout: str) ->
             state = _stdout_state(payload) if payload else None
         if state is None:
             state = "complete" if exit_code == 0 else "failed"
+        if state == "failed" and exit_code == 0:
+            # An init whose bars published but which still owes a non-blocking
+            # step (`lake_usable`) is a partial delivery, not a failed build.
+            payload = last_json(stdout)
+            if payload and payload.get("lake_usable"):
+                state = "partial"
         message = {
-            "succeeded": "执行成功。",
-            "partial": "已交付一部分，仍有缺口或降级。",
-            "failed": "执行失败。",
-            "skipped": "没有要跑的内容，或当天不是交易日。",
-            "complete": "执行完成。",
+            "succeeded": _("Succeeded."),
+            "partial": _("Partly delivered; gaps or degradation remain."),
+            "failed": _("Failed."),
+            "skipped": _("Nothing to run, or the day is not a trading day."),
+            "complete": _("Completed."),
         }[state]
         return state, message
     if exit_code == 0:
-        return "complete", "执行完成。"
-    return "failed", f"退出码 {exit_code}。"
+        return "complete", _("Completed.")
+    return "failed", _("Exit code {exit_code}.").format(exit_code=exit_code)
 
 
 def _invoke(argv: list[str]) -> int:
@@ -260,7 +269,7 @@ def _run(argv: list[str]) -> tuple[int | None, str | None, str]:
     try:
         return _invoke(argv), None, ""
     except (KeyboardInterrupt, click.Abort):
-        return None, "interrupted", "已取消。"
+        return None, "interrupted", _("Cancelled.")
     except click.ClickException as exc:
         exc.show()
         return None, "error", exc.format_message()
@@ -281,7 +290,7 @@ def execute(path: Path) -> None:
     os.environ["CNE_LAUNCH_ID"] = str(record["job_id"])
     slot = Path(record["slot_lock"])
     if slot.name != "serve_ops.lock":
-        _reject(path, "任务记录里的锁路径无效。")
+        _reject(path, _("The lock path in the task record is invalid."))
         return
     try:
         config = _load_config(record)
@@ -289,17 +298,17 @@ def execute(path: Path) -> None:
         _finish(
             path,
             state="error",
-            message=f"无法加载配置：{type(exc).__name__}",
+            message=_("Could not load the config: {name}").format(name=type(exc).__name__),
             exit_code=None,
             result={},
         )
         return
-    print(f"开始执行：{record.get('command')}", file=sys.stderr, flush=True)
+    print(_("Running: {value}").format(value=record.get("command")), file=sys.stderr, flush=True)
     with ExitStack() as stack:
         try:
             stack.enter_context(exclusive_lock(slot, blocking=False))
         except LockUnavailable:
-            _reject(path, "面板正在执行另一个任务。")
+            _reject(path, _("The dashboard is already running another task."))
             return
         process_created_at = None
         if IS_WINDOWS:
@@ -307,7 +316,7 @@ def execute(path: Path) -> None:
 
             process_created_at = creation_time(os.getpid())
             if process_created_at is None:
-                _reject(path, "无法核对任务进程身份，没有开始执行。")
+                _reject(path, _("Could not verify the task process identity, so it did not start."))
                 return
         update_record(
             path,
@@ -319,7 +328,7 @@ def execute(path: Path) -> None:
         names = scheduler_names(record["lock_class"])
         if names:
             if config is None:
-                _reject(path, "没有配置，不能获取调度锁。")
+                _reject(path, _("No config, so the schedule lock cannot be taken."))
                 return
             try:
                 for name in names:
@@ -335,7 +344,7 @@ def execute(path: Path) -> None:
             _finish(
                 path,
                 state="interrupted",
-                message="已取消。",
+                message=_("Cancelled."),
                 exit_code=None,
                 result={"status": "interrupted", "run_ids": [], "summary": None},
             )
@@ -395,7 +404,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         traceback.print_exc()
         try:
-            _finish(path, state="error", message="任务进程异常退出。", exit_code=1, result={})
+            _finish(
+                path,
+                state="error",
+                message=_("The task process exited abnormally."),
+                exit_code=1,
+                result={},
+            )
         except Exception:
             pass
         return 1

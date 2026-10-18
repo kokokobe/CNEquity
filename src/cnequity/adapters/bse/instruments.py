@@ -19,32 +19,42 @@ carries the 证券简称 that the TDX-shaped rows never had.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
+import httpx
 import polars as pl
 
 from cnequity.adapters.bse.daily_quotes import BseMarketDataError
 from cnequity.adapters.bse.trading_status import board_names
+from cnequity.adapters.cninfo.listings import fetch_listing_calendar
+
+logger = logging.getLogger(__name__)
 
 
 def fetch_bse_instruments(trade_date: date, *, client=None, config=None) -> pl.DataFrame:
     """Every security the Beijing board published for *trade_date*.
 
-    Listing dates are absent from the board (``hqssrq`` comes back null), so
-    they stay null and the compact's sticky coalesce keeps whatever an earlier
-    source established.
+    Listing dates are absent from the board. Confirmed same-day CNINFO listing
+    events supply new dates; the compact preserves dates established earlier.
     """
     listed, complete = board_names(trade_date, client=client, config=config)
     if listed and not complete:
         raise BseMarketDataError("BSE instrument board is incomplete; cannot publish roster")
     symbols = sorted(listed)
+    dates = {}
+    if symbols and config is not None and config.sources.get("cninfo", False):
+        try:
+            dates = fetch_listing_calendar(config, trade_date)
+        except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
+            logger.warning("BSE listing-date enrichment unavailable for %s: %s", trade_date, exc)
     return pl.DataFrame(
         {
             "symbol": symbols,
             "name": [listed[s] or None for s in symbols],
             "exchange": ["BJ"] * len(symbols),
             "asset_type": ["stock"] * len(symbols),
-            "list_date": pl.Series([None] * len(symbols), dtype=pl.Date),
+            "list_date": pl.Series([dates.get(s) for s in symbols], dtype=pl.Date),
             "delist_date": pl.Series([None] * len(symbols), dtype=pl.Date),
             "prev_symbol": pl.Series([None] * len(symbols), dtype=pl.Utf8),
         },

@@ -15,6 +15,7 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.datasets import is_dataset_enabled
+from cnequity.i18n import N_
 
 __all__ = [
     "DERIVATIVE_BAR_CONTRACTS",
@@ -23,7 +24,7 @@ __all__ = [
     "exchange_session_gaps",
 ]
 
-HEADING = "取数截面（期货/期权，按交易所）"
+HEADING = N_("Ingest cross-section (futures/options, by exchange)")
 
 #: Exchanges whose default route is a vendor series that omits no-trade
 #: sessions (DCE via Sina); the tip proof cannot hold them to every contract.
@@ -78,7 +79,7 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
             "heading": HEADING,
             "state": "unverified",
             "date": None,
-            "message": f"{dataset} 尚无数据，无法核验覆盖",
+            "message": f"{dataset} has no data yet, so coverage cannot be verified",
         }
     from cnequity.adapters.futures_exchange import members
     from cnequity.adapters.futures_exchange.registry import expected_exchanges
@@ -100,7 +101,10 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
                 "heading": HEADING,
                 "state": "unverified",
                 "date": tip,
-                "message": f"{dataset} 只有一个交易日，没有前一交易日可以推出应有合约",
+                "message": (
+                    f"{dataset} has only one session, so there is no previous session "
+                    "to derive the expected contracts from"
+                ),
             }
         pairs = (
             bars.filter(pl.col("trade_date").is_in([previous, tip]))
@@ -154,7 +158,7 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
             "heading": HEADING,
             "state": "unverified",
             "date": tip if "tip" in locals() else None,
-            "message": f"读取衍生品截面证据失败：{exc}",
+            "message": f"Failed to read derivative cross-section evidence: {exc}",
         }
     if not expected and not missing_exchanges:
         return {
@@ -162,7 +166,10 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
             "heading": HEADING,
             "state": "unverified",
             "date": tip,
-            "message": f"{previous} 没有任何可证明的交易所合约，无法推出 {tip} 应有的合约",
+            "message": (
+                f"{previous} has no provable exchange contracts, so the contracts "
+                f"expected on {tip} cannot be derived"
+            ),
         }
     from cnequity.storage.derivative_evidence import owed_sessions
 
@@ -180,10 +187,13 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
         "missing": missing,
         "owed": len(owed),
         "owed_dates": [d.isoformat() for d in owed],
-        "noun": "个在市合约",
+        "noun": N_("listed contracts"),
         "unverifiable_exchanges": unverifiable,
         "missing_exchanges": missing_exchanges,
-        "message": "前一交易日合约覆盖检查；缺少完整当日在市清单，不能证明新上市合约齐全",
+        "message": (
+            "previous-session contract coverage check; without a complete list of "
+            "contracts live that day, newly listed contracts cannot be proven complete"
+        ),
         "exchanges": per_exchange,
         "coverage": bars.group_by(["exchange", "product"])
         .agg(
@@ -272,8 +282,8 @@ def _unknown_product_findings(config: Config) -> list[dict]:
                 "severity": "warning",
                 "check": "futures_unknown_product",
                 "message": (
-                    f"{table}: {len(names)} 个品种没有合约规格（乘数/最小变动价位为空），"
-                    f"需要补进 domain/futures_products.py：{', '.join(names[:10])}"
+                    f"{table}: {len(names)} products have no contract spec (multiplier/tick "
+                    f"size empty); add them to domain/futures_products.py: {', '.join(names[:10])}"
                 ),
                 "products": names,
             }
@@ -337,9 +347,9 @@ def spec_findings(config: Config, dataset: str = "futures_bars") -> list[dict]:
                     "severity": "warning",
                     "check": "futures_tick_grid",
                     "message": (
-                        f"{dataset}: {exchange}:{product} 最近 {SPEC_CHECK_SESSIONS} 个交易日"
-                        f"有 {share:.1%} 的成交价不在最小变动价位 {spec.tick_size} 的整数倍上；"
-                        "检查 domain/futures_products.py 的 tick"
+                        f"{dataset}: {exchange}:{product} over the last {SPEC_CHECK_SESSIONS} "
+                        f"sessions, {share:.1%} of traded prices are not a multiple of the tick "
+                        f"size {spec.tick_size}; check the tick in domain/futures_products.py"
                     ),
                     "exchange": exchange,
                     "product": product,
@@ -358,8 +368,9 @@ def spec_findings(config: Config, dataset: str = "futures_bars") -> list[dict]:
                     "severity": "warning",
                     "check": "futures_multiplier_mismatch",
                     "message": (
-                        f"{dataset}: {exchange}:{product} 成交额反推的合约乘数约 {implied:.2f}，"
-                        f"规格表写的是 {spec.multiplier:g}；检查 domain/futures_products.py"
+                        f"{dataset}: {exchange}:{product} turnover implies a contract "
+                        f"multiplier of about {implied:.2f}, but the spec table says "
+                        f"{spec.multiplier:g}; check domain/futures_products.py"
                     ),
                     "exchange": exchange,
                     "product": product,
@@ -382,10 +393,11 @@ def derivative_findings(config: Config) -> list[dict]:
                     "severity": "warning",
                     "check": "futures_exchange_session_gap",
                     "message": (
-                        f"{dataset}: {exchange} 在数据集研究区间内缺 {len(missing)} 个交易日"
-                        f"（例：{', '.join(d.isoformat() for d in missing[:5])}）；"
+                        f"{dataset}: {exchange} is missing {len(missing)} sessions inside the "
+                        f"dataset's research window (e.g. "
+                        f"{', '.join(d.isoformat() for d in missing[:5])}); "
                         f"`cne backfill {dataset} --start {missing[0].isoformat()} "
-                        f"--end {missing[-1].isoformat()}` 只重取缺口所在的交易日"
+                        f"--end {missing[-1].isoformat()}` refetches only the sessions in the gap"
                     ),
                     "exchange": exchange,
                     "days_missing": len(missing),
@@ -410,7 +422,10 @@ def derivative_findings(config: Config) -> list[dict]:
                             "dataset": table,
                             "severity": "warning",
                             "check": "derivative_contracts_missing",
-                            "message": f"{table}: 行情中 {len(missing)} 个合约缺少元数据；重建合约表",
+                            "message": (
+                                f"{table}: {len(missing)} contracts in the bars have no "
+                                "metadata; rebuild the contract table"
+                            ),
                             "sample": missing[:10],
                         }
                     )

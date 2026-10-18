@@ -6,13 +6,14 @@ Long sweeps drop sessions; retry each symbol with backoff and refresh every
 
 from __future__ import annotations
 
+import io
 import logging
 import signal
 import socket
 import threading
 import time
 from collections.abc import Callable
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, redirect_stdout
 from datetime import date
 
 from cnequity.adapters.baostock.access import hold_baostock_connection, record_blacklist
@@ -179,8 +180,15 @@ def _session_call(operation, *, config, label: str, deadline: float):
 
     def invoke():
         # Keep the lease in the worker until the actual vendor call returns.
-        with _request_context(config):
-            return operation()
+        # The SDK prints "login success!" / "logout success!" on stdout; a new
+        # user's `cne init` showed a column of them, and `--json` callers need
+        # stdout to be the report alone. The result object carries the outcome.
+        printed = io.StringIO()
+        with _request_context(config), redirect_stdout(printed):
+            result = operation()
+        if printed.getvalue().strip():
+            logger.debug("baostock %s: %s", label, printed.getvalue().strip())
+        return result
 
     try:
         result = _fetch_with_deadline(invoke, deadline, expire)

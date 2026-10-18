@@ -98,6 +98,7 @@ def test_a_missing_query_names_the_pack_command(config):
         load("adj_factors", config=config)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_pack_order_groups_and_empty_lake(config):
     assert normalize_packs(["universe", "market", "market"]) == ("market", "universe")
     assert normalize_packs(None) == ("market",)
@@ -162,6 +163,7 @@ def test_sealed_daily_bars_load_by_symbol_before_publish(config):
         load("daily_bars", symbols=["600000.SH"], config=config)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_init_pack_is_saved_and_does_not_fetch_a_different_spine(config, monkeypatch):
     calls = {"n": 0}
 
@@ -229,6 +231,7 @@ class _Timer:
         self.artifact = artifact
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_init_schedule_installs_only_the_pack_groups(config, monkeypatch):
     monkeypatch.setattr("cnequity.serve.ops.scheduler.SchedulerBackend", _Timer)
     monkeypatch.setattr(
@@ -281,6 +284,7 @@ def test_run_daily_pack_runs_those_groups_without_events(tmp_path, monkeypatch):
     assert "--pack" in clash.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_check_pack_fails_an_empty_lake(config, monkeypatch):
     @click.command()
     @click.pass_context
@@ -299,6 +303,7 @@ def test_check_pack_fails_an_empty_lake(config, monkeypatch):
     assert "研究包" not in plain.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_readiness_route_names_the_gap(config):
     from fastapi.testclient import TestClient
 

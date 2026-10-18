@@ -41,6 +41,13 @@ hide:
     </div>
   </section>
 
+  <section class="cne-metrics" aria-label="Coverage">
+    <div><strong>55</strong><span>registered datasets: 47 collected + 8 derived</span></div>
+    <div><strong>SH · SZ · BJ</strong><span>stocks, indices, ETFs / LOFs; optional commodity futures and options</span></div>
+    <div><strong>Parquet</strong><span>open files; Python, DuckDB, Polars and read-only MCP read the same copy</span></div>
+    <a href="datasets/catalog/">Full catalog →</a>
+  </section>
+
   <section class="cne-section">
     <div class="cne-coverage">
       <div class="cne-section__heading">
@@ -128,7 +135,7 @@ cne check</code></pre>
           <span>01</span>
           <div>
             <h3>Registered is not collected</h3>
-            <p>The current development tree registers 55 datasets, including optional and placeholder entries. Installing does not ship any market data.</p>
+            <p>55 datasets are registered (47 curated + 8 derived), including optional and placeholder entries. Installing does not ship any market data.</p>
             <a href="datasets/catalog/">See the dataset catalog</a>
           </div>
         </article>
@@ -170,5 +177,5 @@ cne check</code></pre>
       <a class="cne-button cne-button--ghost" href="changelog/">Changelog</a>
     </div>
   </section>
-  <p class="cne-fine">These docs track the current repository implementation; the stable PyPI release may lag behind. Run <code>cne --version</code> first, then check the <a href="changelog/">changelog</a>. Code is Apache-2.0; data is subject to each upstream source's terms, see <a href="legal-and-data-sources/">License and sources</a>. For direction and boundaries, see <a href="architecture/overview/">Product design</a>. Report problems in <a href="https://github.com/rootSunc/CNEquity/issues">Issues</a>.</p>
+  <p class="cne-fine">These docs follow the main branch; changes not yet on PyPI sit at the top of the <a href="changelog/">changelog</a> under a version marked unreleased (未发布). Run <code>cne --version</code> to check your installed version. Code is Apache-2.0; data is subject to each upstream source's terms, see <a href="legal-and-data-sources/">License and sources</a>. For direction and boundaries, see <a href="architecture/overview/">Product design</a>. Report problems in <a href="https://github.com/rootSunc/CNEquity/issues">Issues</a>.</p>
 </div>

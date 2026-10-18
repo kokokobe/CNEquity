@@ -89,8 +89,10 @@ def fetch_daily_bars_clist(
             # the live roster, so accepting it here leaks price=0 rows into
             # curated storage and makes every downstream bar query fail the
             # numeric market-data contract.
-            if None in (open_, high, low, close, volume) or any(
-                value <= 0 for value in (open_, high, low, close)
+            if (
+                None in (open_, high, low, close, volume)
+                or any(value <= 0 for value in (open_, high, low, close))
+                or (volume == 0 and amount is not None and amount > 0)
             ):
                 rejected += 1
                 continue
@@ -160,7 +162,12 @@ def fetch_daily_bars(
             try:
                 resp = client.get(_KLINE_URL, params=params)
                 resp.raise_for_status()
-                klines = (resp.json().get("data") or {}).get("klines") or []
+                payload = resp.json()
+                if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+                    raise RuntimeError("EastMoney kline response data is unavailable")
+                klines = payload["data"].get("klines")
+                if not isinstance(klines, list):
+                    raise RuntimeError("EastMoney kline response data.klines is not a list")
             except Exception as exc:
                 logger.warning("EastMoney kline failed for %s: %s", sym, exc)
                 if diagnostics is not None:
@@ -214,7 +221,9 @@ def fetch_daily_bars(
                 volume = _to_float(parts[5])
                 amount = _to_float(parts[6])
                 volume_shares = _volume_shares(volume)
-                if None in (open_, close, high, low, volume_shares):
+                if None in (open_, close, high, low, volume_shares) or (
+                    volume_shares == 0 and amount is not None and amount > 0
+                ):
                     rejected += 1
                     continue
                 rows.append(

@@ -16,6 +16,7 @@ from cnequity.cli._shared import (
     config_option,
     parse_date_option,
 )
+from cnequity.i18n import N_
 
 # Exit 0 even when sources are down. A red source is this command's *output*,
 # not its failure.
@@ -26,20 +27,24 @@ from cnequity.cli._shared import (
     cls=moved_hints({"backfill": "cne backfill daily_bars --profile delisted --start <date>"}),
 )
 def delisted_grp():
-    """读取退市名录；历史行情通过 backfill daily_bars 补数。
+    """Read the delisted directory; history is backfilled with backfill daily_bars.
 
     \b
-    重建名录本身 —— 代码空间扫描、终态对账、instruments 修复和覆盖门禁 ——
-    是一次性的工程而不是日常运维，放在 `scripts/delisted_ops.py` 里。
+    Rebuilding the directory itself (code-space scans, terminal-state reconciliation,
+    instruments repairs and the coverage gate) is a one-off engineering job, not routine
+    operations, and lives in `scripts/delisted_ops.py`.
+
     """
 
 
 @delisted_grp.command("status")
 @config_option
-@click.option("--since", default="2016-01-01", show_default=True, help="湖窗口起点。")
-@click.option("--sample", default=15, show_default=True, help="打印多少行明细。")
+@click.option(
+    "--since", default="2016-01-01", show_default=True, help=N_("Start of the lake window.")
+)
+@click.option("--sample", default=15, show_default=True, help=N_("Number of detail rows to print."))
 def delisted_status(config_path: str, since: str, sample: int):
-    """汇总名录：有多少、从什么时候起、还有多少待探测。"""
+    """Summarize the directory: how many, since when, and how many are still to probe."""
     from collections import Counter
 
     from cnequity.steps.delisted import (

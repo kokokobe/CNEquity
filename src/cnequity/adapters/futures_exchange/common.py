@@ -56,12 +56,15 @@ _HEADERS = {
     ),
 }
 _CACHE_ENTRIES = 16
+#: The longest disk-cache lifetime any request gets (a session older than a week).
+_MAX_DISK_TTL_SECONDS = 30 * 86400
 _cache: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
 _clients: dict[tuple, object] = {}
 _blocked: dict[str, float] = {}
 _transport_lock = threading.RLock()
 _host_locks: dict[str, threading.RLock] = {}
 _cache_lock = threading.Lock()
+_pruned_cache_roots: set[Path] = set()
 
 
 class FuturesDayUnavailable(RuntimeError):
@@ -196,11 +199,17 @@ def fetch_bytes(
     if as_of is not None:
         from cnequity.domain.market_time import shanghai_today
 
-        ttl = 30 * 86400 if (shanghai_today() - as_of).days > 7 else 3600
+        ttl = _MAX_DISK_TTL_SECONDS if (shanghai_today() - as_of).days > 7 else 3600
     identity = json.dumps([method, url, data, json_body, params, follow_redirects], sort_keys=True)
     key = hashlib.sha256(identity.encode()).hexdigest()
     cache_root = config.meta_root / "derivatives" / "http_cache" if config else None
     path = cache_root / f"{key}.json" if cache_root else None
+    if cache_root is not None:
+        with _cache_lock:
+            first_use = cache_root not in _pruned_cache_roots
+            _pruned_cache_roots.add(cache_root)
+        if first_use:
+            prune_disk_cache(cache_root)
     budget = _budget_root(config)
     host = _host_key(url, source)
     refreshed = getattr(config, "_derivative_refreshed_requests", set())
@@ -290,11 +299,39 @@ def fetch_bytes(
         return body
 
 
+def prune_disk_cache(cache_root: Path, *, now: float | None = None) -> int:
+    """Delete disk entries older than the longest TTL; return how many went.
+
+    No request can reuse such an entry, so it only occupies space: a
+    backfill left thousands of them behind. A file's mtime is its write
+    time, and reuse never rewrites it. Runs once per cache root per process.
+    """
+    cutoff = (time.time() if now is None else now) - _MAX_DISK_TTL_SECONDS
+    removed = 0
+    try:
+        entries = list(os.scandir(cache_root))
+    except FileNotFoundError:
+        return 0
+    for entry in entries:
+        if not entry.name.endswith(".json") or not entry.is_file(follow_symlinks=False):
+            continue
+        try:
+            if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                os.unlink(entry.path)
+                removed += 1
+        except FileNotFoundError:
+            continue
+    if removed:
+        logger.info("derivatives http_cache: removed %d expired entries", removed)
+    return removed
+
+
 def clear_cache() -> None:
     """Close pooled connections and clear process state; disk evidence remains."""
     with _transport_lock:
         _cache.clear()
         _blocked.clear()
+        _pruned_cache_roots.clear()
         for client in _clients.values():
             client.__exit__(None, None, None)
         _clients.clear()

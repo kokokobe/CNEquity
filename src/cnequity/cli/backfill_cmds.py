@@ -27,6 +27,7 @@ from cnequity.cli._shared import (
 )
 from cnequity.domain.datasets import get_dataset
 from cnequity.domain.market_time import shanghai_today
+from cnequity.i18n import N_, _
 from cnequity.orchestrator.engine import JobEngine
 
 
@@ -38,68 +39,99 @@ from cnequity.orchestrator.engine import JobEngine
     type=click.Choice(["default", "delisted"]),
     default="default",
     show_default=True,
-    help="daily_bars 可选 delisted：只回填已确认退市名录，沿用独立发现证据。",
+    help=N_(
+        "daily_bars accepts delisted: backfill only the confirmed delisting list, reusing the independent discovery evidence."
+    ),
 )
 @click.option(
     "--shfe-annual-archive",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
-    help="仅期货/期权日线：从已核验格式的本地上期所年度 ZIP 离线导入。",
+    help=N_(
+        "Futures/options daily bars only: import offline from a local SHFE annual ZIP in a verified format."
+    ),
 )
-@click.option("--archive-year", type=click.IntRange(2000, 2100), help="年度 ZIP 对应的交易年份。")
+@click.option(
+    "--archive-year",
+    type=click.IntRange(2000, 2100),
+    help=N_("Trading year covered by the annual ZIP."),
+)
 @click.option(
     "--accept-partial-fields",
     is_flag=True,
-    help="明确接受年度包缺少日文件独有字段；已有完整日线不会被覆盖。",
+    help=N_(
+        "Explicitly accept that the annual package lacks fields found only in the daily files; existing complete daily bars are not overwritten."
+    ),
 )
-@click.option("--archive-url", help="可选：该 ZIP 在上期所网站上的原始 HTTPS 链接，仅写证据。")
-@click.option("--archive-downloaded-at", help="可选：已知的原始下载时间，带时区 ISO 8601。")
 @click.option(
-    "--plan", is_flag=True, help="只输出来源、范围和抓取方式；衍生品另给请求预算。不取数、不写湖。"
+    "--archive-url",
+    help=N_(
+        "Optional: the original HTTPS URL of this ZIP on the SHFE website; written to evidence only."
+    ),
+)
+@click.option(
+    "--archive-downloaded-at",
+    help=N_("Optional: known original download time, ISO 8601 with time zone."),
+)
+@click.option(
+    "--plan",
+    is_flag=True,
+    help=N_(
+        "Print only sources, scope and fetch method, plus a request budget for derivatives. Fetches no data and does not write the lake."
+    ),
 )
 @click.option(
     "--exchange",
     "exchanges",
     multiple=True,
     type=click.Choice(["SHF", "INE", "CZC", "GFE", "DCE", "CFE"], case_sensitive=False),
-    help="仅衍生品：限定交易所，可重复。INE 归入 SHF 路由；2018 期货另取 INE 日文件。",
+    help=N_(
+        "Derivatives only: restrict to an exchange; repeatable. INE is routed via SHF; 2018 futures also fetch INE daily files."
+    ),
 )
 @click.option(
     "--refresh",
     is_flag=True,
-    help="仅衍生品日线：忽略完成收据与响应缓存，重新核对指定区间；不绕过熔断。",
+    help=N_(
+        "Derivatives daily bars only: ignore completion receipts and the response cache and re-check the given range; does not bypass circuit breakers."
+    ),
 )
 @click.option(
     "--retry-failed",
     is_flag=True,
-    help="续跑 sector_bars 回填（跳过 checkpoint 里已写过的板块）。",
+    help=N_("Resume the sector_bars backfill (skip sectors already written in the checkpoint)."),
 )
 @click.option(
     "--force",
     is_flag=True,
-    help="清掉 sector_bars 回填 checkpoint，重抓全部板块。",
+    help=N_("Clear the sector_bars backfill checkpoint and refetch all sectors."),
 )
 @click.option(
     "--start",
     "start_str",
     default=None,
     help=(
-        "回填区间起点（YYYY-MM-DD），包括 daily_bars、minute_bars、衍生品日线、"
-        "日期/报告期推进及 sector_bars。sector_bars 默认往前 400 天；"
-        "超过来源历史深度的范围保留为缺口，可取范围照常交付并提供补数指引。"
+        N_(
+            "Backfill start date (YYYY-MM-DD), covering daily_bars, minute_bars, derivatives daily bars, date/report-period advancement and sector_bars. sector_bars defaults to 400 days back; ranges beyond the source's history depth are kept as gaps, while the available range is delivered as usual with guidance for filling the rest."
+        )
     ),
 )
 @click.option(
     "--end",
     "end_str",
     default=None,
-    help=("回填区间终点（YYYY-MM-DD，默认今天），与 --start 配合限定历史窗口。"),
+    help=(
+        N_(
+            "Backfill end date (YYYY-MM-DD, default today); with --start, bounds the historical window."
+        )
+    ),
 )
 @click.option(
     "--outstanding",
     is_flag=True,
     help=(
-        "只修复被容忍缺口欠下的那些 key，范围和窗口都取自欠账台账，不看 --symbols/--start/--end。补上的 "
-        "key 会销账，仍然缺的继续欠着。"
+        N_(
+            "Repair only the keys owed by tolerated gaps; scope and window come from the debt ledger, ignoring --symbols/--start/--end. Filled keys are cleared from the ledger; keys still missing stay owed."
+        )
     ),
 )
 @click.option(
@@ -107,144 +139,181 @@ from cnequity.orchestrator.engine import JobEngine
     default=10,
     show_default=True,
     help=(
-        "仅 --outstanding：单个 key 累计未补齐达到该次数后进入 parked 状态。"
-        "后续 --outstanding 默认跳过，但 key 仍留在台账里。"
+        N_(
+            "With --outstanding only: after a key has missed this many attempts it is parked. "
+            "Later --outstanding runs skip it by default, but it stays in the ledger."
+        )
     ),
 )
 @click.option(
     "--retry-parked",
     is_flag=True,
-    help="仅 --outstanding：忽略尝试上限，把已 parked 的 key 也纳入本次修复。",
+    help=N_(
+        "With --outstanding only: ignore the attempt cap and include parked keys in this repair."
+    ),
 )
 @click.option(
     "--symbols",
     "symbols_str",
     default=None,
     help=(
-        "限定范围的标的列表，逗号分隔：用于 intraday、trading_status、corporate_actions "
-        "的限定回填，以及 financial_statement_items、daily_bars、share_structure 的限定修复。trading_status "
-        "的 checkpoint 与覆盖证据会记下确切范围；daily_bars 会把这个显式范围写进 backfill 元数据。"
+        N_(
+            "Comma-separated symbols to restrict the scope: for scoped backfills of intraday, trading_status and corporate_actions, and scoped repairs of financial_statement_items, daily_bars and share_structure. trading_status records the exact scope in its checkpoint and coverage evidence; daily_bars writes this explicit scope into the backfill metadata."
+        )
     ),
 )
 @click.option(
     "--workers",
     default=1,
     show_default=True,
-    help="仅 margin_trading 的日期推进并发数。每个请求仍然走配置里共享的源限流器；其它数据集必须为 1。",
+    help=N_(
+        "margin_trading only: concurrency for date advancement. Each request still goes through the shared source rate limiter from the config; must be 1 for other datasets."
+    ),
 )
 @click.option(
     "--margin-source",
     type=click.Choice(["exchange", "eastmoney"]),
     default=None,
-    help="仅 margin_trading：本次回填使用的来源，不修改配置文件或来源限速。",
+    help=N_(
+        "margin_trading only: source to use for this backfill, without changing the config file or source rate limits."
+    ),
 )
 @click.option(
     "--payment-date-repair",
     is_flag=True,
     help=(
-        "仅 corporate_actions：先应用已审发行人公告，再用 Baostock 匹配真实派息日；"
-        "早于除息日的付款日视为未知。"
+        N_(
+            "corporate_actions only: apply reviewed issuer announcements first, then match actual payment dates with Baostock; payment dates earlier than the ex-date are treated as unknown."
+        )
     ),
 )
 @click.option(
     "--issuer-notice-repair",
     is_flag=True,
     help=(
-        "仅 corporate_actions：只用发行人实施公告（已审清单、巨潮、北交所）修复付款日和已审送转条款；"
-        "未匹配事件保留缺口，不请求 Baostock。"
+        N_(
+            "corporate_actions only: repair payment dates and reviewed bonus/transfer share terms using issuer implementation announcements only (reviewed list, CNINFO, BSE); unmatched events stay as gaps and Baostock is not queried."
+        )
     ),
 )
 @click.option(
     "--baostock-repair",
     is_flag=True,
-    help="仅 corporate_actions：用 Baostock 显式修复已退市的沪深标的。",
+    help=N_(
+        "corporate_actions only: explicitly repair delisted Shanghai and Shenzhen symbols with Baostock."
+    ),
 )
 @click.option(
     "--ths-repair",
     is_flag=True,
-    help="仅 corporate_actions，历史迁移用：用同花顺补已退市北交所标的的历史分红除权。",
+    help=N_(
+        "corporate_actions only, for historical migration: fill historical dividends and ex-rights of delisted BSE symbols from THS."
+    ),
 )
 @click.option(
     "--eastmoney-bj-repair",
     is_flag=True,
-    help="仅 corporate_actions，历史迁移用：通过现行的 920xxx 东财代码补北交所老代码的历史分红除权。",
+    help=N_(
+        "corporate_actions only, for historical migration: fill historical dividends and ex-rights of old BSE codes via the current 920xxx EastMoney codes."
+    ),
 )
 @click.option(
     "--eastmoney-date-repair",
     is_flag=True,
     help=(
-        "仅 corporate_actions：按 --ex-dates 指定的除权日向东财逐日要历史除权行。"
-        "回补路径的主源是 TDX，东财只有日更的等值过滤能取到 2015-09-29 以前的行。"
+        N_(
+            "corporate_actions only: request historical ex-rights rows from EastMoney day by day for the ex-dates given in --ex-dates. The primary source for the backfill path is TDX; only EastMoney's daily-update equality filter can reach rows before 2015-09-29."
+        )
     ),
 )
 @click.option(
     "--ex-dates",
     "ex_dates_str",
     default=None,
-    help="配合 --eastmoney-date-repair：逗号分隔的除权日 YYYY-MM-DD。",
+    help=N_("With --eastmoney-date-repair: comma-separated ex-dates, YYYY-MM-DD."),
 )
 @click.option(
     "--bse-tip-repair",
     is_flag=True,
     help=(
-        "仅 daily_bars，历史迁移用：用北交所官网补已有当期交易日的 BJ 成交额，不重抓 Sina。"
-        "日更已以北交所行情板为 BJ 当期主源。"
+        N_(
+            "daily_bars only, for historical migration: fill BJ turnover for existing current-period trading days from the BSE website without refetching Sina. Daily updates already use the BSE quote board as the primary current-period source for BJ."
+        )
     ),
 )
 @click.option(
     "--bj-amount-repair",
     is_flag=True,
     help=(
-        "仅 daily_bars，已由 --tdx-amount-repair 取代：从 TDX 补 Sina 从未发布过的北交所成交额，"
-        "已存的价格和成交量一律不动。需要 --start/--end。"
+        N_(
+            "daily_bars only, superseded by --tdx-amount-repair: fill BSE turnover that Sina never published from TDX; stored prices and volumes are never touched. Requires --start/--end."
+        )
     ),
 )
 @click.option(
     "--tdx-amount-repair",
     is_flag=True,
     help=(
-        "仅 daily_bars：新浪补上的沪深北历史行与通达信一起核对，只在开高低收一致且成交量差小于一手时补成交额；"
-        "通达信没有的代码保留新浪行。已存的价格和成交量一律不动。需要 --start/--end。"
+        N_(
+            "daily_bars only: cross-check historical Shanghai, Shenzhen and Beijing rows filled from Sina against TDX, filling turnover only when OHLC match and the volume difference is under one lot; codes TDX lacks keep the Sina rows. Stored prices and volumes are never touched. Requires --start/--end."
+        )
     ),
 )
 @click.option(
     "--qmt-amount-repair",
     is_flag=True,
     help=(
-        "仅 daily_bars：用 BigQMT 桥补退市 BJ 的 Sina 行成交额；开高低收一致且成交量差小于一手时才补，"
-        "已存价格和成交量不动。需要 --symbols 和 --start/--end。"
+        N_(
+            "daily_bars only: fill the turnover of Sina rows for delisted BSE names from the "
+            "BigQMT bridge; fills only when open/high/low/close agree and the volume difference "
+            "is under one lot; stored prices and volumes are never touched. Requires --symbols "
+            "and --start/--end."
+        )
     ),
 )
 @click.option(
     "--qmt-bars-repair",
     is_flag=True,
     help=(
-        "仅 daily_bars：用 BigQMT 桥补缺失的北交所日线；只写入 curated 湖缺失的 keys，"
-        "上市区间外或零成交量行不作为覆盖。需要 --symbols 和 --start/--end。"
+        N_(
+            "daily_bars only: fill missing BSE daily bars from the BigQMT bridge; writes only "
+            "keys missing from the curated lake; rows outside the listing window or with zero "
+            "volume do not count as coverage. Requires --symbols and --start/--end."
+        )
     ),
 )
 @click.option(
     "--tdx-volume-repair",
     is_flag=True,
     help=(
-        "仅 daily_bars：重读 TDX，只改写已存 TDX 行的成交量（修 2026-09-17 前的解码错误）；"
-        "价格须一致，64.5 元以下被放大的成交额一并改写；不新增行。需要 --symbols 和 --start/--end。"
+        N_(
+            "daily_bars only: re-read TDX and rewrite only the volume of stored TDX rows (fixes the decoding bug before 2026-09-17); prices must match, and turnover values under 64.5 yuan, which the same bug inflated, are rewritten too; adds no rows. Requires --symbols and --start/--end."
+        )
     ),
 )
 @click.option(
     "--turnover-repair",
     is_flag=True,
     help=(
-        "仅 daily_bars：成交额缺失、为 0 或量额单位错位的沪深股票行，用 Baostock 同日行整行替换；"
-        "开高低收须在半分钱内一致，不一致或未提供的保留原值。需要 --start/--end。"
+        N_(
+            "daily_bars only: replace Shanghai/Shenzhen stock rows whose turnover is missing, zero or has misaligned volume/amount units with the whole same-day Baostock row; OHLC must agree within half a cent, otherwise or if unavailable the original values are kept. Requires --start/--end."
+        )
+    ),
+)
+@click.option(
+    "--turnover-peer-review",
+    is_flag=True,
+    help=N_(
+        "With --turnover-repair: review price conflicts using historical exchange prices, TDX and EastMoney; replace whole bars only with agreeing evidence, never splice exchange-wide turnover."
     ),
 )
 @click.option(
     "--fill-em-outage",
     is_flag=True,
     help=(
-        "仅 valuation_metrics：东财快照中断时，用东财 datacenter 估值报表补东财最后一个完整日之后、"
-        "今天之前的 --start/--end 窗口；全市场取全才写入。"
+        N_(
+            "valuation_metrics only: when the EastMoney snapshot is interrupted, fill the --start/--end window after EastMoney's last complete day and before today from the EastMoney datacenter valuation report; writes only when the whole market is retrieved."
+        )
     ),
 )
 def backfill(
@@ -281,21 +350,25 @@ def backfill(
     qmt_bars_repair: bool,
     tdx_volume_repair: bool,
     turnover_repair: bool,
+    turnover_peer_review: bool,
     fill_em_outage: bool,
     max_attempts: int,
     retry_parked: bool,
 ):
-    """回填一个数据集。
+    """Backfill a dataset.
 
     \b
-    成本按源的计费单位算，不按窗口算。daily_bars 是逐标的抓取，所以 `--start D --end D`
-    和多年窗口一样要扫一遍全市场 —— 一个交易日不等于一个请求。
-    只想快速验证而不是跑全市场时，用 `--symbols` 缩小范围。
+    Cost is counted in the source's billing unit, not by window. daily_bars fetches symbol by symbol, so `--start D --end D`
+    sweeps the whole market just like a multi-year window: one session is not one request.
+    To verify quickly rather than run the whole market, narrow the scope with `--symbols`.
+
     """
     dataset = _require_known_dataset(dataset)
+    if turnover_peer_review and not turnover_repair:
+        raise click.ClickException(_("--turnover-peer-review needs --turnover-repair"))
     if profile == "delisted":
         if dataset != "daily_bars":
-            raise click.ClickException("--profile delisted 只适用于 daily_bars")
+            raise click.ClickException(_("--profile delisted only applies to daily_bars"))
         if (
             end_str
             or symbols_str
@@ -327,7 +400,9 @@ def backfill(
             or archive_url
             or archive_downloaded_at
         ):
-            raise click.ClickException("--profile delisted 只接受 --start、--plan 与 --config")
+            raise click.ClickException(
+                _("--profile delisted only accepts --start, --plan and --config")
+            )
         since = parse_date_option(start_str or "2016-01-01", "--start")
         if plan:
             click.echo(
@@ -338,7 +413,7 @@ def backfill(
                         "since": since.isoformat(),
                         "source": "sina",
                         "mode": "confirmed_delisted_catalog",
-                        "note": "执行时按退市名录的待补标的续跑；请求数取决于名录和已完成收据",
+                        "note": "When run, resumes over the pending symbols of the delisted directory; the request count depends on the directory and completed receipts",
                     },
                     indent=2,
                 )
@@ -357,10 +432,14 @@ def backfill(
         return
     if shfe_annual_archive is not None:
         if dataset not in {"futures_bars", "option_bars"}:
-            raise click.ClickException("--shfe-annual-archive 只适用于 futures_bars/option_bars")
+            raise click.ClickException(
+                _("--shfe-annual-archive only applies to futures_bars/option_bars")
+            )
         if archive_year is None or not accept_partial_fields:
             raise click.ClickException(
-                "年度包缺少日文件字段；必须指定 --archive-year 和 --accept-partial-fields"
+                _(
+                    "The annual package lacks daily-file fields; --archive-year and --accept-partial-fields are required"
+                )
             )
         if archive_url:
             parsed_url = urlsplit(archive_url)
@@ -368,14 +447,18 @@ def backfill(
             if parsed_url.scheme != "https" or not (
                 host == "shfe.com.cn" or host.endswith(".shfe.com.cn")
             ):
-                raise click.ClickException("--archive-url 必须是上期所的 HTTPS 链接")
+                raise click.ClickException(
+                    _("--archive-url must be an HTTPS link on the SHFE website")
+                )
         if archive_downloaded_at:
             try:
                 downloaded = datetime.fromisoformat(archive_downloaded_at.replace("Z", "+00:00"))
             except ValueError as exc:
-                raise click.ClickException("--archive-downloaded-at 需要 ISO 8601 时间") from exc
+                raise click.ClickException(
+                    _("--archive-downloaded-at needs an ISO 8601 time")
+                ) from exc
             if downloaded.tzinfo is None:
-                raise click.ClickException("--archive-downloaded-at 必须带时区")
+                raise click.ClickException(_("--archive-downloaded-at must include a time zone"))
             archive_downloaded_at = downloaded.isoformat()
         if (
             profile != "default"
@@ -403,14 +486,16 @@ def backfill(
             or turnover_repair
             or fill_em_outage
         ):
-            raise click.ClickException("年度包导入只接受 --start/--end/--plan 和归档参数")
+            raise click.ClickException(
+                _("Annual package import only accepts --start/--end/--plan and the archive options")
+            )
         start = parse_date_option(start_str, "--start") if start_str else None
         end = parse_date_option(end_str, "--end") if end_str else None
         first, last = date(archive_year, 1, 1), date(archive_year, 12, 31)
         if (start and not first <= start <= last) or (end and not first <= end <= last):
-            raise click.ClickException("--start/--end 必须落在 --archive-year 内")
+            raise click.ClickException(_("--start/--end must fall inside --archive-year"))
         if start and end and start > end:
-            raise click.ClickException("--start 不得晚于 --end")
+            raise click.ClickException(_("--start must not be after --end"))
         if plan:
             click.echo(
                 json.dumps(
@@ -442,10 +527,14 @@ def backfill(
         )
         click.echo(json.dumps(result, indent=2, default=str))
         if result["status"] != "success":
-            raise click.ClickException("年度包有未验证成员或行；已保存有效切片与缺口")
+            raise click.ClickException(
+                _(
+                    "The annual package has unverified members or rows; the valid slices and the gaps were saved"
+                )
+            )
         return
     if archive_year is not None or accept_partial_fields or archive_url or archive_downloaded_at:
-        raise click.ClickException("年度归档选项需要 --shfe-annual-archive ZIP")
+        raise click.ClickException(_("The annual archive options need --shfe-annual-archive ZIP"))
     symbols = comma_values(symbols_str, "--symbols")
     if symbols is not None:
         symbols = list(dict.fromkeys(s.upper() for s in symbols))
@@ -459,10 +548,12 @@ def backfill(
         "futures_minute_bars",
     }
     if (exchanges or refresh) and dataset not in derivatives:
-        raise click.ClickException("--exchange / --refresh 只适用于衍生品采集数据集")
+        raise click.ClickException(_("--exchange / --refresh only apply to derivatives datasets"))
     if (force or retry_failed) and dataset != "sector_bars":
         raise click.ClickException(
-            "--force / --retry-failed 只适用于 sector_bars；衍生品重取请用 --refresh"
+            _(
+                "--force / --retry-failed only apply to sector_bars; to refetch derivatives use --refresh"
+            )
         )
     if dataset in derivatives:
         cfg.futures_enabled = True
@@ -471,18 +562,24 @@ def backfill(
         if exchanges:
             cfg.futures_exchanges = [e.upper() for e in exchanges]
         if refresh and dataset not in {"futures_bars", "option_bars"}:
-            raise click.ClickException("--refresh 只适用于 futures_bars / option_bars")
+            raise click.ClickException(_("--refresh only applies to futures_bars / option_bars"))
         if outstanding:
             raise click.ClickException(
-                "衍生品欠账由日更持久重试；指定 --start / --end 可修复历史区间"
+                _(
+                    "Derivatives debts are retried persistently by the daily update; give --start / --end to repair a historical range"
+                )
             )
         if dataset == "futures_minute_bars" and (start_str or end_str):
             raise click.ClickException(
-                "futures_minute_bars 只能采集近期窗口，不能按 --start / --end 请求历史"
+                _(
+                    "futures_minute_bars can only collect a recent window and cannot request history by --start / --end"
+                )
             )
         if symbols_str and dataset != "futures_minute_bars":
             raise click.ClickException(
-                "衍生品日线按交易所文件取数；使用 --exchange，不支持 --symbols"
+                _(
+                    "Derivatives daily bars are fetched from exchange files; use --exchange, --symbols is not supported"
+                )
             )
         import uuid
 
@@ -490,57 +587,64 @@ def backfill(
         cfg._derivatives_refresh = refresh
     if margin_source:
         if dataset != "margin_trading":
-            raise click.ClickException("--margin-source 只适用于 margin_trading")
+            raise click.ClickException(_("--margin-source only applies to margin_trading"))
         cfg.margin_trading_source = margin_source
     if payment_date_repair or issuer_notice_repair:
         if dataset != "corporate_actions" or not symbols_str or not start_str or not end_str:
             raise click.ClickException(
-                "付款日修复需要 corporate_actions、--symbols、--start 和 --end"
+                _("Payment-date repair needs corporate_actions, --symbols, --start and --end")
             )
         if payment_date_repair and issuer_notice_repair:
-            raise click.ClickException("两种付款日修复模式不能同时使用")
+            raise click.ClickException(
+                _("The two payment-date repair modes cannot be used together")
+            )
         if any(
             (baostock_repair, ths_repair, eastmoney_bj_repair, eastmoney_date_repair, outstanding)
         ):
-            raise click.ClickException("付款日修复必须独立运行")
+            raise click.ClickException(_("Payment-date repair must run on its own"))
         cfg._corporate_actions_payment_repair = True
         cfg._corporate_actions_issuer_notice_only = issuer_notice_repair
     if workers < 1:
-        raise click.ClickException("--workers 至少为 1")
+        raise click.ClickException(_("--workers must be at least 1"))
     if workers > 1 and dataset != "margin_trading":
         raise click.ClickException(
-            "--workers > 1 目前只支持 margin_trading；其它回填只用一条日期推进通道"
+            _(
+                "--workers > 1 is only supported for margin_trading for now; other backfills use a single date-advancing lane"
+            )
         )
     if baostock_repair and dataset != "corporate_actions":
-        raise click.ClickException("--baostock-repair 只适用于 corporate_actions")
+        raise click.ClickException(_("--baostock-repair only applies to corporate_actions"))
     if ths_repair and dataset != "corporate_actions":
-        raise click.ClickException("--ths-repair 只适用于 corporate_actions")
+        raise click.ClickException(_("--ths-repair only applies to corporate_actions"))
     if eastmoney_bj_repair and dataset != "corporate_actions":
-        raise click.ClickException("--eastmoney-bj-repair 只适用于 corporate_actions")
+        raise click.ClickException(_("--eastmoney-bj-repair only applies to corporate_actions"))
     if eastmoney_date_repair and dataset != "corporate_actions":
-        raise click.ClickException("--eastmoney-date-repair 只适用于 corporate_actions")
+        raise click.ClickException(_("--eastmoney-date-repair only applies to corporate_actions"))
     if ex_dates_str and not eastmoney_date_repair:
-        raise click.ClickException("--ex-dates 需要配合 --eastmoney-date-repair")
+        raise click.ClickException(_("--ex-dates needs --eastmoney-date-repair"))
     if bse_tip_repair and dataset != "daily_bars":
-        raise click.ClickException("--bse-tip-repair 只适用于 daily_bars")
+        raise click.ClickException(_("--bse-tip-repair only applies to daily_bars"))
     if bj_amount_repair and dataset != "daily_bars":
-        raise click.ClickException("--bj-amount-repair 只适用于 daily_bars")
+        raise click.ClickException(_("--bj-amount-repair only applies to daily_bars"))
     if tdx_amount_repair and dataset != "daily_bars":
-        raise click.ClickException("--tdx-amount-repair 只适用于 daily_bars")
+        raise click.ClickException(_("--tdx-amount-repair only applies to daily_bars"))
     if qmt_amount_repair and dataset != "daily_bars":
-        raise click.ClickException("--qmt-amount-repair 只适用于 daily_bars")
+        raise click.ClickException(_("--qmt-amount-repair only applies to daily_bars"))
     if qmt_bars_repair and dataset != "daily_bars":
-        raise click.ClickException("--qmt-bars-repair 只适用于 daily_bars")
+        raise click.ClickException(_("--qmt-bars-repair only applies to daily_bars"))
     if bj_amount_repair and tdx_amount_repair:
-        raise click.ClickException("--bj-amount-repair 与 --tdx-amount-repair 只能用一个")
+        raise click.ClickException(_("Use only one of --bj-amount-repair and --tdx-amount-repair"))
     if qmt_amount_repair and (bj_amount_repair or tdx_amount_repair):
-        raise click.ClickException("--qmt-amount-repair 不能与其它 amount repair 同时使用")
+        raise click.ClickException(
+            _("--qmt-amount-repair cannot be combined with other amount repairs")
+        )
     if qmt_bars_repair and qmt_amount_repair:
-        raise click.ClickException("--qmt-bars-repair 与 --qmt-amount-repair 只能用一个")
+        raise click.ClickException(_("Use only one of --qmt-bars-repair and --qmt-amount-repair"))
     if bj_amount_repair:
         click.echo(
-            "提示：--bj-amount-repair 已由 --tdx-amount-repair 取代，"
-            "后者按开高低收与成交量核对后才补成交额，并覆盖沪深北。",
+            _(
+                "Note: --bj-amount-repair has been replaced by --tdx-amount-repair, which fills turnover only after checking open/high/low/close and volume, and covers Shanghai, Shenzhen and Beijing."
+            ),
             err=True,
         )
     if baostock_repair:
@@ -552,12 +656,12 @@ def backfill(
     if eastmoney_date_repair:
         raw_dates = [d.strip() for d in (ex_dates_str or "").split(",") if d.strip()]
         if not raw_dates:
-            raise click.ClickException("--eastmoney-date-repair 需要 --ex-dates")
+            raise click.ClickException(_("--eastmoney-date-repair needs --ex-dates"))
         seen = {parse_date_option(value, "--ex-dates") for value in raw_dates}
         cfg._corporate_actions_eastmoney_date_repair = sorted(seen)
     if dataset == "sector_bars":
         if retry_failed and force:
-            raise click.ClickException("--retry-failed 和 --force 只能用一个。")
+            raise click.ClickException(_("Use only one of --retry-failed and --force."))
         cfg._sector_bars_force = force
     start_d = parse_date_option(start_str, "--start")
     end_d = parse_date_option(end_str, "--end")
@@ -566,60 +670,65 @@ def backfill(
         # days in it, the step raised, the engine logged the traceback, and the
         # command still printed status=success with rows_written=0. `derive`,
         # `verify --bars` and `audit` all refuse this up front; so does this now.
-        raise click.ClickException("--start 必须早于或等于 --end")
+        raise click.ClickException(_("--start must be on or before --end"))
     _guard_history_horizon(dataset, start_d)
     if bj_amount_repair:
         if start_d is None or end_d is None:
-            raise click.ClickException("--bj-amount-repair 需要同时给 --start 和 --end")
+            raise click.ClickException(_("--bj-amount-repair needs both --start and --end"))
         cfg._bj_amount_repair = True
     if tdx_amount_repair:
         if start_d is None or end_d is None:
-            raise click.ClickException("--tdx-amount-repair 需要同时给 --start 和 --end")
+            raise click.ClickException(_("--tdx-amount-repair needs both --start and --end"))
         cfg._tdx_amount_repair = True
     if qmt_amount_repair:
         if not symbols_str or start_d is None or end_d is None:
-            raise click.ClickException("--qmt-amount-repair 需要 --symbols 和 --start/--end")
+            raise click.ClickException(_("--qmt-amount-repair needs --symbols and --start/--end"))
         cfg._qmt_amount_repair = True
     if qmt_bars_repair:
         if not symbols_str or start_d is None or end_d is None:
-            raise click.ClickException("--qmt-bars-repair 需要 --symbols 和 --start/--end")
+            raise click.ClickException(_("--qmt-bars-repair needs --symbols and --start/--end"))
         cfg._qmt_bars_repair = True
     if tdx_volume_repair:
         if dataset != "daily_bars":
-            raise click.ClickException("--tdx-volume-repair 只适用于 daily_bars")
+            raise click.ClickException(_("--tdx-volume-repair only applies to daily_bars"))
         if not symbols_str or start_d is None or end_d is None:
-            raise click.ClickException("--tdx-volume-repair 需要 --symbols 和 --start/--end")
+            raise click.ClickException(_("--tdx-volume-repair needs --symbols and --start/--end"))
         cfg._tdx_volume_repair = True
     if turnover_repair:
         if dataset != "daily_bars":
-            raise click.ClickException("--turnover-repair 只适用于 daily_bars")
+            raise click.ClickException(_("--turnover-repair only applies to daily_bars"))
         if start_d is None or end_d is None:
-            raise click.ClickException("--turnover-repair 需要同时给 --start 和 --end")
+            raise click.ClickException(_("--turnover-repair needs both --start and --end"))
         cfg._turnover_repair = True
+        cfg._turnover_peer_review = turnover_peer_review
     if fill_em_outage:
         if dataset != "valuation_metrics":
-            raise click.ClickException("--fill-em-outage 只适用于 valuation_metrics")
+            raise click.ClickException(_("--fill-em-outage only applies to valuation_metrics"))
         if start_d is None or end_d is None:
-            raise click.ClickException("--fill-em-outage 需要同时给 --start 和 --end")
+            raise click.ClickException(_("--fill-em-outage needs both --start and --end"))
         cfg._valuation_fill_em_outage = True
     if bse_tip_repair:
         if not symbols_str:
-            raise click.ClickException("--bse-tip-repair 需要 --symbols")
+            raise click.ClickException(_("--bse-tip-repair needs --symbols"))
         if start_d is None or end_d is None or start_d != end_d:
-            raise click.ClickException("--bse-tip-repair 需要显式给出同一天的 --start 和 --end")
+            raise click.ClickException(
+                _("--bse-tip-repair needs an explicit --start and --end on the same day")
+            )
         cfg._bse_tip_repair = True
     if outstanding:
         if plan:
             raise click.ClickException(
-                "--plan 请指定数据集范围；--outstanding 使用欠账台账执行修复"
+                _("--plan needs a dataset scope; --outstanding repairs from the debt ledger")
             )
         if symbols_str or start_d or end_d:
             raise click.ClickException(
-                "--outstanding 的范围取自欠账台账；请去掉 --symbols/--start/--end"
+                _(
+                    "--outstanding takes its scope from the debt ledger; drop --symbols/--start/--end"
+                )
             )
         attach_log_file(cfg, f"backfill-{dataset}")
         if max_attempts < 1:
-            raise click.ClickException("--max-attempts 至少为 1")
+            raise click.ClickException(_("--max-attempts must be at least 1"))
         result = _repair_outstanding(
             cfg,
             dataset,
@@ -643,7 +752,12 @@ def backfill(
         else:
             _override_scope(cfg, dataset, symbols)
         if not plan:
-            click.echo(f"[{dataset}] 本次 run 的范围被覆盖为 {len(symbols)} 只标的", err=True)
+            click.echo(
+                _("[{dataset}] this run's scope is overridden to {value} symbols").format(
+                    dataset=dataset, value=len(symbols)
+                ),
+                err=True,
+            )
     if start_d:
         cfg._backfill_start = start_d
     if end_d:
@@ -739,7 +853,12 @@ def _follow_lineage(result: dict, derive) -> dict:
         summary = derive()
     except Exception as exc:  # noqa: BLE001 — report it alongside the published fetch
         logging.getLogger(__name__).exception("downstream derive failed")
-        click.echo(f"下游派生失败：{type(exc).__name__}: {exc}", err=True)
+        click.echo(
+            _("Downstream derivation failed: {name}: {exc}").format(
+                name=type(exc).__name__, exc=exc
+            ),
+            err=True,
+        )
         summary = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
     if (
         summary.get("status") in {"failed", "degraded", "warning"}
@@ -754,17 +873,25 @@ def _after_corporate_actions(cfg, before, result: dict) -> dict:
     from cnequity.derive.lineage import changed_symbols, corporate_action_fingerprint
 
     affected = changed_symbols(before, corporate_action_fingerprint(cfg))
-    click.echo("\n公司行为回填完成", err=True)
-    click.echo(f"  写入：            {int(result.get('rows_written') or 0):,} 条", err=True)
-    click.echo(f"  受影响标的：      {len(affected):,}", err=True)
+    click.echo(_("\nCorporate actions backfill finished"), err=True)
+    click.echo(
+        _("  Written:            {value:,} records").format(
+            value=int(result.get("rows_written") or 0)
+        ),
+        err=True,
+    )
+    click.echo(_("  Affected symbols:   {value:,}").format(value=len(affected)), err=True)
     if not affected:
-        click.echo("✓ 公司行为没有改变任何复权因子输入，无需重算", err=True)
+        click.echo(
+            _("✓ Corporate actions changed no adjustment-factor inputs; nothing to recompute"),
+            err=True,
+        )
         return {"affected_symbols": 0, "synchronized": True}
     return _sync_adj_factors(
         cfg,
         affected,
         realign=False,
-        input_label="公司行为",
+        input_label=_("corporate actions"),
         rerun="cne backfill corporate_actions --symbols",
     )
 
@@ -793,22 +920,33 @@ def _after_daily_bars(cfg, before, window: tuple[date, date], result: dict) -> d
     from cnequity.steps.reference import DERIVE_TAIL_DAYS
 
     affected, first, last = changed_bar_scope(before, _bar_fingerprint(cfg, window))
-    click.echo("\n日线回填完成", err=True)
-    click.echo(f"  写入：            {int(result.get('rows_written') or 0):,} 行", err=True)
-    click.echo(f"  受影响标的：      {len(affected):,}", err=True)
+    click.echo(_("\nDaily bars backfill finished"), err=True)
+    click.echo(
+        _("  Written:            {value:,} rows").format(
+            value=int(result.get("rows_written") or 0)
+        ),
+        err=True,
+    )
+    click.echo(_("  Affected symbols:   {value:,}").format(value=len(affected)), err=True)
     if not affected:
-        click.echo("✓ 日线没有变化，复权因子与停牌无需重算", err=True)
+        click.echo(
+            _("✓ Daily bars did not change; adjustment factors and suspensions need no recompute"),
+            err=True,
+        )
         summary = {"affected_symbols": 0, "synchronized": True}
         result["adj_factors_sync"] = summary
         return summary
-    click.echo(f"  变化月份：        {first:%Y-%m} .. {last:%Y-%m}", err=True)
+    click.echo(
+        _("  Months changed:     {first:%Y-%m} .. {last:%Y-%m}").format(first=first, last=last),
+        err=True,
+    )
     result["adj_factors_sync"] = _follow_lineage(
         result,
         lambda: _sync_adj_factors(
             cfg,
             affected,
             realign=True,
-            input_label="日线",
+            input_label=_("daily bars"),
             rerun="cne backfill daily_bars --symbols",
         ),
     )
@@ -837,7 +975,7 @@ def _sync_adj_factors(
     from cnequity.derive.adj_factors import compute_adj_factors
     from cnequity.derive.lineage import verify_factor_sync
 
-    click.echo("\n派生复权因子…", err=True)
+    click.echo(_("\nDeriving adjustment factors…"), err=True)
     with _published_derive(cfg, "adj_factors") as outcome:
         derived = (
             compute_adj_factors(cfg, realign_symbols=affected)
@@ -848,28 +986,40 @@ def _sync_adj_factors(
         if derived.failed:
             outcome["status"] = "degraded"
     sync = verify_factor_sync(cfg, affected, failed=derived.failed, rows=derived.rows)
-    reasons = {"no_bars": "无日线", "cdr": "CDR"}
+    reasons = {"no_bars": _("no daily bars"), "cdr": "CDR"}
     skipped = ", ".join(
         f"{reasons[r]} {sum(v == r for v in sync.skipped.values())}"
         for r in reasons
         if r in sync.skipped.values()
     )
-    click.echo(f"  处理：            {len(affected):,}", err=True)
-    click.echo(f"  更新：            {len(sync.updated):,}", err=True)
+    click.echo(_("  Processed:          {value:,}").format(value=len(affected)), err=True)
+    click.echo(_("  Updated:            {value:,}").format(value=len(sync.updated)), err=True)
     click.echo(
-        f"  跳过：            {len(sync.skipped):,}" + (f"（{skipped}）" if skipped else ""),
+        _("  Skipped:            {value:,}").format(value=len(sync.skipped))
+        + (_(" ({skipped})").format(skipped=skipped) if skipped else ""),
         err=True,
     )
     if sync.synchronized:
-        click.echo(f"\n✓ {input_label}与复权因子已同步", err=True)
+        click.echo(
+            _("\n✓ {input_label} and adjustment factors are in sync").format(
+                input_label=input_label
+            ),
+            err=True,
+        )
     else:
         behind = sorted(sync.failed + sync.lagging)
         preview = ",".join(behind[:20])
         click.echo(
-            f"  失败：            {len(sync.failed):,}\n"
-            f"  未覆盖最新日线：  {len(sync.lagging):,}\n"
-            f"\n✗ {len(behind)} 只标的的复权因子没有跟上{input_label}；"
-            f"重跑：cne derive adj_factors 或 {rerun} {preview}",
+            _(
+                "  Failed:             {value:,}\n  Missing latest bars: {value2:,}\n\n✗ Adjustment factors of {value3} symbols did not catch up with {input_label}; re-run: cne derive adj_factors or {rerun} {preview}"
+            ).format(
+                value=len(sync.failed),
+                value2=len(sync.lagging),
+                value3=len(behind),
+                input_label=input_label,
+                rerun=rerun,
+                preview=preview,
+            ),
             err=True,
         )
     return sync.as_dict()
@@ -887,8 +1037,14 @@ def _derive_suspensions(cfg, start: date, end: date) -> dict:
 
     summary = _derive_trading_status(cfg, start=start, end=end)
     click.echo(
-        f"\n已按 {start.isoformat()}..{end.isoformat()} 的日线重算停牌："
-        f"{int(summary.get('rows_staged') or 0):,} 行（{summary.get('status')}）",
+        _(
+            "\nRecomputed suspensions from the daily bars of {value}..{value2}: {value3:,} rows ({value4})"
+        ).format(
+            value=start.isoformat(),
+            value2=end.isoformat(),
+            value3=int(summary.get("rows_staged") or 0),
+            value4=summary.get("status"),
+        ),
         err=True,
     )
     return summary
@@ -963,22 +1119,24 @@ def _backfill_plan(cfg, dataset, start, end, symbols, workers, repair_modes) -> 
             "bse": "skip"
             if scoped_history or sum(s.endswith(".BJ") for s in symbols) <= 4
             else "eligible",
-            "reason": "显式历史或最多 4 只标的时跳过全市场快照；按标的请求仍受共享限流约束",
+            "reason": "Explicit history or at most 4 symbols skips the whole-market snapshot; per-symbol requests are still bound by the shared rate limit",
         }
     return {
         "dataset": dataset,
         "data_root": str(cfg.data_root),
         "start": start,
         "end": end,
-        "window_note": "未指定的边界由数据集的增量水位和历史能力决定；计划不创建水位或请求网络",
+        "window_note": "Unspecified bounds come from the dataset's incremental watermark and history capability; planning creates no watermark and makes no network request",
         "symbols": symbols,
-        "scope": f"显式 {len(symbols)} 只" if symbols else "数据集默认范围，可能是全市场",
+        "scope": f"explicit {len(symbols)} symbols"
+        if symbols
+        else "dataset default scope, possibly the whole market",
         "fetch_semantics": spec.fetch_semantics,
         "history_mode": history_mode_for(spec),
         "history_note": (
-            "来源只有当前快照；历史请求正常报告能力限制，保留已有数据并给出日更采集方案"
+            "The source only has a current snapshot; history requests report the capability limit normally, keep existing data and give a daily collection plan"
             if history_mode_for(spec) == "snapshot_only"
-            else "超出来源能力的范围记为覆盖缺口；执行时获取来源仍可提供的范围"
+            else "Ranges beyond the source's capability are recorded as coverage gaps; running fetches whatever range the source can still provide"
         ),
         "registered_sources": registered,
         "source_status": statuses,
@@ -990,7 +1148,7 @@ def _backfill_plan(cfg, dataset, start, end, symbols, workers, repair_modes) -> 
             "outstanding_keys": len(outstanding) if isinstance(outstanding, list) else 0,
         },
         "margin_source": cfg.margin_trading_source if dataset == "margin_trading" else None,
-        "source_note": "登记源用于说明能力；逐市场路由和显式修复模式见取数指南，实际来源写入数据行",
+        "source_note": "The registered source describes capability; per-market routing and explicit repair modes are in the fetch guide, and the actual source is written into the data rows",
         "chunk_symbols": spec.backfill_chunk_symbols,
         "chunk_days": spec.backfill_chunk_days,
         "earliest_available": spec.earliest_available(shanghai_today()),
@@ -999,13 +1157,13 @@ def _backfill_plan(cfg, dataset, start, end, symbols, workers, repair_modes) -> 
         "broad_tip_snapshots": broad_tip,
         "tdx_history_window": {
             "strategy": "exponential-bracket-binary-seek-then-scan",
-            "applies_when": "TDX K 线回填且 end 早于最新完整页；其他来源沿用各自策略",
-            "cost": "每标的：对数级定位页 + 目标窗口页；跳页后额外校验一次最新页",
-            "limits": "仅限源仍保留的历史；未知日期退回顺序读取，失败不提交该标的的部分结果",
+            "applies_when": "TDX K-line backfill whose end is before the latest full page; other sources keep their own strategies",
+            "cost": "Per symbol: logarithmic locating pages + target window pages; after jumping, one extra check of the latest page",
+            "limits": "Limited to history the source still keeps; unknown dates fall back to sequential reads, and a failure commits none of that symbol's partial results",
         }
         if dataset in {"daily_bars", "index_bars", "minute_bars", "minute_bars_5m"}
         else None,
-        "cost_note": "分页、缺口和缓存决定请求数；单日窗口不等于单个请求。先用少量 --symbols 验证",
+        "cost_note": "Paging, gaps and caches decide the request count; a one-day window is not one request. Verify with a few --symbols first",
         "pacing_seconds": cfg.source_intervals,
         "rate_limit_root": str(cfg.rate_limit_root),
         "writes": False,
@@ -1028,7 +1186,7 @@ def _derivatives_plan(cfg, dataset, start_str, end_str, symbols_str) -> dict:
     start = parse_date_option(start_str, "--start")
     end = parse_date_option(end_str, "--end") or shanghai_today()
     if start and start > end:
-        raise click.ClickException("--start 必须早于或等于 --end")
+        raise click.ClickException(_("--start must be on or before --end"))
     if symbols_str:
         _override_scope(
             cfg, dataset, [s.strip().upper() for s in symbols_str.split(",") if s.strip()]
@@ -1039,7 +1197,7 @@ def _derivatives_plan(cfg, dataset, start_str, end_str, symbols_str) -> dict:
             "dataset": dataset,
             "contracts": symbols,
             "requests_cold": len(symbols),
-            "limit": "每合约近期约 1023 根；仅启用后积累，不能历史回填",
+            "limit": "About 1023 recent bars per contract; accumulates only after enabling and cannot be backfilled",
             "writes": False,
         }
     kind = "options" if dataset.startswith("option_") else "futures"
@@ -1092,10 +1250,10 @@ def _derivatives_plan(cfg, dataset, start_str, end_str, symbols_str) -> dict:
         "routes": routes,
         "source_capabilities": capabilities(),
         "refresh": bool(getattr(cfg, "_derivatives_refresh", False)),
-        "cache": "持久响应缓存；收据匹配才跳过。行情预算不含重试；参考文件另列上界（仅有行情的日期读取）。实际缓存命中需按完整请求键检查",
+        "cache": "Persistent response cache; skipped only when the receipt matches. The quote budget excludes retries; reference files list an upper bound separately (read only on dates with quotes). Actual cache hits must be checked against the full request key",
         "pacing_seconds": {"futures_exchange": 1.0, "sina": 0.3, **cfg.source_intervals},
         "followup_steps": _derivatives_followup(dataset),
-        "quality": "续跑完成不代表全市场完整；DCE 新浪缺零成交日，期权套利缺同步盘口",
+        "quality": "A finished resume does not mean the whole market is complete; DCE via Sina lacks zero-volume days, and option arbitrage lacks synchronized order books",
         "writes": False,
     }
 
@@ -1140,8 +1298,10 @@ def _repair_outstanding(
     )
     if parked:
         click.echo(
-            f"[{dataset}] {len(parked)} 个 key 已累计 {limit} 次未补齐；"
-            "本次跳过，key 仍在台账中（--retry-parked 可强制重试）",
+            _(
+                "[{dataset}] {parked} keys have missed {limit} attempts; "
+                "skipped this run but kept in the ledger (--retry-parked forces a retry)"
+            ).format(dataset=dataset, parked=len(parked), limit=limit),
             err=True,
         )
     if not active:
@@ -1172,7 +1332,9 @@ def _repair_outstanding(
         days_in[day[:7]].append(day)
     if deferred:
         click.echo(
-            f"[{dataset}] 有 {deferred} 个 key 属于尚未收定的交易日；继续欠着，留给后面的 run",
+            _(
+                "[{dataset}] {deferred} keys belong to sessions not yet settled; they stay owed for a later run"
+            ).format(dataset=dataset, deferred=deferred),
             err=True,
         )
     if not buckets:
@@ -1184,11 +1346,19 @@ def _repair_outstanding(
         }
 
     click.echo(
-        f"[{dataset}] 待试 {len(active)} 个 key，涉及 "
-        f"{len({r['symbol'] for r in active})} 只标的；分 {len(buckets)} 个月度批次修复",
+        _(
+            "[{dataset}] repairing {value} keys across {value2} symbols in {value3} monthly batches"
+        ).format(
+            dataset=dataset,
+            value=len(active),
+            value2=len({r["symbol"] for r in active}),
+            value3=len(buckets),
+        ),
         err=True,
     )
     failures: list[str] = []
+    followups: list[dict] = []
+    lineage_degraded = False
     passes = 0
     filled = 0
     fatal = False
@@ -1196,14 +1366,30 @@ def _repair_outstanding(
         symbols = sorted(buckets[month])
         lo, hi = min(days_in[month]), max(days_in[month])
         click.echo(
-            f"[{dataset}] {index}/{len(buckets)} {month}：{len(symbols)} 只标的 {lo}..{hi}",
+            _("[{dataset}] {index}/{value} {month}: {value2} symbols {lo}..{hi}").format(
+                dataset=dataset,
+                index=index,
+                value=len(buckets),
+                month=month,
+                value2=len(symbols),
+                lo=lo,
+                hi=hi,
+            ),
             err=True,
         )
         cfg._backfill_symbols = symbols
         cfg._backfill_start = date.fromisoformat(lo)
         cfg._backfill_end = date.fromisoformat(hi)
         cfg._backfill_workers = workers
+        window = (cfg._backfill_start, cfg._backfill_end)
+        before = _bar_fingerprint(cfg, window) if dataset == "daily_bars" else None
         out = _backfill_once(cfg, dataset)
+        if before is not None and out.get("status") != "failed":
+            summary = _follow_lineage(
+                out, lambda b=before, w=window, o=out: _after_daily_bars(cfg, b, w, o)
+            )
+            followups.append({"month": month, **summary})
+            lineage_degraded |= summary.get("status") in {"failed", "warning", "degraded"}
         passes += 1
         if out.get("status") not in ("success", "warning", "degraded"):
             failures.append(f"{month}: {out.get('status')}")
@@ -1227,9 +1413,12 @@ def _repair_outstanding(
         if fatal or (failures and not filled)
         else "warning"
         if settled["still_owed"]
+        else "degraded"
+        if lineage_degraded
         else "success",
         "passes": passes,
         "failed_passes": failures,
+        "followups": followups,
         "outstanding": settled,
         "result_schema_version": 2,
         "execution_status": "failed" if fatal or (failures and not filled) else "completed",
@@ -1347,9 +1536,15 @@ def _override_scope(cfg, dataset: str, symbols: list[str]) -> None:
             try:
                 contract = parse_future_code(code, exchange, shanghai_today())
             except ValueError as exc:
-                raise click.ClickException(f"非法期货合约 {symbol}: {exc}") from exc
+                raise click.ClickException(
+                    _("Invalid futures contract {symbol}: {exc}").format(symbol=symbol, exc=exc)
+                ) from exc
             if contract.symbol != symbol:
-                raise click.ClickException(f"请使用标准期货合约代码：{contract.symbol}")
+                raise click.ClickException(
+                    _("Use a standard futures contract code: {symbol}").format(
+                        symbol=contract.symbol
+                    )
+                )
         cfg.futures_enabled = cfg.futures_minute_enabled = True
         cfg.futures_minute_contracts = symbols
         cfg.futures_minute_products = []
@@ -1358,8 +1553,9 @@ def _override_scope(cfg, dataset: str, symbols: list[str]) -> None:
     block = SCOPED_DATASETS.get(dataset)
     if block is None:
         raise click.ClickException(
-            f"--symbols 只适用于配置里有 scope 的数据集"
-            f"（{', '.join(sorted(SCOPED_DATASETS))}）；{dataset} 不支持按标的覆盖范围。"
+            _(
+                "--symbols only applies to datasets with a scope in the config ({value}); {dataset} does not support overriding the scope by symbol."
+            ).format(value=", ".join(sorted(SCOPED_DATASETS)), dataset=dataset)
         )
     setattr(cfg, f"{block}_enabled", True)
     setattr(cfg, f"{block}_scope", "watchlist")
@@ -1389,19 +1585,21 @@ def _guard_history_horizon(dataset: str, start: date | None) -> None:
         # A fixed floor, not a per-symbol budget: no symbol reaches further
         # back, so there is no narrower scope that would help.
         raise click.ClickException(
-            f"{dataset}：--start {start} 早于源的历史下限。"
-            f"对任何标的，上游都不提供早于 {earliest} 的数据，"
-            f"也没有任何回填源能延长它。请改用 --start {earliest} 或更晚的日期。"
+            _(
+                "{dataset}: --start {start} is before the source's history floor. For every symbol, upstream provides nothing earlier than {earliest}, and no backfill source extends it. Use --start {earliest} or later."
+            ).format(dataset=dataset, start=start, earliest=earliest)
         )
     block = SCOPED_DATASETS.get(dataset, "minute_bars")
     raise click.ClickException(
-        f"{dataset}：--start {start} 早于源能提供的历史深度。"
-        f"对每个交易日都有报价的标的，上游每个标的大约只保留 {spec.history_horizon_days} "
-        f"个交易日（大致回到 {earliest}），并且没有任何回填源能延长它。"
-        f"请改用 --start {earliest} 或更晚的日期。"
-        "（成交稀疏的标的有 K 线的天数更少，因此能回溯得更远。"
-        f"要取那些，请先把 [{block}].scope 收窄成一个观察列表 —— "
-        "用那个起点扫全市场，会在根本没有数据的标的上耗掉好几个小时。）"
+        _(
+            "{dataset}: --start {start} is beyond the history depth the source can provide. For symbols quoted every session, upstream keeps only about {history_horizon_days} sessions per symbol (back to roughly {earliest}), and no backfill source extends it. Use --start {earliest} or later. (Thinly traded symbols have bars on fewer days, so they reach further back. To get those, narrow [{block}].scope to a watchlist first: sweeping the whole market from that start burns hours on symbols with no data at all.)"
+        ).format(
+            dataset=dataset,
+            start=start,
+            history_horizon_days=spec.history_horizon_days,
+            earliest=earliest,
+            block=block,
+        )
     )
 
 
@@ -1676,9 +1874,11 @@ def _require_known_dataset(dataset: str) -> str:
     if canonical in DATASETS:
         return canonical
     close = difflib.get_close_matches(canonical, sorted(DATASETS), n=3)
-    hint = f"是不是想找：{', '.join(close)}？" if close else ""
+    hint = _("Did you mean: {value}? ").format(value=", ".join(close)) if close else ""
     raise click.ClickException(
-        f"未知数据集 {dataset!r}。{hint}`cne status --datasets` 会列出全部数据集。"
+        _("Unknown dataset {dataset!r}. {hint}`cne status --datasets` lists every dataset.").format(
+            dataset=dataset, hint=hint
+        )
     )
 
 
@@ -1740,7 +1940,9 @@ def _backfill_symbol_chunked(cfg, dataset: str, start: date, end: date, chunk_sy
         symbols = _filter_all_scope_to_listed_symbols(cfg, symbols, start, end)
     if not symbols:
         raise click.ClickException(
-            f"{dataset}：范围解析出来是 0 只标的 —— 检查 [minute_bars].scope"
+            _("{dataset}: the scope resolved to 0 symbols; check [minute_bars].scope").format(
+                dataset=dataset
+            )
         )
 
     engine = JobEngine(cfg)
@@ -1759,8 +1961,18 @@ def _backfill_symbol_chunked(cfg, dataset: str, start: date, end: date, chunk_sy
             cfg.minute_bars_scope = "watchlist"
             cfg.minute_bars_symbols = chunk
             click.echo(
-                f"[{dataset}] 标的 {index + 1}..{index + len(chunk)}/"
-                f"{len(symbols)}（{chunk[0]}..{chunk[-1]}）窗口 {start}..{end}",
+                _(
+                    "[{dataset}] symbols {value}..{value2}/{value3} ({value4}..{value5}) window {start}..{end}"
+                ).format(
+                    dataset=dataset,
+                    value=index + 1,
+                    value2=index + len(chunk),
+                    value3=len(symbols),
+                    value4=chunk[0],
+                    value5=chunk[-1],
+                    start=start,
+                    end=end,
+                ),
                 err=True,
             )
             result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
@@ -1847,7 +2059,12 @@ def _backfill_chunked(cfg, dataset: str, start: date, end: date, chunk_days: int
     while cursor <= end:
         slice_end = min(cursor + timedelta(days=chunk_days - 1), end)
         cfg._backfill_start, cfg._backfill_end = cursor, slice_end
-        click.echo(f"[{dataset}] 分片 {cursor}..{slice_end}", err=True)
+        click.echo(
+            _("[{dataset}] slice {cursor}..{slice_end}").format(
+                dataset=dataset, cursor=cursor, slice_end=slice_end
+            ),
+            err=True,
+        )
         result = engine.run_job("backfill", steps=[dataset], backfill=True, finalize_run=False)
         if _run_had_step_failure(engine, result["run_id"]):
             result["status"] = "failed"

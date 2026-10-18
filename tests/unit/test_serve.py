@@ -523,6 +523,19 @@ def test_report_period_filters_by_value_not_by_date_range(client):
     assert ok.status_code == 200
 
 
+def test_browsing_history_before_the_fetch_shows_the_rows_as_reconstructed(client):
+    """Announced 04-20, fetched 07-31: an as_of between them is a backfilled view."""
+    params = {"period": "2026Q1", "as_of": "2026-05-31"}
+    page = client.get("/api/datasets/financial_statement_items/rows", params=params).json()
+    assert page["total"] == 1
+    assert page["rows"][0][page["columns"].index("pit_is_exact")] is False
+
+    strict = client.get(
+        "/api/datasets/financial_statement_items/rows", params={**params, "pit_mode": "strict"}
+    ).json()
+    assert strict["total"] == 0
+
+
 def test_merge_style_datasets_browse_without_a_period(client):
     page = client.get("/api/datasets/instruments/rows").json()
     assert page["total"] == 1
@@ -573,6 +586,7 @@ def test_a_token_is_required_when_one_is_configured(lake):
     # The page fetches with a query token; a browser cannot set a header.
     assert client.get("/api/health", params={"token": "s3cret"}).status_code == 200
     assert client.get("/api/health", params={"token": "wrong"}).status_code == 401
+    assert client.get("/api/health", params={"token": "无效令牌"}).status_code == 401
 
 
 def test_the_page_reaches_nothing_outside_this_host(client):

@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.util import find_spec
 
+from cnequity.i18n import N_
+
 
 @dataclass(frozen=True)
 class RequiredPackage:
@@ -24,11 +26,11 @@ class RequiredPackage:
 
 
 REQUIRED_PACKAGES: tuple[RequiredPackage, ...] = (
-    RequiredPackage("baostock", "估值 / ST / 退市行情的历史回填"),
-    RequiredPackage("snownlp", "on-demand stock_news 情绪（[sentiment] use_snownlp）"),
-    RequiredPackage("pandas", "申万 / 国证成分历史的 XLS·XLSX 解析"),
-    RequiredPackage("openpyxl", "XLSX 解析"),
-    RequiredPackage("xlrd", "XLS 解析"),
+    RequiredPackage("baostock", N_("historical backfill of valuation / ST / delisted bars")),
+    RequiredPackage("snownlp", N_("on-demand stock_news sentiment ([sentiment] use_snownlp)")),
+    RequiredPackage("pandas", N_("XLS·XLSX parsing of SW / CNI constituent history")),
+    RequiredPackage("openpyxl", N_("XLSX parsing")),
+    RequiredPackage("xlrd", N_("XLS parsing")),
 )
 
 

@@ -1,4 +1,4 @@
-# CLI 命令副作用清单
+# 联网与写入清单
 
 由 `scripts/dev/sync_docs.py` 从 Click 命令注册表核对。‘执行时’指运行命令主体；`--help` 不执行。详细源选择与限制见[取数策略](../operations/fetch-policy.md)。
 
@@ -22,10 +22,26 @@
 | `cne profile list` | 无 | 列出内置范围 |
 | `cne profile show` | 无 | 显示内置范围 |
 | `cne query` | 条件 | SQL 读湖；按需数据缓存未命中或刷新时取数 |
+| `cne repair adj-factors` | 仅 --refresh-sources 联网 | 默认离线预览并保存计划；--apply 发布有证据支持的修正、保留旧版本和未解决提示，分批保存历史进度 |
 | `cne repair corporate-action-gaps` | --apply 时 | 默认离线预览；--apply 按缺口查询 Baostock 与巨潮资讯，核验后发布新版本并保留旧版本 |
+| `cne repair daily-bar-coverage` | 无 | 默认只读预览；--apply 按已提交数据结清北交所整日欠账及已证明的上市前欠账并刷新覆盖水位，保存证据收据，不改日线 |
+| `cne repair financial-announcements` | 无 | 默认只读预览；--apply 追加有 LICO 原始披露日证据的财报重建版本，经修复门禁发布并保留已有版本 |
+| `cne repair financial-originals` | 仅 --refresh-sources 联网 | 默认离线回放原始定期报告；--apply 追加能明确识别的合并报表当期数，经修复门禁发布并保留已有版本和真实采集时间 |
+| `cne repair fund-factors` | 无 | 默认只读预览；--apply 从原始来源序列补入已记录基金拆分和转增，经修复门禁发布并保留旧版本 |
+| `cne repair fund-listing-dates` | 请求交易所当前 ETF/LOF 目录 | 默认预览；--apply 归档来源响应并补未知上市日期，经修复门禁发布并保留已有日期和旧版本 |
+| `cne repair fund-no-print` | 仅 --refresh-sources 联网 | 默认离线预览；联网采证会归档报表并更新缓存；--apply 保存基金竞价日线覆盖证明、结清对应欠账并刷新水位，不生成日线或停牌行 |
+| `cne repair fund-volume` | 仅 --refresh-sources 联网 | 默认离线预览；联网归档上交所行情服务的历史 K 线，金额冲突时复用或采集东财证据；--apply 核验后修复沪深场内基金成交量，经修复门禁发布并保留旧版 |
+| `cne repair index-history` | 仅 --refresh-sources 联网 | 默认离线回放所选深证成指或科创50的已核验官方附件目录；--apply 按生效日替换完整历史名单，保留官方实际日期权重及旧版本；未知历史权重为空 |
+| `cne repair index-snapshots` | 仅 --refresh-sources 联网 | 默认离线回放官方文件；--apply 按实际日期替换完整指数成分快照及真实权重，经修复门禁发布并保留旧版本 |
 | `cne repair layout` | 无 | 默认只预览；--apply 发布新版本，保留旧版本和重复观察证据 |
+| `cne repair misdated-valuation` | --apply 时 | 默认离线预览；--apply 向东财 datacenter 取被替换交易日的估值，核验后发布新版本并保留旧版本 |
+| `cne repair missing-values` | 无 | 默认只读预览；--apply 将估值占位零及东财、国证缺失权重改为空值，经修复门禁发布并保留旧版本 |
 | `cne repair orphan-symbols` | 无 | 默认预览，可能登记旧湖基线版本；--apply 移除无日线证券的因子和公司行为行，发布新版本并保留旧版本 |
 | `cne repair stale-suspensions` | 无 | 默认预览，可能登记旧湖基线版本；--apply 移除成交日线否定的推断停牌，发布新版本并保留旧版本 |
+| `cne repair status-listing-window` | 无 | 默认预览，可能登记旧湖基线版本；--apply 删除上市日之前和没有退市记录支撑的状态行，发布新版本并保留旧版本 |
+| `cne repair status-outages` | 无 | 默认预览，可能登记旧湖基线版本；--apply 按现行规则重建窗口内的东财中断缓存行，发布新版本并保留旧版本 |
+| `cne repair status-traded` | 无 | 默认只读预览；--apply 用已提交成交日线补缺失状态键，ST 保持未知，发布新版本并保留旧版本 |
+| `cne repair stock-listing-dates` | 仅 --refresh-sources 联网 | 默认离线回放 IPO 日历；--apply 补官方上市事件证实的股票上市日期，经修复门禁发布并保留旧版本 |
 | `cne repair valuation-basis` | 无 | 默认只预览；--apply 发布新版本并保留旧版本 |
 | `cne run clean` | 无 | 仅预览过期文件；显式 --reconcile-runs 可修改运行状态 |
 | `cne run compact` | 无 | 将已结束、未发布的暂存数据发布到湖 |

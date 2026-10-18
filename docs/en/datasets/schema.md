@@ -1,6 +1,23 @@
-# Schema contract
+# Fields and units
 
 This page is for looking up columns, types and units. For what each dataset is for, see the [catalog](catalog.md); for how to read data, see the [query guide](query-guide.md); for compatibility and versioning, see the [data contract](contract.md). Column names and types are synced by `scripts/dev/sync_docs.py`; the explanatory text is maintained by hand.
+
+### Find by layer
+
+Ordered by [research layer](catalog.md#data-tiers); click a name to jump to its column definitions.
+
+| Layer | Datasets |
+|------|--------|
+| **L0** Reference | [instruments](#instruments), [etf_profiles](#etf_profiles), [trading_calendar](#trading_calendar), [trading_status](#trading_status) |
+| **L1** Prices | [daily_bars](#daily_bars), [index_bars](#index_bars), [minute_bars](#minute_bars--minute_bars_5m), [minute_bars_5m](#minute_bars--minute_bars_5m), [trade_ticks](#trade_ticks), [adj_factors](#adj_factors), [minute_bars_15m](#minute_bars_15m--minute_bars_30m--minute_bars_60m), [minute_bars_30m](#minute_bars_15m--minute_bars_30m--minute_bars_60m), [minute_bars_60m](#minute_bars_15m--minute_bars_30m--minute_bars_60m), [delisting_events](#delisting_events) |
+| **L2** Corporate events | [corporate_actions](#corporate_actions), [announcement_index](#announcement_index), [earnings_disclosure_schedule](#earnings_disclosure_schedule) |
+| **L3** Fundamentals | [financial_statement_items](#financial_statement_items), [share_structure](#share_structure), [shareholder_counts](#shareholder_counts), [top_holders](#top_holders), [valuation_metrics](#valuation_metrics), [analyst_consensus](#analyst_consensus) |
+| **L4** Capital flows | [fund_flow](#fund_flow), [margin_trading](#margin_trading), [northbound_holdings](#northbound_holdings), [northbound_flows](#northbound_flows), [dragon_tiger](#dragon_tiger), [block_trades](#block_trades), [institutional_holdings](#institutional_holdings), [fund_flow_ths](#fund_flow_ths) |
+| **L5** Industry structure | [sector_members](#sector_members), [index_constituents](#index_constituents), [industry_members](#industry_members), [industry_index](#industry_index) |
+| **L6** Macro | [macro_indicators](#macro_indicators), [market_breadth](#market_breadth) |
+| **L7** Sentiment / rotation | [sentiment_scores](#sentiment_scores), [hot_rank](#hot_rank), [sector_bars](#sector_bars), [sector_fund_flow](#sector_fund_flow), [sector_fund_flow_ths](#sector_fund_flow_ths), [news_headlines](#news_headlines), [flash_news_wire](#flash_news_wire), [economic_calendar](#economic_calendar) |
+| **L8** Risk and compliance | [share_unlock_schedule](#share_unlock_schedule), [regulatory_events](#regulatory_events) |
+| **L9** Derivatives | [commodity_bars](#commodity_bars), [futures_contracts](#futures_contracts), [option_contracts](#option_contracts), [futures_bars](#futures_bars), [futures_minute_bars](#futures_minute_bars), [option_bars](#option_bars), [futures_continuous](#futures_continuous), [option_greeks](#option_greeks) |
 
 ### Global conventions
 
@@ -150,6 +167,27 @@ the [SZSE ETF list](https://fund.szse.cn/marketdata/etf/) and the [SZSE fund lis
 | fetched_at | timestamp |  |
 
 `status` is the trading status and `risk_warning` is the risk warning; the two are independent. A suspension cannot clear the ST flag, and a security known to be delisted must not be treated as trading normally.
+
+`derived_traded` means committed daily bars prove a print on that date (positive volume),
+rather than a first-hand status snapshot. It fills only stock/ETF keys with a known
+listed life and no existing status row, setting `normal`, `is_trading=true`, and
+`risk_warning=null`. `normal` does not mean confirmed non-ST. Authoritative session
+records take precedence; these derived rows are excluded from the EastMoney outage
+carry and do not establish historical ST coverage. Zero or unknown volume, unknown
+listing dates, and bars outside the listed life cannot generate these rows. Existing
+contradictory statuses need a separate repair.
+
+Historical snapshots cover dates collected by this lake; a first status row does
+not establish coverage of earlier history. `cne check --full` reports
+`trading_state_historical_coverage` by asset class and month, including dates before
+each security's first status. Missing status, derived prints, unknown ST, and
+exclusion reasons are counted separately. This report covers printed keys only;
+it does not prove complete suspension history or historical ST coverage.
+
+Preview offline with `cne repair status-traded --start YYYY-MM-DD --end YYYY-MM-DD`,
+then add `--apply` after reviewing the plan. Apply recomputes against current committed
+inputs, publishes a new version and preserves the old one. Use annual or monthly
+windows. Strict historical universe reads still require independent ST evidence.
 
 **Reading an old lake does not fail.** Old rows encode ST as `status="st"`, and `validate_dataframe` upgrades them
 automatically on read (see `cnequity/domain/trading_status.py`). To bring the physical schema in line, run:
@@ -825,7 +863,7 @@ and `actual_date` is filled in after actual disclosure (null before then).
 | index_symbol | string | e.g. ``000300.SH`` |
 | symbol | string | Constituent |
 | as_of_date | date | Snapshot / rebalance date |
-| weight | float64 | Weight (percentage or ratio, depending on source) |
+| weight | float64 | Weight ratio, nullable; EastMoney/CNI adjustment history writes null; official file percentages become ratios summing to approximately 1 |
 | source | string | Provenance |
 | data_version | string | Provenance |
 | fetched_at | timestamp | Provenance |

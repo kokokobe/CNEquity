@@ -45,6 +45,27 @@ def test_secid_maps_exchange_to_market_code():
     assert _secid("920001.BJ") == "2.920001"
 
 
+@pytest.mark.parametrize(
+    "payload", [{"data": None}, {}, [], {"data": {}}, {"data": {"klines": None}}]
+)
+def test_unavailable_payload_is_not_empty_data(payload):
+    class Client(_Client):
+        def get(self, url, params=None):
+            return _Response(payload)
+
+    diagnostics = {}
+    frame = fetch_daily_bars(
+        ["600519.SH"],
+        date(2024, 6, 1),
+        date(2024, 6, 28),
+        client=Client(),
+        diagnostics=diagnostics,
+    )
+    assert frame.is_empty()
+    assert diagnostics["failed_symbols"] == {"600519.SH": "request_error"}
+    assert diagnostics["empty_symbols"] == []
+
+
 def test_fetch_daily_bars_parses_kline_rows():
     klines = [
         "20240531,9.0,9.5,10.0,8.5,900,8550.0",

@@ -2,6 +2,7 @@ import os
 from datetime import date, datetime, timedelta
 
 import polars as pl
+import pytest
 
 from cnequity.config import Config
 from cnequity.derive.minute_resample import (
@@ -238,6 +239,7 @@ def test_cli_derive_is_current_after_publishing_and_drops_emptied_sessions(tmp_p
     assert stale_sessions(load_config(cfg_path), "minute_bars_15m") == []
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_backlog_reaches_the_panel_and_status(tmp_path):
     from click.testing import CliRunner
     from fastapi.testclient import TestClient

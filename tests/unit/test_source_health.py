@@ -16,6 +16,7 @@ import pytest
 from cnequity.config import Config
 from cnequity.diagnostics import source_health as sh
 from cnequity.diagnostics.health_page import render_page
+from cnequity.i18n import gettext
 
 
 @pytest.fixture
@@ -171,7 +172,7 @@ def test_futures_probe_reads_only_futures_and_at_most_two_sessions(config):
             calls.append((day, kind))
             raise FuturesDayUnavailable("closed")
 
-    with pytest.raises(sh.ProbeEmpty, match="两个工作日"):
+    with pytest.raises(sh.ProbeEmpty, match="last two weekdays"):
         sh._probe_futures_exchange("SHF", reader=Reader())(config)
     assert len(calls) == 2
     assert all(kind == "futures" for _, kind in calls)
@@ -194,7 +195,7 @@ def test_bse_probe_only_requests_landing_and_first_page(config, monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", client_with_mock)
     detail = sh._probe_bse(config)
-    assert "未检查余页" in detail
+    assert "remaining pages not checked" in detail
     assert len(calls) == 2
 
 
@@ -283,6 +284,7 @@ def _report(vantage: str, statuses: dict[str, str]) -> sh.HealthReport:
     )
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_page_keeps_vantages_side_by_side():
     """Merging them would invent a fact neither probe established."""
     page = render_page(
@@ -295,16 +297,18 @@ def test_page_keeps_vantages_side_by_side():
     assert page.count("<th>") == 3  # two vantages plus the datasets column
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_page_rows_come_from_the_registry_not_the_report():
     """A source a vantage never probed shows as an explicit blank rather than
     vanishing from that column."""
     partial = sh.HealthReport(vantage="overseas", generated_at="x", version="0", results=[])
     page = render_page([_report("cn", {}), partial])
     for probe in sh.PROBES:
-        assert probe.label in page
+        assert gettext(probe.label) in page
     assert "未探测" in page
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_page_marks_shared_waf_membership_on_the_rows():
     """A heading alone is positional: the rows below the group would read as
     part of it."""
@@ -313,6 +317,7 @@ def test_page_marks_shared_waf_membership_on_the_rows():
     assert 'class="grouped"' in page
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_page_states_the_caveats_that_stop_a_misreading():
     page = render_page([_report("cn", {})])
     assert "一次探测不是 SLA" in page
@@ -362,13 +367,15 @@ def _store(config, vantage: str, payload) -> None:
     )
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_dashboard_renders_the_stored_report(config):
     _store(config, "cn", _report("cn", {}).to_dict())
     body = _serve_client(config).get("/source-health").text
     assert "大陆出口" in body
-    assert sh.PROBES[0].label in body
+    assert gettext(sh.PROBES[0].label) in body
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_dashboard_shows_every_vantage_side_by_side(config):
     _store(config, "cn", _report("cn", {}).to_dict())
     _store(config, "overseas", _report("overseas", {}).to_dict())
@@ -392,6 +399,7 @@ def test_dashboard_without_a_report_says_how_to_make_one(config):
     assert "cne sources" in resp.text
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_corrupt_report_is_skipped_not_fatal(config):
     """Half-written or hand-edited files must not take the page down."""
     _store(config, "cn", _report("cn", {}).to_dict())
@@ -400,6 +408,7 @@ def test_a_corrupt_report_is_skipped_not_fatal(config):
     assert "大陆出口" in body
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_dashboard_does_not_render_the_incident_ledger_as_a_vantage(config):
     """``incidents.json`` sits beside the reports. Missing vantage used to become
     an empty ``unknown`` column of 未探测."""

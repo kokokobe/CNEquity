@@ -19,7 +19,14 @@ LOG_DIR="${CNE_LOG_DIR:-$REPO_ROOT/data/cnequity/logs}"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/stale-$(date +%Y%m%d).log"
 TRADE_DATE="${1:-${CNE_TRADE_DATE:-}}"
-PY="${CNE_PYTHON:-$REPO_ROOT/.venv/bin/python}"
+# The checkout's venv when there is one; otherwise the python3 on PATH.
+if [[ -n "${CNE_PYTHON:-}" ]]; then
+  PY="$CNE_PYTHON"
+elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+  PY="$REPO_ROOT/.venv/bin/python"
+else
+  PY="python3"
+fi
 # Launched by the scheduler (hourly, CNE_SCHEDULED=1): run only when this
 # session's Beijing run_at has passed and it has not run yet. A manual run —
 # or one given an explicit trade date — is never gated.

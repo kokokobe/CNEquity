@@ -205,27 +205,18 @@ def test_interrupt_closes_active_init_batch_and_can_resume_immediately(cfg, monk
     assert attempts == 2
 
 
-def test_resume_does_not_advance_past_a_still_failing_phase(cfg, monkeypatch):
+def _failed_init(cfg, phases, step):
     init_data_layout(cfg)
-    cfg.init_phases = [
-        "phase2a_corporate_actions",
-        "phase3_index_and_status",
-        "phase4_finalize",
-    ]
+    cfg.init_phases = phases
     manifest = Manifest(cfg.manifest_path)
-    run_id = manifest.start_run(
-        "init",
-        {"phases": cfg.init_phases, "trade_date": "2024-06-28"},
-    )
-    manifest.start_batch(run_id, "failed-actions", "corporate_actions", "corporate_actions")
-    manifest.finish_batch(
-        run_id,
-        "failed-actions",
-        "failed",
-        error_message="interrupted",
-    )
+    run_id = manifest.start_run("init", {"phases": phases, "trade_date": "2024-06-28"})
+    manifest.start_batch(run_id, f"failed-{step}", step, step)
+    manifest.finish_batch(run_id, f"failed-{step}", "failed", error_message="interrupted")
     manifest.finish_run(run_id, "failed", error_message="interrupted")
+    return run_id
 
+
+def _steps_failing(monkeypatch, failing: str) -> list[str]:
     from cnequity.orchestrator import engine as eng_mod
     from cnequity.orchestrator.registry import StepEntry
 
@@ -234,17 +225,112 @@ def test_resume_does_not_advance_past_a_still_failing_phase(cfg, monkeypatch):
     def _get_step(name: str):
         def _fn(config, trade_date, current_run_id, context):
             calls.append(name)
-            if name == "corporate_actions":
+            if name == failing:
                 raise RuntimeError("still unavailable")
             return {"rows_read": 1, "rows_written": 1}
 
         return StepEntry(fn=_fn, group="test", requires_workers=False)
 
     monkeypatch.setattr(eng_mod, "get_step", _get_step)
+    return calls
+
+
+def test_resume_does_not_advance_past_a_still_failing_blocking_phase(cfg, monkeypatch):
+    run_id = _failed_init(
+        cfg, ["phase1_reference", "phase3_index_and_status", "phase4_finalize"], "instruments"
+    )
+    calls = _steps_failing(monkeypatch, "instruments")
     result = JobEngine(cfg).run_init_phases(date(2024, 6, 28), resume=True, resume_run_id=run_id)
 
     assert result["status"] == "failed"
-    assert calls == ["corporate_actions"]
+    assert result["lake_usable"] is False
+    assert "index_bars" not in calls
+    assert "compact" not in calls
+
+
+def test_resume_carries_on_past_a_still_failing_non_blocking_phase(cfg, monkeypatch):
+    run_id = _failed_init(
+        cfg,
+        ["phase2a_corporate_actions", "phase3_index_and_status", "phase4_finalize"],
+        "corporate_actions",
+    )
+    calls = _steps_failing(monkeypatch, "corporate_actions")
+    result = JobEngine(cfg).run_init_phases(date(2024, 6, 28), resume=True, resume_run_id=run_id)
+
+    assert calls[0] == "corporate_actions"
+    assert {"index_bars", "trading_status", "compact", "audit"} <= set(calls)
+    assert result["lake_usable"] is True
+    assert result["owed_steps"] == ["corporate_actions"]
+    # The owed step keeps the init open, so the next `cne init` resumes it.
+    assert JobEngine(cfg).manifest.latest_incomplete_init_run()["run_id"] == run_id
+
+
+def test_a_first_build_publishes_when_a_non_blocking_phase_fails(cfg, monkeypatch):
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    calls = _steps_failing(monkeypatch, "corporate_actions")
+    engine = JobEngine(cfg)
+    result = engine.run_init_phases(date(2024, 6, 28))
+
+    assert {"daily_bars", "index_bars", "compact", "derive_adj_factors"} <= set(calls)
+    # The ledger stays truthful about the owed step; the lake is usable anyway.
+    assert result["status"] == "failed"
+    assert result["lake_usable"] is True
+    assert result["owed_steps"] == ["corporate_actions"]
+    assert engine.manifest.latest_incomplete_init_run()["run_id"] == result["run_id"]
+
+
+def test_a_first_build_still_stops_when_daily_bars_fail(cfg, monkeypatch):
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    calls = _steps_failing(monkeypatch, "daily_bars")
+    result = JobEngine(cfg).run_init_phases(date(2024, 6, 28))
+
+    assert result["status"] == "failed"
+    assert result["lake_usable"] is False
+    assert "compact" not in calls
+
+
+def test_resume_does_not_finish_the_parent_before_remaining_phases(cfg, monkeypatch):
+    init_data_layout(cfg)
+    from cnequity.orchestrator import engine as eng_mod
+    from cnequity.orchestrator.registry import StepEntry
+
+    cfg.init_phases = ["phase1_reference", "phase3_index_and_status"]
+    monkeypatch.setitem(eng_mod.INIT_PHASE_STEPS, "phase1_reference", ["instruments"])
+    monkeypatch.setitem(eng_mod.INIT_PHASE_STEPS, "phase3_index_and_status", ["trading_status"])
+    engine = JobEngine(cfg)
+    manifest = engine.manifest
+    run_id = manifest.start_run("init", {"phases": cfg.init_phases, "trade_date": "2024-06-28"})
+    manifest.start_batch(run_id, "done", "instruments", "instruments")
+    manifest.finish_batch(run_id, "done", "success")
+    manifest.finish_run(run_id, "failed", error_message="interrupted between phases")
+    events = []
+    original_finish = manifest.finish_run
+
+    def finish(rid, status, *args, **kwargs):
+        events.append(("finish", status))
+        return original_finish(rid, status, *args, **kwargs)
+
+    def get_step(name):
+        def execute(*args):
+            row = manifest.get_run(run_id)
+            assert row["status"] == "running"
+            assert row["finished_at"] is None
+            events.append(("step", name))
+            return {"rows_read": 1, "rows_written": 1}
+
+        return StepEntry(fn=execute, group="test", requires_workers=False)
+
+    monkeypatch.setattr(manifest, "finish_run", finish)
+    monkeypatch.setattr(eng_mod, "get_step", get_step)
+    result = engine.resume_init(date(2024, 6, 28), run_id=run_id)
+    assert result["status"] == "success"
+    assert events == [("step", "trading_status"), ("finish", "success")]
 
 
 def test_retry_runs_missing_init_steps(cfg):
@@ -353,6 +439,7 @@ def test_reference_and_index_phases_backfill_history():
     assert step_backfill("index_bars", ["phase1_reference"]) is False
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_killed_init_is_resumed_not_refused(tmp_path, monkeypatch):
     """Looked hung, got killed, started again — the one command the operator
     had left used to answer "no" to the one thing they were trying to do."""
@@ -389,6 +476,7 @@ def test_a_killed_init_is_resumed_not_refused(tmp_path, monkeypatch):
     assert seen == {"resume": True, "resume_run_id": run_id, "backfill_start": None}
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_live_init_is_still_refused(tmp_path, monkeypatch):
     """The refusal is right for a peer that is actually running."""
     import subprocess
@@ -533,3 +621,184 @@ def test_a_step_a_later_run_completed_no_longer_leaves_init_open(cfg):
 
     assert manifest.latest_incomplete_init_run(discharged_by_later_runs=True) is None
     assert manifest.latest_incomplete_init_run()["run_id"] == init_id
+
+
+def test_a_first_build_fetches_bars_before_the_corporate_action_sweep(cfg, monkeypatch):
+    """The xdxr sweep covers every instrument whatever the window and held a
+    first build's bars back by ~44 minutes; only phase4 reads its rows."""
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    calls = _steps_failing(monkeypatch, "nothing")
+    result = JobEngine(cfg).run_init_phases(date(2024, 6, 28))
+
+    assert result["status"] == "success"
+    assert calls.index("daily_bars") < calls.index("corporate_actions")
+    assert calls.index("corporate_actions") < calls.index("derive_adj_factors")
+
+
+def test_an_unedited_legacy_phase_list_gets_the_new_order():
+    from cnequity.orchestrator.init_phases import (
+        DEFAULT_INIT_PHASES,
+        LEGACY_DEFAULT_INIT_PHASES,
+        configured_init_phases,
+    )
+
+    assert configured_init_phases(list(LEGACY_DEFAULT_INIT_PHASES)) == DEFAULT_INIT_PHASES
+    assert configured_init_phases([]) == DEFAULT_INIT_PHASES
+    # Anything else is the operator's own choice.
+    custom = ["phase1_reference", "phase2a_corporate_actions", "phase2c_daily_bars_backfill"]
+    assert configured_init_phases(custom) == custom
+
+
+def test_a_recorded_init_keeps_its_own_phase_order(cfg):
+    """A run started before the reorder resumes in the order it recorded."""
+    from cnequity.orchestrator.init_phases import LEGACY_DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    run_id = engine.manifest.start_run(
+        "init", {"phases": list(LEGACY_DEFAULT_INIT_PHASES), "trade_date": "2024-06-28"}
+    )
+    assert engine._init_phases_list(run_id) == list(LEGACY_DEFAULT_INIT_PHASES)
+
+
+def test_retry_starts_bars_the_phase_order_runs_before_corporate_actions(cfg):
+    """daily_bars declares corporate_actions for daily-wave ordering. In an init
+    that schedules the sweep later, honoring that edge on retry would leave
+    bars waiting for a phase that only starts after them."""
+    from cnequity.orchestrator.init_phases import (
+        DEFAULT_INIT_PHASES,
+        LEGACY_DEFAULT_INIT_PHASES,
+        expected_steps,
+    )
+
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    manifest = engine.manifest
+    phases = list(DEFAULT_INIT_PHASES)
+    run_id = manifest.start_run("init", {"phases": phases, "trade_date": "2024-06-28"})
+    for step in ("instruments", "trading_calendar"):
+        manifest.start_batch(run_id, f"b-{step}", step, step)
+        manifest.finish_batch(run_id, f"b-{step}", "success", rows_read=1, rows_written=1)
+
+    assert engine._missing_init_steps(run_id) == ["daily_bars"]
+    ready, blocked = engine._split_runnable_missing(
+        run_id, ["daily_bars"], in_run=set(expected_steps(phases)), init_phases=phases
+    )
+    assert (ready, blocked) == (["daily_bars"], [])
+
+    # The legacy order still runs the sweep first, so the edge still gates.
+    legacy = list(LEGACY_DEFAULT_INIT_PHASES)
+    ready, blocked = engine._split_runnable_missing(
+        run_id, ["daily_bars"], in_run=set(expected_steps(legacy)), init_phases=legacy
+    )
+    assert (ready, blocked) == ([], ["daily_bars"])
+
+
+@pytest.mark.parametrize(
+    "failing", ["derive_adj_factors", "derive_industry_index", "audit", "trading_status_derive"]
+)
+def test_a_derive_or_audit_failure_leaves_the_published_lake_usable(cfg, monkeypatch, failing):
+    """compact has published the bars by then; failing the build over a derive
+    skipped phase 5 and reported queryable bars as an unusable lake."""
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    calls = _steps_failing(monkeypatch, failing)
+    engine = JobEngine(cfg)
+    result = engine.run_init_phases(date(2024, 6, 28))
+
+    assert "trading_status_derive" in calls
+    assert result["lake_usable"] is True
+    assert result["owed_steps"] == [failing]
+    assert engine.manifest.latest_incomplete_init_run()["run_id"] == result["run_id"]
+
+
+def test_a_compact_failure_still_stops_the_build(cfg, monkeypatch):
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    calls = _steps_failing(monkeypatch, "compact")
+    result = JobEngine(cfg).run_init_phases(date(2024, 6, 28))
+
+    assert result["lake_usable"] is False
+    assert "trading_status_derive" not in calls
+
+
+def test_resume_redoes_an_owed_derive_and_finishes(cfg, monkeypatch):
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    _steps_failing(monkeypatch, "derive_adj_factors")
+    engine = JobEngine(cfg)
+    first = engine.run_init_phases(date(2024, 6, 28))
+    assert first["owed_steps"] == ["derive_adj_factors"]
+
+    calls = _steps_failing(monkeypatch, "nothing")
+    resumed = engine.run_init_phases(date(2024, 6, 28), resume=True, resume_run_id=first["run_id"])
+
+    assert "derive_adj_factors" in calls
+    assert resumed["owed_steps"] == []
+    assert resumed["status"] == "success"
+
+
+def test_the_factor_prefetch_spans_bars_and_actions_and_stops_before_finalize(cfg, monkeypatch):
+    from cnequity.derive import adj_factors
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    calls = _steps_failing(monkeypatch, "nothing")
+
+    class Recorder:
+        def __init__(self, config, trade_date):
+            pass
+
+        def start(self):
+            calls.append("prefetch:start")
+            return self
+
+        def stop(self, timeout=60.0):
+            calls.append("prefetch:stop")
+
+    monkeypatch.setattr(adj_factors, "BackgroundFactorPrefetch", Recorder)
+    engine = JobEngine(cfg)
+    result = engine.run_init_phases(date(2024, 6, 28))
+
+    start, stop = calls.index("prefetch:start"), calls.index("prefetch:stop")
+    assert calls.count("prefetch:start") == calls.count("prefetch:stop") == 1
+    assert start < calls.index("daily_bars") < calls.index("corporate_actions") < stop
+    assert stop < calls.index("derive_adj_factors")
+    assert result["status"] != "failed"
+    assert engine.manifest.latest_incomplete_init_run() is None
+
+
+def test_an_init_that_stops_early_also_stops_the_prefetch(cfg, monkeypatch):
+    from cnequity.derive import adj_factors
+    from cnequity.orchestrator.init_phases import DEFAULT_INIT_PHASES
+
+    init_data_layout(cfg)
+    cfg.init_phases = list(DEFAULT_INIT_PHASES)
+    calls = _steps_failing(monkeypatch, "daily_bars")
+    stopped = []
+
+    class Recorder:
+        def __init__(self, config, trade_date):
+            pass
+
+        def start(self):
+            return self
+
+        def stop(self, timeout=60.0):
+            stopped.append(True)
+
+    monkeypatch.setattr(adj_factors, "BackgroundFactorPrefetch", Recorder)
+    result = JobEngine(cfg).run_init_phases(date(2024, 6, 28))
+    assert result["status"] == "failed"
+    assert "compact" not in calls
+    assert stopped == [True]

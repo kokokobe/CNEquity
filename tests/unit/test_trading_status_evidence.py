@@ -81,6 +81,9 @@ def _frame(rows: list[dict]) -> pl.DataFrame:
         ),
         (_status_row("eastmoney", RESTATED), EVIDENCE_RESTATED),
         (_status_row("eastmoney_cached", RESTATED), EVIDENCE_RESTATED),
+        # Written after the close of the day it is stamped on, but carried
+        # from an earlier session: still not an observation of this one.
+        (_status_row("eastmoney_cached", SAME_SESSION), EVIDENCE_RESTATED),
         (_status_row("tdx_protocol", RESTATED), EVIDENCE_RESTATED),
         (_status_row(DERIVED_BAR_GAP_SOURCE, RESTATED), EVIDENCE_DERIVED),
         (_status_row("derived_delisted", None), EVIDENCE_POINT_IN_TIME),
@@ -100,6 +103,7 @@ def test_the_three_implementations_agree():
         _status_row("eastmoney", SAME_SESSION),
         _status_row("eastmoney", RESTATED),
         _status_row("eastmoney_cached", RESTATED),
+        _status_row("eastmoney_cached", SAME_SESSION),
         _status_row(DERIVED_BAR_GAP_SOURCE, RESTATED),
         _status_row("derived_delisted", None),
         _status_row("tdx_protocol", None),
@@ -147,6 +151,15 @@ def test_a_restated_snapshot_does_not_overwrite_a_derived_halt():
     assert canonical.height == 1
     assert canonical["source"][0] == DERIVED_BAR_GAP_SOURCE
     assert canonical["status"][0] == "suspended"
+
+
+def test_an_outage_carry_does_not_overwrite_a_derived_halt():
+    """The fallback stamps its carried rows with the run's own clock."""
+    derived = _status_row(DERIVED_BAR_GAP_SOURCE, RESTATED, is_trading=False, status="suspended")
+    carried = _status_row("eastmoney_cached", SAME_SESSION)
+    canonical = dedupe_by_primary_key(_frame([derived, carried]), "trading_status")
+    assert canonical.height == 1
+    assert canonical["source"][0] == DERIVED_BAR_GAP_SOURCE
 
 
 def test_an_authority_still_corrects_a_derived_halt():

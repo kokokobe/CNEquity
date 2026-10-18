@@ -78,6 +78,7 @@ def test_enable_pause_and_preserve_config(scheduler):
     assert scheduler.backend.calls[-1] == (False, "")
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_confirmation_expiry_replay_and_external_changes(scheduler):
     plan = preview(scheduler)
     with pytest.raises(OpsError, match="确认"):
@@ -96,6 +97,7 @@ def test_confirmation_expiry_replay_and_external_changes(scheduler):
         scheduler.apply(plan["token"], acknowledged=True, requested_by="test")
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_native_failure_remains_paused_and_retryable(scheduler):
     scheduler.backend.failure = True
     with pytest.raises(OpsError, match="保持暂停"):
@@ -112,6 +114,7 @@ def test_native_failure_remains_paused_and_retryable(scheduler):
     assert not paused["enabled"] and paused["warning"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_changed_schedule_state_invalidates_old_preview(scheduler):
     plan = preview(scheduler)
     atomic_write(
@@ -151,6 +154,7 @@ def test_stale_heartbeat_is_visible_and_pause_works_with_unknown_native_state(
     assert not paused["daily"] and not paused["enabled"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_renamed_lake_or_other_config_cannot_be_taken_over(scheduler):
     atomic_write(
         state_dir(scheduler.config) / "settings.json",
@@ -192,6 +196,7 @@ def test_time_edits_preserve_semantics_and_comments(text):
     assert "# keep this" in result if "# keep this" in text else True
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_invalid_or_inline_times_refused(scheduler):
     with pytest.raises(OpsError, match="HH:MM"):
         edit_times("", "25:00", "21:00")
@@ -263,6 +268,7 @@ def test_failed_os_registration_still_refreshes_saved_times_in_web(scheduler):
     assert not settings(scheduler.config)["daily"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_tick_claims_under_child_lock_and_rejects_duplicate_or_pause(scheduler, monkeypatch):
     service = scheduler
     config = service.config
@@ -357,3 +363,34 @@ def test_real_timer_child_logs_and_marks_once_without_web(scheduler, monkeypatch
     assert marker_path(config.meta_root, "stale", session).exists()
     assert tick(config)["status"] in {"idle", "waiting"}
     assert read_record(state_dir(config) / "last_tick.json")["status"] in {"idle", "waiting"}
+
+
+def test_a_schedule_reports_in_the_language_it_was_set_up_in(scheduler, monkeypatch):
+    """A launchd/cron/Task Scheduler job has no LANG; the installer's language rides along."""
+    from cnequity import i18n
+    from cnequity.serve.ops import scheduled
+
+    with i18n.use_language("zh_CN"):
+        scheduler.apply(preview(scheduler)["token"], acknowledged=True, requested_by="test")
+    saved = settings(scheduler.config)
+    assert saved["language"] == "zh_CN"
+
+    seen = []
+    monkeypatch.setattr(scheduled, "load_config", lambda _path: scheduler.config)
+    monkeypatch.setattr(
+        scheduled,
+        "tick",
+        lambda _config: seen.append(i18n.current_language()) or {"status": "idle"},
+    )
+    monkeypatch.setattr("sys.argv", ["scheduled", "--config", str(scheduler.path)])
+    assert scheduled.main() == 0
+    assert seen == ["zh_CN"]
+    assert i18n.current_language() == "en"
+
+
+def test_an_unknown_saved_language_is_an_invalid_settings_file(scheduler):
+    scheduler.apply(preview(scheduler)["token"], acknowledged=True, requested_by="test")
+    path = state_dir(scheduler.config) / "settings.json"
+    atomic_write(path, {**read_record(path), "language": "klingon"})
+    with pytest.raises(OpsError):
+        settings(scheduler.config)

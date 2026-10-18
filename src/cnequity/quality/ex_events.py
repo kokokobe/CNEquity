@@ -30,7 +30,7 @@ from cnequity.query.parquet_scan import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["EX_EVENT_LOOKBACK_SESSIONS", "unexplained_factor_steps"]
+__all__ = ["EX_EVENT_LOOKBACK_SESSIONS", "recent_sessions", "unexplained_factor_steps"]
 
 # Ten sessions is two trading weeks: long enough that a run interrupted over a
 # weekend still gets its chance, short enough that a gap no source can fill
@@ -43,7 +43,7 @@ _STEP_EPSILON = 1e-6
 _EMPTY = pl.DataFrame(schema={"symbol": pl.Utf8, "ex_date": pl.Date, "factor_ratio": pl.Float64})
 
 
-def _recent_sessions(config: Config, upto: date, count: int) -> list[date]:
+def recent_sessions(config: Config, upto: date, count: int) -> list[date]:
     """The last *count* open sessions up to and including *upto*."""
     root = config.curated_root / "trading_calendar"
     if not dataset_has_parquet(root):
@@ -75,7 +75,7 @@ def unexplained_factor_steps(
     factors_root = config.derived_root / "adj_factors"
     if not dataset_has_parquet(factors_root):
         return _EMPTY.clone()
-    window = _recent_sessions(config, upto, sessions + 1)
+    window = recent_sessions(config, upto, sessions + 1)
     if len(window) < 2:
         # No calendar, or a lake too young to have a step to compare against.
         return _EMPTY.clone()

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 from click.testing import CliRunner
 
 from cnequity.cli.main import cli
@@ -113,6 +114,7 @@ def _stub_corporate_actions_backfill(monkeypatch, *, factor_dates: dict[str, dat
     return calls
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_corporate_actions_backfill_derives_exactly_the_changed_symbols(tmp_path, monkeypatch):
     day = date(2026, 9, 30)
     calls = _stub_corporate_actions_backfill(
@@ -132,6 +134,7 @@ def test_corporate_actions_backfill_derives_exactly_the_changed_symbols(tmp_path
     assert payload["status"] == "success"
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_factors_left_behind_degrade_the_backfill(tmp_path, monkeypatch):
     day = date(2026, 9, 30)
     _stub_corporate_actions_backfill(
@@ -205,6 +208,7 @@ def _stub_daily_bars_backfill(monkeypatch, *, after: pl.DataFrame, suspend=None)
     return windows, derive_calls, suspensions
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_daily_bars_backfill_realigns_and_rederives_only_what_changed(tmp_path, monkeypatch):
     after = _months(
         [
@@ -241,6 +245,7 @@ def test_daily_bars_backfill_realigns_and_rederives_only_what_changed(tmp_path, 
     assert payload["status"] == "success"
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_daily_bars_backfill_without_dates_fingerprints_its_default_window(tmp_path, monkeypatch):
     from cnequity.domain.market_time import shanghai_today
     from cnequity.steps.common import BACKFILL_START

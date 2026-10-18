@@ -3,12 +3,24 @@
 
 const KEY = "cne-lang";
 
+// No choice stored yet: follow the browser, as the CLI follows the system
+// locale. Simplified Chinese reads Chinese; anything else reads English.
+export function browserLang(languages = globalThis.navigator?.languages ?? [globalThis.navigator?.language]) {
+  for (const tag of languages || []) {
+    if (!tag) continue;
+    const value = String(tag).toLowerCase().replace("_", "-");
+    if (value === "zh" || value.startsWith("zh-cn") || value.startsWith("zh-sg") || value.startsWith("zh-hans")) return "zh";
+    return "en";
+  }
+  return "en";
+}
+
 function storedLang() {
   try {
     const value = globalThis.localStorage?.getItem(KEY);
-    return value === "en" || value === "zh" ? value : "zh";
+    return value === "en" || value === "zh" ? value : browserLang();
   } catch {
-    return "zh";
+    return browserLang();
   }
 }
 
@@ -228,5 +240,9 @@ export function choiceLabel(field, choice) {
   // `name` is the derive target, which is a dataset for everything but the
   // mapping tables; dsWithCode leaves those as their bare code.
   if (field === "dataset" || field === "datasets" || field === "name") return dsWithCode(choice);
+  if (field === "pack") {
+    const packs = { market: tr("行情", "Market"), fundamentals: tr("基本面", "Fundamentals"), universe: tr("股票池", "Universe") };
+    if (packs[choice]) return packs[choice];
+  }
   return String(choice ?? "");
 }

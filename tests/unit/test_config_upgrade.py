@@ -64,6 +64,7 @@ def test_dry_run_writes_nothing(tmp_path):
     assert not list(tmp_path.glob("*.bak-*"))
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_an_up_to_date_config_is_left_alone(tmp_path):
     path = tmp_path / "cnequity.toml"
     path.write_text(example_toml_text(), encoding="utf-8")
@@ -99,6 +100,7 @@ def test_operator_settings_survive(tmp_path):
     assert tomllib.loads(plan.text)["job"]["daily"]["groups"]["capital"]["at"] == "17:05"
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_layout_the_edit_cannot_read_is_left_for_a_manual_edit(tmp_path):
     """An inline core table is not edited; the run says which steps need a hand."""
     path = tmp_path / "cnequity.toml"

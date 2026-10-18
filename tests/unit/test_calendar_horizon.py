@@ -101,3 +101,24 @@ def test_earliest_bar_date_ignores_daily_placeholder_only_rows(tmp_path):
     pl.DataFrame({"trade_date": [date(1990, 12, 19)]}).write_parquet(index / "part-0.parquet")
 
     assert _earliest_bar_date(cfg) == date(1990, 12, 19)
+
+
+def test_the_calendar_step_stops_at_the_holiday_table_instead_of_failing(tmp_path, monkeypatch):
+    """A year ahead crossed the table's end on 2027-01-01; from that day the
+    step raised, and phase 1 of every `cne init` with it."""
+    import cnequity.steps.reference as reference
+    from cnequity.adapters.calendar.exchange_calendar import calendar_seed_end
+    from cnequity.storage.layout import init_data_layout
+
+    cfg = Config(data_root=tmp_path / "lake")
+    init_data_layout(cfg)
+    written: dict = {}
+
+    def _capture(config, run_id, dataset, df):
+        written["df"] = df
+        return {}
+
+    monkeypatch.setattr(reference, "write_simple", _capture)
+    reference.step_trading_calendar(cfg, date(2027, 3, 1), "run-1", {})
+
+    assert written["df"]["trade_date"].max() == calendar_seed_end()

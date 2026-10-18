@@ -11,9 +11,121 @@ import pytest
 
 from cnequity.config import Config
 from cnequity.domain.datasets import DATASETS
+from cnequity.domain.schemas import DATASET_SCHEMAS
 from cnequity.query.canonical import dedupe_by_primary_key, dedupe_lazy_by_primary_key
 from cnequity.query.parquet_scan import parquet_glob
 from cnequity.query.views import _view_glob, ensure_duckdb_views
+
+
+@pytest.mark.parametrize(
+    "dataset", ["financial_statement_items", "index_constituents", "daily_bars"]
+)
+def test_original_financial_and_dated_weight_evidence_match_all_readers(tmp_path, dataset):
+    older = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    newer = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    if dataset == "financial_statement_items":
+        common = dict(
+            symbol="600519.SH",
+            report_period="2016Q4",
+            statement_type="balance",
+            item_code="total_assets",
+            announce_date=date(2017, 4, 15),
+            data_version="v1",
+        )
+        entries = [
+            {**common, "item_value": 100.0, "source": "cninfo_original", "fetched_at": older},
+            {**common, "item_value": 110.0, "source": "eastmoney_backfill", "fetched_at": newer},
+            {
+                **common,
+                "announce_date": date(2018, 4, 15),
+                "item_value": 120.0,
+                "source": "eastmoney",
+                "fetched_at": newer,
+            },
+        ]
+        cols = ["announce_date", "item_value"]
+        expected = [(date(2017, 4, 15), 100.0), (date(2018, 4, 15), 120.0)]
+    elif dataset == "index_constituents":
+        common = dict(index_symbol="000688.SH", symbol="688001.SH", data_version="v1")
+        entries = [
+            {
+                **common,
+                "as_of_date": date(2026, 9, 30),
+                "weight": 0.02,
+                "source": "exchange",
+                "fetched_at": older,
+            },
+            {
+                **common,
+                "as_of_date": date(2026, 9, 30),
+                "weight": None,
+                "source": "eastmoney",
+                "fetched_at": newer,
+            },
+            {
+                **common,
+                "as_of_date": date(2026, 10, 1),
+                "weight": None,
+                "source": "eastmoney",
+                "fetched_at": newer,
+            },
+        ]
+        cols = ["as_of_date", "weight"]
+        expected = [(date(2026, 9, 30), 0.02), (date(2026, 10, 1), None)]
+    else:
+        common = dict(
+            symbol="511950.SH",
+            open=99.981,
+            high=99.984,
+            low=99.981,
+            close=99.984,
+            data_version="v2",
+        )
+        entries = [
+            {
+                **common,
+                "trade_date": date(2017, 4, 6),
+                "volume": 51,
+                "amount": 5099.0,
+                "source": "exchange",
+                "fetched_at": older,
+            },
+            {
+                **common,
+                "trade_date": date(2017, 4, 6),
+                "volume": 0,
+                "amount": 5099.0,
+                "source": "tdx_protocol",
+                "fetched_at": newer,
+            },
+            # No second observation: the unresolved row remains visible.
+            {
+                **common,
+                "trade_date": date(2017, 4, 7),
+                "volume": 0,
+                "amount": 5099.0,
+                "source": "tdx_protocol",
+                "fetched_at": newer,
+            },
+        ]
+        cols = ["trade_date", "volume"]
+        expected = [(date(2017, 4, 6), 51), (date(2017, 4, 7), 0)]
+    frame = pl.DataFrame(entries, schema=DATASET_SCHEMAS[dataset])
+    root = tmp_path / "curated" / dataset
+    root.mkdir(parents=True)
+    frame.write_parquet(root / "legacy.parquet")
+    eager = dedupe_by_primary_key(frame, dataset).select(cols).sort(cols[0]).rows()
+    lazy = (
+        dedupe_lazy_by_primary_key(frame.lazy(), dataset)
+        .collect()
+        .select(cols)
+        .sort(cols[0])
+        .rows()
+    )
+    db = ensure_duckdb_views(Config(data_root=tmp_path))
+    with duckdb.connect(str(db), read_only=True) as con:
+        sql = con.execute(f"SELECT {', '.join(cols)} FROM {dataset} ORDER BY {cols[0]}").fetchall()
+    assert eager == lazy == sql == expected
 
 
 @pytest.mark.parametrize(

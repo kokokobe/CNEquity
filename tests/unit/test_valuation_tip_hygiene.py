@@ -430,6 +430,7 @@ def test_daily_valuation_falls_back_to_push2_when_datacenter_has_nothing(tmp_pat
     """datacenter may not have published the session yet at run time."""
     from cnequity.adapters.eastmoney import valuation
 
+    monkeypatch.setattr(valuation, "last_closed_session", lambda: date(2026, 9, 28))
     monkeypatch.setattr(
         "cnequity.adapters.eastmoney.valuation_datacenter.fetch_valuation_datacenter",
         lambda *a, **k: _dc_frame([], []),
@@ -442,9 +443,33 @@ def test_daily_valuation_falls_back_to_push2_when_datacenter_has_nothing(tmp_pat
     assert "source" not in df.columns  # the step stamps push2 rows "eastmoney"
 
 
+@pytest.mark.parametrize("live_session", [date(2026, 9, 29), None], ids=["later", "open"])
+def test_daily_valuation_never_stamps_the_live_snapshot_on_another_session(
+    tmp_path, monkeypatch, live_session
+):
+    """A catch-up over 07-16..07-24 once wrote one live push2 snapshot to every day."""
+    from cnequity.adapters.eastmoney import valuation
+    from cnequity.orchestrator.outcomes import SourceUnavailableError
+
+    monkeypatch.setattr(valuation, "last_closed_session", lambda: live_session)
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.valuation_datacenter.fetch_valuation_datacenter",
+        lambda *a, **k: _dc_frame([], []),
+    )
+    monkeypatch.setattr(
+        valuation,
+        "_fetch_valuation_push2",
+        lambda *a, **k: pytest.fail("push2 describes the live session only"),
+    )
+    with pytest.raises(SourceUnavailableError, match="no valuation for 2026-09-28"):
+        valuation.fetch_valuation_metrics(date(2026, 9, 28), config=_lake(tmp_path))
+
+
 def test_daily_valuation_keeps_datacenter_error_when_push2_fails_too(tmp_path, monkeypatch):
     from cnequity.adapters.eastmoney import valuation
     from cnequity.adapters.eastmoney.em_auth import Push2PausedError
+
+    monkeypatch.setattr(valuation, "last_closed_session", lambda: date(2026, 9, 28))
 
     def _dc(*a, **k):
         raise RuntimeError("datacenter 502")

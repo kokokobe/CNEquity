@@ -1,4 +1,4 @@
-# License, sources, and citation
+# License, sources and citation
 
 This page explains the boundary between the **software license** and **upstream data terms**. Open-sourcing this repository does not mean the market data or announcements you fetch can be freely redistributed.
 

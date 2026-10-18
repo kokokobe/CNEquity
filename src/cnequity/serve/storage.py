@@ -16,11 +16,13 @@ from pathlib import Path
 from typing import Literal
 
 from cnequity.config import Config
+from cnequity.i18n import _, carry_language
 from cnequity.storage.lifecycle import LifecycleError, LifecycleStore, _read, digest
 from cnequity.storage.lifecycle.experiments import ExperimentRetirement
 from cnequity.storage.lifecycle.purge import eligible, unfinished
+from cnequity.storage.lifecycle.staging import StagingRetirement
 
-Kind = Literal["revisions", "experiments"]
+Kind = Literal["revisions", "experiments", "staging"]
 Phase = Literal["mark", "purge"]
 APPROVAL_SECONDS = 600
 
@@ -52,7 +54,11 @@ class MaintenanceGate:
     def drain(self, timeout: float = 30) -> None:
         with self.condition:
             if not self.condition.wait_for(lambda: self.readers == 0, timeout=timeout):
-                raise LifecycleError("面板仍有读取任务，请等待结束后重新确认。")
+                raise LifecycleError(
+                    _(
+                        "The dashboard still has reads in progress; wait for them to finish, then confirm again."
+                    )
+                )
 
     def reopen(self) -> None:
         with self.condition:
@@ -78,7 +84,9 @@ class StorageMaintenance:
         if not self.gate.enter():
             with self.lock:
                 if self.last_summary is None:
-                    raise LifecycleError("维护正在执行，请通过操作记录查看进度。")
+                    raise LifecycleError(
+                        _("Maintenance is running; follow its progress in the operation records.")
+                    )
                 return copy.deepcopy(self.last_summary) | {
                     "active_jobs": [
                         self._public(j)
@@ -117,7 +125,9 @@ class StorageMaintenance:
                     "object_id": obj["object_id"],
                     "kind": "revisions",
                     "current": bool(obj["current"]),
-                    "label": f"{obj['dataset']} · 第 {obj['revision']} 版",
+                    "label": _("{dataset} · revision {revision}").format(
+                        dataset=obj["dataset"], revision=obj["revision"]
+                    ),
                     "status": status,
                     "logical_bytes": obj["logical_bytes"],
                     "not_before": pending.get("not_before") if pending else None,
@@ -164,9 +174,12 @@ class StorageMaintenance:
                     "reasons": reasons,
                 }
             )
+        objects.extend(StagingRetirement(self.config).inspect())
         events = [
             {
-                "kind": "experiments" if p.parent.name == "experiment-purges" else "revisions",
+                "kind": {"experiment-purges": "experiments", "staging-purges": "staging"}.get(
+                    p.parent.name, "revisions"
+                ),
                 "plan_id": p.stem,
             }
             for p in unfinished(self.store)
@@ -208,7 +221,9 @@ class StorageMaintenance:
     def _start(self, state: dict, work) -> dict:
         with self.lock:
             if self.busy:
-                raise LifecycleError("已有存储检查或清理正在执行，请等待结束。")
+                raise LifecycleError(
+                    _("A storage check or cleanup is already running; wait for it to finish.")
+                )
             # Completed reviews are short lived and never become an unbounded queue.
             for key, job in list(self.jobs.items()):
                 if time.monotonic() - job["_created"] > APPROVAL_SECONDS and job["status"] not in {
@@ -217,7 +232,7 @@ class StorageMaintenance:
                 }:
                     del self.jobs[key]
             if len(self.jobs) >= 64:
-                raise LifecycleError("检查请求过多，请稍后重试。")
+                raise LifecycleError(_("Too many check requests; try again shortly."))
             job_id = secrets.token_hex(16)
             job = {"job_id": job_id, "_created": time.monotonic(), **state}
             self.jobs[job_id] = job
@@ -234,9 +249,11 @@ class StorageMaintenance:
                     job.update(
                         status="error",
                         error=str(exc),
-                        message="操作停止。执行失败时可能有部分内容已删除，请检查记录并重新审核原计划。"
+                        message=_(
+                            "The operation stopped. If it failed while executing, some content may already be deleted; check the records and review the original plan again."
+                        )
                         if state["status"] == "executing"
-                        else "检查未通过，没有执行删除。",
+                        else _("The check did not pass, so nothing was deleted."),
                     )
             finally:
                 with self.lock:
@@ -248,7 +265,9 @@ class StorageMaintenance:
                         self.busy = False
 
         try:
-            threading.Thread(target=run, name="storage-maintenance", daemon=True).start()
+            threading.Thread(
+                target=carry_language(run), name="storage-maintenance", daemon=True
+            ).start()
         except BaseException:
             with self.lock:
                 self.busy = False
@@ -265,13 +284,33 @@ class StorageMaintenance:
         object_ids: list[str] | None = None,
     ) -> dict:
         def prepare():
-            if resume_plan_id:
+            if kind == "staging":
+                retirement = StagingRetirement(self.config)
+                if phase != "purge" or (resume_plan_id and object_ids):
+                    raise LifecycleError("Staging only supports a deletion review")
+                if object_ids is not None and (not object_ids or len(object_ids) > 200):
+                    raise LifecycleError(_("Select 1 to 200 staging runs."))
+                if resume_plan_id:
+                    if not any(
+                        p.stem == resume_plan_id and p.parent.name == "staging-purges"
+                        for p in unfinished(self.store)
+                    ):
+                        raise LifecycleError(
+                            _("Only the same unfinished deletion record can be reviewed again.")
+                        )
+                    plan = retirement.read_plan(resume_plan_id)
+                else:
+                    plan = retirement.plan(phase=phase, selected_ids=object_ids)
+            elif resume_plan_id:
                 if phase != "purge" or not any(
                     p.stem == resume_plan_id
-                    and (p.parent.name == "experiment-purges") == (kind == "experiments")
+                    and p.parent.name
+                    == ("experiment-purges" if kind == "experiments" else "purges")
                     for p in unfinished(self.store)
                 ):
-                    raise LifecycleError("只能重新审核同一未完成删除记录。")
+                    raise LifecycleError(
+                        _("Only the same unfinished deletion record can be reviewed again.")
+                    )
                 if kind == "revisions":
                     plan = self.store.read_plan(resume_plan_id)
                 else:
@@ -279,20 +318,24 @@ class StorageMaintenance:
                     if digest(plan) != resume_plan_id or plan.get("meta_root") != str(
                         self.store.meta
                     ):
-                        raise LifecycleError("试验清理计划已改变。")
+                        raise LifecycleError(_("The experiment cleanup plan has changed."))
                 if plan["phase"] != "purge":
-                    raise LifecycleError("无效的恢复计划。")
+                    raise LifecycleError(_("Invalid restore plan."))
                 plan = {**plan, "plan_id": resume_plan_id}
             elif object_ids:
                 if phase != "purge" or resume_plan_id:
-                    raise LifecycleError("手动选择只能用于新的删除，不能和标记或恢复记录一起用。")
+                    raise LifecycleError(
+                        _(
+                            "A manual selection can only be used for a new deletion, not together with marked or restore records."
+                        )
+                    )
                 if len(object_ids) > 200 or len(object_ids) != len(set(object_ids)):
-                    raise LifecycleError("请选择 1 到 200 个不重复的历史版本。")
+                    raise LifecycleError(_("Select 1 to 200 distinct historical versions."))
                 if any(
                     not oid or len(oid) > 300 or any(ch.isspace() for ch in oid)
                     for oid in object_ids
                 ):
-                    raise LifecycleError("版本编号无效。")
+                    raise LifecycleError(_("Invalid version number."))
                 plan = (
                     self.store.plan(phase="purge", selected_ids=object_ids)
                     if kind == "revisions"
@@ -317,8 +360,12 @@ class StorageMaintenance:
                 "objects": [
                     {
                         "object_id": o["object_id"],
-                        "label": f"{o['dataset']} · 第 {o['revision']} 版"
+                        "label": _("{dataset} · revision {revision}").format(
+                            dataset=o["dataset"], revision=o["revision"]
+                        )
                         if kind == "revisions"
+                        else o["label"]
+                        if kind == "staging"
                         else Path(o["path"]).name,
                         "logical_bytes": o["logical_bytes"],
                     }
@@ -339,17 +386,23 @@ class StorageMaintenance:
         with self.lock:
             review = self.jobs.get(review_id)
             if not review or review["status"] != "ready" or review.get("_used"):
-                raise LifecycleError("检查已失效或已经确认，请重新检查。")
+                raise LifecycleError(
+                    _("The check has expired or was already confirmed; check again.")
+                )
             if not confirmed or not secrets.compare_digest(
                 confirmation_token, review["confirmation_token"]
             ):
-                raise LifecycleError("缺少与本次检查匹配的网页确认。")
+                raise LifecycleError(_("No web confirmation matches this check."))
             if time.monotonic() > review["_expires"]:
-                raise LifecycleError("确认已过期，请重新检查。")
+                raise LifecycleError(_("The confirmation has expired; check again."))
             if not review["objects"]:
-                raise LifecycleError("本次没有可执行的对象。")
+                raise LifecycleError(_("Nothing to execute this time."))
             if review["phase"] == "purge" and not maintenance:
-                raise LifecycleError("请先确认外部查询、服务、调度和试验写入已停止。")
+                raise LifecycleError(
+                    _(
+                        "First confirm that external queries, services, schedules and experiment writes have stopped."
+                    )
+                )
             if review["phase"] == "purge":
                 from cnequity.serve.ops.records import purge_blocked_reason
 
@@ -357,7 +410,7 @@ class StorageMaintenance:
                 if reason:
                     raise LifecycleError(reason)
             if self.busy:
-                raise LifecycleError("已有存储操作正在执行。")
+                raise LifecycleError(_("A storage operation is already running."))
             review["_used"] = True
             self.gate.close()
 
@@ -372,6 +425,8 @@ class StorageMaintenance:
                         if review["phase"] == "purge"
                         else self.store.mark(plan_id)
                     )
+                elif review["kind"] == "staging":
+                    result = StagingRetirement(self.config).apply(plan_id, maintenance=maintenance)
                 else:
                     result = ExperimentRetirement(self.store).apply(
                         plan_id, maintenance=maintenance, manifest=self.config.manifest_path

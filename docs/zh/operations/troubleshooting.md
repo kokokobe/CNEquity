@@ -4,6 +4,10 @@
 
 首次使用见[快速开始](../getting-started/quickstart.md)，请求成本和保护机制见[取数策略](fetch-policy.md)。
 
+## 症状：国证历史调样文件不存在
+
+如果来源返回“样本历史调样文件不存在”，客户端会报 `CNI publisher does not serve adjustment history`。这是来源未提供历史文件，不是有效的空名单。保留已有历史和失败记录；恢复时需要完整的官方历史名单或可核验的调整公告链。当前成分及当前权重不能替代过去的成分与权重，也不能据此推进历史覆盖水位。
+
 ## 症状：EastMoney datacenter `code=9501` / `列不存在`
 
 | 现象 | 原因 | 处理 |

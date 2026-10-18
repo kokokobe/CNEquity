@@ -195,7 +195,8 @@ def test_contracts_rates_and_model_changes_invalidate_even_with_preserved_mtime(
     pl.DataFrame({"indicator_id": ["shibor_3m"], "obs_date": [DAY], "value": [1.5]}).write_parquet(
         rates / "rates.parquet"
     )
-    assert stale_sessions(cfg) == [date(2026, 9, 23), DAY]
+    # Only a session on or after the new observation applies it.
+    assert stale_sessions(cfg) == [DAY]
     derive_option_greeks(cfg)
     original = module._dependency_identity
     monkeypatch.setattr(
@@ -213,3 +214,49 @@ def test_unknown_style_and_observed_expiry_never_produce_priced_greeks():
     contracts = contracts.with_columns(pl.lit("observed").alias("dates_basis"))
     result = compute_option_greeks(options, contracts=contracts, futures=futures)
     assert result["status"].item() == "no_expiry"
+
+
+def test_a_newly_listed_contract_leaves_settled_sessions_alone(tmp_path):
+    """Whole-table fingerprints made every session stale whenever a contract
+    was listed, so the full history was recomputed daily (~50 min)."""
+    cfg = _lake(tmp_path)
+    derive_option_greeks(cfg)
+    contracts = cfg.curated_root / "option_contracts"
+    pl.concat(
+        [
+            pl.read_parquet(next(contracts.glob("*.parquet"))),
+            _contracts(["M2701C3200.DCE"], "american"),
+        ],
+        how="diagonal_relaxed",
+    ).write_parquet(contracts / "part-000.parquet")
+    assert stale_sessions(cfg) == []
+
+
+def test_the_derive_does_not_hold_the_lake_lock_while_computing(tmp_path, monkeypatch):
+    from cnequity.derive import option_greeks as module
+    from cnequity.file_lock import LockUnavailable, lake_mutation_lock
+
+    cfg = _lake(tmp_path)
+    seen: list[bool] = []
+    original = module.compute_option_greeks
+
+    def probe(*args, **kwargs):
+        import threading
+
+        def other_job():
+            # Another thread stands in for another process: lock re-entry is
+            # tracked per thread, the file lock itself is not.
+            try:
+                with lake_mutation_lock(cfg.meta_root, blocking=False):
+                    seen.append(True)
+            except LockUnavailable:
+                seen.append(False)
+
+        worker = threading.Thread(target=other_job)
+        worker.start()
+        worker.join()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "compute_option_greeks", probe)
+    derive_option_greeks(cfg)
+    assert seen == [True], "another job's compact can run while Greeks compute"

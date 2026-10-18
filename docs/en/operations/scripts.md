@@ -1,4 +1,4 @@
-# Scripts
+# Repository scripts
 
 Path: `scripts/`
 
@@ -34,7 +34,7 @@ backup_meta.sh
 cne run clean
 ```
 
-In a later window, the separate `stale_pipeline.sh` catches up only the snapshot datasets that are still behind, sharing the scheduler lock with the main daily update. The lock lives in `{data.root}/locks` and is the same lock used by the `cne serve` operations page; `CNE_SCHEDULER_LOCK_DIR` or `CNE_LOCK_DIR` changes the directory. The main script keeps the old in-process wait switch for compatibility, but it is off by default. See [runbook · closing catch-up](runbook.md#closing-catch-up).
+In a later window, the separate `stale_pipeline.sh` catches up only the snapshot datasets that are still behind, sharing the scheduler lock with the main daily update. The lock lives in `{data.root}/locks` and is the same lock used by the `cne serve` operations page; `CNE_SCHEDULER_LOCK_DIR` or `CNE_LOCK_DIR` changes the directory. The lock records the host, PID and process start identity. Verified dead local owners are reclaimed automatically; a legacy PID-only marker is reclaimed once that process has exited, and a lock directory with no marker after 60 seconds. Remote owners require maintainer verification before removal. The main script keeps the old in-process wait switch for compatibility, but it is off by default. See [runbook · closing catch-up](runbook.md#closing-catch-up).
 
 **Environment variables** (`CNE_CONFIG` / `CNE_LOG_DIR` are also read by `cne` itself; the rest are read only by this script): `CNE_CONFIG`, `CNE_LOG_DIR` (long-running commands also write their own log here), `CNE_GROUPS`,
 `CNE_GATE_GROUPS` (default `core`; failures are marked gate, other groups are marked soft),
@@ -45,7 +45,8 @@ In a later window, the separate `stale_pipeline.sh` catches up only the snapshot
 `CNE_SOURCE_VANTAGE` (default `local`; set it to a stable, truthful egress label such as `cn` or
 `overseas`),
 `CNE_TRADE_DATE`,
-`CNE_BIN` (overrides the `cne` path; used by tests that exercise the control flow with a stub).
+`CNE_BIN` (overrides the `cne` path; used by tests that exercise the control flow with a stub),
+`CNE_PYTHON` (interpreter for the gate and the scheduler lock; defaults to the repository's `.venv/bin/python`, or the `python3` on PATH when there is no `.venv`; it must be able to import cnequity).
 
 At the end it prints a per-group summary (`group: OK|FAILED [gate|soft]`) plus `stale-retry: OK|FAILED|not needed|skipped`, making it easy to tell "the gate broke" from "EastMoney broke". A catch-up failure counts as soft.
 
@@ -73,7 +74,7 @@ If the previous run is still going, it skips and exits 0: every group rereads it
 
 **Mutually exclusive with the daily update**: it shares the same lock from `scheduler_lock.sh` with `daily_pipeline.sh`. launchd may trigger it while the main pipeline is still running — in that case it **skips** (exit 0) rather than queueing, because the next window can try again, and duplicate runs must never pile up behind ingestion.
 
-Environment variables: `CNE_BIN` / `CNE_CONFIG` / `CNE_LOG_DIR`, optionally `CNE_STALE_GROUPS`, `CNE_TRADE_DATE`.
+Environment variables: `CNE_BIN` / `CNE_CONFIG` / `CNE_LOG_DIR`, optionally `CNE_STALE_GROUPS`, `CNE_TRADE_DATE`, `CNE_PYTHON` (as above).
 
 ### scheduler_lock.sh
 
@@ -257,7 +258,19 @@ End-to-end smoke test: runs a miniature daily path with mocks or a lightweight c
 
 ### dev/sync_docs.py
 
-Regenerates the parts of the docs that code decides, in both languages: the field tables, the derivatives capability table, the CLI options table, the command side-effect inventory, and the README used on PyPI. `--check` only checks and writes nothing; CI runs it. The English for CLI help and side-effect notes lives in `scripts/dev/i18n/cli_help.en.yml` and `cli_surface.en.yml`; adding or changing a help text without its English fails the check.
+Regenerates the parts of the docs that code decides, in both languages: the field tables, the derivatives capability table, the CLI options table, the command side-effect inventory, and the README used on PyPI. `--check` only checks and writes nothing; CI runs it. CLI help in both languages comes from the package catalog (English in the code, Chinese in `src/cnequity/locale/zh_CN/LC_MESSAGES/cnequity.po`), and `python scripts/dev/i18n_catalog.py` fails on help with no Chinese; the English for side-effect notes lives in `scripts/dev/i18n/cli_surface.en.yml`, and adding a command without its English fails the check.
+
+### dev/i18n_catalog.py
+
+Maintains the translation catalog for the CLI, terminal progress and the console's server-side text. Text is written in English in the code and marked with `_()` (translated at run time) or `N_()` (only registered, translated when shown, as for Click help and log templates) from `cnequity.i18n`; a command's docstring is its help and is registered automatically. The Chinese lives in `src/cnequity/locale/zh_CN/LC_MESSAGES/cnequity.po`, and the compiled `.mo` is committed with it, so installing needs no build step:
+
+```bash
+python scripts/dev/i18n_catalog.py update    # add new text, drop text no longer in the code
+python scripts/dev/i18n_catalog.py compile   # rebuild the .mo from the .po
+python scripts/dev/i18n_catalog.py           # check; exits 1 on any problem
+```
+
+The check covers: marked text with no entry or no Chinese, entries no longer in the code, fuzzy entries, placeholders that differ from the English, leading or trailing newlines that differ, and a `.mo` that does not match its `.po`. `tests/unit/test_i18n_catalog.py` runs it, and `tests/unit/test_cli_untranslated.py` also catches Chinese literals that bypass the catalog. Babel is a development dependency only; the installed package reads the `.mo` with the standard library.
 
 ### dev/doc_translations.py
 

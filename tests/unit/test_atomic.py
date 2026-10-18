@@ -114,7 +114,7 @@ def test_replace_with_retry_explains_a_persistent_windows_lock(tmp_path, monkeyp
     monkeypatch.setattr(atomic_mod.os, "replace", _always_denied)
     monkeypatch.setattr(atomic_mod.time, "sleep", lambda _: None)
 
-    with pytest.raises(atomic_mod.FileInUseError, match="正被其他程序占用") as caught:
+    with pytest.raises(atomic_mod.FileInUseError, match="in use by another program") as caught:
         atomic_mod.replace_with_retry(tmp, out)
     # Existing ``except PermissionError`` handlers keep working.
     assert isinstance(caught.value, PermissionError)

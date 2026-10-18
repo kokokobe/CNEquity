@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import copy
 from datetime import date
@@ -15,18 +16,25 @@ from typing import Any
 from cnequity.config import Config, WaveConfig
 from cnequity.domain.datasets import DATASETS, history_mode_for
 from cnequity.domain.market_time import shanghai_today
+from cnequity.i18n import N_, NP_, Message
 from cnequity.orchestrator.backfill_scope import capture_backfill_scope, restore_backfill_scope
 from cnequity.orchestrator.deps import step_execution_levels, validate_steps_registered
 from cnequity.orchestrator.init_phases import (
-    DEFAULT_INIT_PHASES,
+    FACTOR_PREFETCH_PHASES,
+    FACTOR_PREFETCH_STOP_PHASE,
     INIT_PHASE_STEPS,
+    blocks_init,
+    configured_init_phases,
     current_phase_statuses,
     init_run_complete,
     missing_steps,
     missing_steps_within_phase_order,
     needs_finalize,
+    only_non_blocking_owed,
+    owed_steps,
     pending_phases,
     phase_backfill,
+    scheduled_later,
     step_backfill,
     step_completed,
     step_succeeded,
@@ -53,6 +61,14 @@ from cnequity.progress import step_scope
 from cnequity.steps.common import is_trading_day
 
 logger = logging.getLogger(__name__)
+
+# Step outcomes as the terminal names them; the log file keeps these words.
+STEP_STATUS_WORDS = (
+    NP_("step status", "success"),
+    NP_("step status", "warning"),
+    NP_("step status", "failed"),
+    NP_("step status", "skipped"),
+)
 
 _TRANSIENT_RETRY_MARKERS = (
     "connection",
@@ -110,6 +126,19 @@ def _has_execution_errors(result: dict[str, Any]) -> bool:
             for row in steps
         )
     return result.get("status") == "failed"
+
+
+def _failed_step_names(result: dict[str, Any]) -> set[str]:
+    """The steps a phase's ``run_job`` result reports as not executed."""
+    return {
+        str(row["step"])
+        for row in result.get("results") or []
+        if row.get("step")
+        and (
+            row.get("execution_status") in {"failed", "interrupted"}
+            or (row.get("status") == "failed" and row.get("execution_status") is None)
+        )
+    }
 
 
 def job_family(job_name: str) -> str:
@@ -178,7 +207,7 @@ class JobEngine:
             and not is_trading_day(self.config, trade_date)
         ):
             logger.info(
-                "Skipping job %s: %s is not a trading day",
+                N_("Skipping job %s: %s is not a trading day"),
                 job_name,
                 trade_date.isoformat(),
             )
@@ -248,7 +277,9 @@ class JobEngine:
 
             try:
                 for wave in wave_list:
-                    logger.info("Wave %s: %s (parallel=%s)", wave.name, wave.steps, wave.parallel)
+                    logger.info(
+                        N_("Wave %s: %s (parallel=%s)"), wave.name, wave.steps, wave.parallel
+                    )
                     wave_results, wave_read, wave_written, wave_error, wave_warning = (
                         self._run_wave(wave, wave.steps, trade_date, run_id, context)
                     )
@@ -274,6 +305,7 @@ class JobEngine:
                                 wave.name,
                             )
 
+                self._persist_unaudited_findings(run_id, trade_date, results, context)
                 if had_error:
                     fallback_status = "failed"
                 elif had_warning:
@@ -321,6 +353,29 @@ class JobEngine:
                         run_id,
                         error_message="interrupted: worker exited without finish_run",
                     )
+
+    def _persist_unaudited_findings(
+        self,
+        run_id: str,
+        trade_date: date,
+        results: list[dict[str, Any]],
+        context: dict[str, Any],
+    ) -> None:
+        """Keep the steps' findings when this run did not write an audit file.
+
+        They travel in ``context`` and only ``run_audit`` used to write them
+        out. The scheduled groups run without ``audit`` and the later lake
+        audit has its own context, so a fallback a step reported — a cached
+        trading_status day, a stale valuation — reached no file at all.
+        """
+        findings = context.get("audit_findings") or []
+        if not findings:
+            return
+        if any(row.get("step") == "audit" and "error" not in row for row in results):
+            return
+        from cnequity.quality.audit import persist_step_findings
+
+        persist_step_findings(self.config, run_id, trade_date, findings)
 
     def run_step(
         self,
@@ -666,7 +721,7 @@ class JobEngine:
             # done, so a twenty-minute fetch and a hang read identically until
             # one of them ended. Name it on the way in as well, and register it
             # so the heartbeat can say which step the silence belongs to.
-            logger.info("Step %s starting", name)
+            logger.info(N_("Step %s starting"), name)
             from cnequity.orchestrator.source_gaps import source_gap_scope
 
             with step_scope(name), source_gap_scope(step_config) as source_gaps:
@@ -780,9 +835,9 @@ class JobEngine:
                 step_metrics,
             )
             logger.info(
-                "Step %s %s in %.1fs (%s rows)",
+                N_("Step %s %s in %.1fs (%s rows)"),
                 name,
-                step_status,
+                Message.word("step status", step_status),
                 elapsed,
                 out.get("rows_written", 0),
             )
@@ -810,7 +865,7 @@ class JobEngine:
                 error=exc,
             )
             self.manifest.record_stage_metrics(run_id, name, elapsed)
-            logger.warning("Step %s interrupted after %.1fs", name, elapsed)
+            logger.warning(N_("Step %s interrupted after %.1fs"), name, elapsed)
             raise
         except Exception as exc:
             elapsed = time.perf_counter() - t0
@@ -834,11 +889,11 @@ class JobEngine:
             )
             self.manifest.record_stage_metrics(run_id, name, elapsed)
             if outcome.reason_code in SOURCE_LIMIT_REASONS:
-                logger.warning("Step %s source unavailable after %.1fs: %s", name, elapsed, exc)
+                logger.warning(N_("Step %s source unavailable after %.1fs: %s"), name, elapsed, exc)
             elif outcome.execution_status == "skipped":
-                logger.warning("Step %s skipped: %s", name, exc)
+                logger.warning(N_("Step %s skipped: %s"), name, exc)
             else:
-                logger.exception("Step %s failed after %.1fs", name, elapsed)
+                logger.exception(N_("Step %s failed after %.1fs"), name, elapsed)
             if outcome.execution_status == "skipped":
                 status = "skipped"
             elif outcome.reason_code in SOURCE_LIMIT_REASONS:
@@ -1005,7 +1060,7 @@ class JobEngine:
             "delisted_backfill",
             {"parent_init_run_id": run_id, "start": start.isoformat(), "end": end.isoformat()},
         )
-        logger.info("Init: recovering %d delisted symbols before daily bars", len(symbols))
+        logger.info(N_("Init: recovering %d delisted symbols before daily bars"), len(symbols))
         with self._run_lock(child_id):
             try:
                 result = backfill_delisted_bars(
@@ -1068,7 +1123,7 @@ class JobEngine:
             phases = meta.get("phases")
             if phases:
                 return list(phases)
-        return list(self.config.init_phases or DEFAULT_INIT_PHASES)
+        return configured_init_phases(self.config.init_phases)
 
     def _init_execution_batches(self, run_id: str) -> list[Any]:
         batches: list[Any] = list(self.manifest.get_batches_for_run(run_id))
@@ -1179,7 +1234,12 @@ class JobEngine:
         return [step for step in planned if step not in present]
 
     def _split_runnable_missing(
-        self, run_id: str, missing: list[str], *, in_run: set[str]
+        self,
+        run_id: str,
+        missing: list[str],
+        *,
+        in_run: set[str],
+        init_phases: list[str] | None = None,
     ) -> tuple[list[str], list[str]]:
         """Split *missing* into steps whose inputs are ready and steps that are blocked.
 
@@ -1206,7 +1266,11 @@ class JobEngine:
         ready: list[str] = []
         blocked: list[str] = []
         for step in missing:
-            deps = [dep for dep in get_step(step).depends_on if dep in in_run]
+            deps = [
+                dep
+                for dep in get_step(step).depends_on
+                if dep in in_run and not (init_phases and scheduled_later(step, dep, init_phases))
+            ]
             if all(dep in satisfied or dep in ready for dep in deps):
                 ready.append(step)
             else:
@@ -1469,7 +1533,7 @@ class JobEngine:
             # `_retry_run_locked` historically closes a terminal run with
             # batch status ``warning``. Reconcile that legacy spelling
             # after all retry/finalize receipts have been written.
-            if public_status != result.get("status"):
+            if auto_finalize and public_status != result.get("status"):
                 self.manifest.finish_run(
                     run_id,
                     public_status,
@@ -1651,7 +1715,7 @@ class JobEngine:
             if init_phases:
                 in_run |= set(init_expected_steps(init_phases))
             ran_missing, blocked_missing = self._split_runnable_missing(
-                run_id, missing, in_run=in_run
+                run_id, missing, in_run=in_run, init_phases=init_phases
             )
             for step in ran_missing:
                 prev_backfill = self.config._backfill
@@ -1694,6 +1758,7 @@ class JobEngine:
                 )
             )
 
+        self._persist_unaudited_findings(run_id, trade_date, results, context)
         status, still_missing = self._gate_on_missing_steps(
             run_id, self._retry_batch_status(run_id)
         )
@@ -1757,6 +1822,42 @@ class JobEngine:
         )
         return status
 
+    def _with_factor_prefetch(self, phases: list[str], trade_date: date) -> Iterator[str]:
+        """Yield *phases*, warming the factor cache in the background meanwhile.
+
+        Starts at the first bars or corporate-action phase and stops before the
+        finalize phase, where the derive fetches whatever is still uncached.
+        Stopped too when the loop ends early, breaks or raises.
+        """
+        from cnequity.derive.adj_factors import BackgroundFactorPrefetch
+
+        prefetch = None
+        try:
+            for phase in phases:
+                if phase == FACTOR_PREFETCH_STOP_PHASE and prefetch is not None:
+                    prefetch.stop()
+                    prefetch = None
+                elif phase in FACTOR_PREFETCH_PHASES and prefetch is None:
+                    prefetch = BackgroundFactorPrefetch(self.config, trade_date).start()
+                yield phase
+        finally:
+            if prefetch is not None:
+                prefetch.stop()
+
+    def _init_completion(self, run_id: str, status: str) -> dict[str, Any]:
+        """What a first build left owed, and whether its lake is usable anyway.
+
+        A run can be ``failed`` because a non-blocking phase is still owed
+        while its bars are published; ``lake_usable`` tells the CLI not to
+        present that as a failed build.
+        """
+        phases = self._init_phases_list(run_id)
+        batches = self._init_execution_batches(run_id)
+        return {
+            "owed_steps": owed_steps(phases, batches),
+            "lake_usable": status != "failed" or only_non_blocking_owed(phases, batches),
+        }
+
     def _execute_init_phases(
         self,
         run_id: str,
@@ -1769,12 +1870,12 @@ class JobEngine:
         total_read = 0
         total_written = 0
 
-        for phase in phases:
+        for phase in self._with_factor_prefetch(phases, trade_date):
             steps = INIT_PHASE_STEPS.get(phase, [])
             if not steps:
                 continue
             backfill = phase_backfill(phase)
-            logger.info("Init phase %s: %s", phase, steps)
+            logger.info(N_("Init phase %s: %s"), phase, ", ".join(steps))
             result = self.run_job(
                 "init",
                 trade_date,
@@ -1787,7 +1888,18 @@ class JobEngine:
             total_read += result.get("rows_read", 0)
             total_written += result.get("rows_written", 0)
             if _has_execution_errors(result) and not keep_going:
-                logger.error("Init phase %s failed; stopping remaining phases", phase)
+                failed = _failed_step_names(result)
+                if not blocks_init(phase, failed):
+                    logger.warning(
+                        N_(
+                            "Init phase %s did not complete (%s); continuing so the lake still "
+                            "publishes. Run `cne init` again to resume it."
+                        ),
+                        phase,
+                        ", ".join(sorted(failed)) or phase,
+                    )
+                    continue
+                logger.error(N_("Init phase %s failed; stopping remaining phases"), phase)
                 break
 
         status = self._finalize_init_run(
@@ -1801,6 +1913,7 @@ class JobEngine:
             "status": status,
             "phases": phase_results,
             **self._public_outcome(run_id),
+            **self._init_completion(run_id, status),
         }
 
     def resume_init(
@@ -1838,6 +1951,9 @@ class JobEngine:
                     error_message="interrupted by operator",
                 )
                 raise
+            except Exception:
+                self.manifest.interrupt_run(run_id, error_message="init resume failed")
+                raise
 
     def _resume_init_locked(
         self,
@@ -1872,7 +1988,8 @@ class JobEngine:
             _mark_resumed,
         )
 
-        logger.info("Resuming init run %s", run_id)
+        logger.info(N_("Resuming init run %s"), run_id)
+        self.manifest.resume_run(run_id)
         retry_result = self._retry_run(run_id, trade_date, auto_finalize=False)
 
         batches = self._init_execution_batches(run_id)
@@ -1881,7 +1998,7 @@ class JobEngine:
         total_read = retry_result.get("rows_read", 0)
         total_written = retry_result.get("rows_written", 0)
 
-        for phase in to_run:
+        for phase in self._with_factor_prefetch(to_run, trade_date):
             batches = self._init_execution_batches(run_id)
             steps = [
                 step
@@ -1899,18 +2016,26 @@ class JobEngine:
                 )
             }
             if unresolved_started:
-                logger.error(
-                    "Init phase %s is still incomplete after retry (%s); not starting later phases",
+                if not keep_going and blocks_init(phase, unresolved_started):
+                    logger.error(
+                        N_(
+                            "Init phase %s is still incomplete after retry (%s); "
+                            "not starting later phases"
+                        ),
+                        phase,
+                        ", ".join(sorted(unresolved_started)),
+                    )
+                    break
+                logger.warning(
+                    N_("Init phase %s is still incomplete after retry (%s); continuing"),
                     phase,
                     ", ".join(sorted(unresolved_started)),
                 )
-                if not keep_going:
-                    break
                 steps = [step for step in steps if step not in unresolved_started]
             if not steps:
                 continue
             backfill = phase_backfill(phase)
-            logger.info("Init resume phase %s: %s", phase, steps)
+            logger.info(N_("Init resume phase %s: %s"), phase, ", ".join(steps))
             result = self.run_job(
                 "init",
                 trade_date,
@@ -1922,13 +2047,17 @@ class JobEngine:
             phase_results.append({"phase": phase, **result})
             total_read += result.get("rows_read", 0)
             total_written += result.get("rows_written", 0)
-            if _has_execution_errors(result) and not keep_going:
+            if keep_going:
+                continue
+            if _has_execution_errors(result) and blocks_init(phase, _failed_step_names(result)):
                 break
             batches = self._init_execution_batches(run_id)
-            if (
-                not all(step_completed(batches, step) for step in INIT_PHASE_STEPS.get(phase, []))
-                and not keep_going
-            ):
+            unfinished = [
+                step
+                for step in INIT_PHASE_STEPS.get(phase, [])
+                if not step_completed(batches, step)
+            ]
+            if unfinished and blocks_init(phase, unfinished):
                 break
 
         batches = self._init_execution_batches(run_id)
@@ -1964,6 +2093,7 @@ class JobEngine:
             "status": status,
             "resumed": True,
             **self._public_outcome(run_id),
+            **self._init_completion(run_id, status),
             "retry": retry_result,
             "phases": phase_results,
         }

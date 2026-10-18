@@ -59,6 +59,7 @@ DAY = date(2024, 6, 28)
             {"futures_enabled": True, "futures_exchanges": ["SHF"], "_derivatives_refresh": True},
         ),
         ("daily_bars", {"ingest_universe": "all_a_sh_sz"}),
+        ("daily_bars", {"_turnover_repair": True, "_turnover_peer_review": True}),
     ],
 )
 def test_retry_from_fresh_config_replays_one_off_scope(tmp_path, monkeypatch, dataset, overrides):

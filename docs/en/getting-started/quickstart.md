@@ -59,9 +59,10 @@ Run it once a day (weekends included): on trading days it runs all daily update 
 
 Minute bars, trade ticks and per-contract derivatives are off by default. For historical ST and delisting coverage, see the [initialization guide](initialization.md).
 
-## Init: scope, disk and resume {#init-scope}
+<a id="init-scope"></a>
 
-This section has moved to [Initialization, scope and resume](initialization.md#init-scope): it covers the difference between quick and full, automatic delisting recovery and optional historical ST backfill, cost, recovery after Ctrl-C, logs and acceptance. The old link is kept here so existing references still land somewhere.
+!!! tip "Scope, disk and resume"
+    For quick vs full, delisting and historical ST backfill, disk cost, recovery after Ctrl-C and acceptance, see [Initialization, scope and resume](initialization.md#init-scope).
 
 ## Troubleshooting
 

@@ -286,6 +286,28 @@ def test_adj_factor_dates_skip_placeholder_only_symbols(tmp_path):
     assert bars.height == 2
 
 
+@pytest.mark.parametrize("later_volume", [0, 100])
+def test_factor_dates_respect_delisting_unless_traded_prices_contradict_it(tmp_path, later_volume):
+    cfg = Config(data_root=tmp_path / "lake")
+    bars = cfg.curated_root / "daily_bars"
+    bars.mkdir(parents=True)
+    days = [date(2024, 6, 26), date(2024, 6, 27), date(2024, 6, 28)]
+    pl.DataFrame(
+        {"symbol": ["600519.SH"] * 3, "trade_date": days, "volume": [100, 0, later_volume]}
+    ).write_parquet(bars / "part.parquet")
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    pl.DataFrame({"symbol": ["600519.SH"], "delist_date": [days[1]]}).write_parquet(
+        instruments / "part.parquet"
+    )
+
+    expected = days if later_volume else days[:2]
+    assert _load_daily_bar_dates(cfg)["trade_date"].to_list() == expected
+    # The append-only path must use the same window as the full derive.
+    incremental = _load_daily_bar_dates(cfg, start=days[2])
+    assert incremental["trade_date"].to_list() == (days[2:] if later_volume else [])
+
+
 def test_factor_continuity_findings_flags_break():
     from cnequity.derive.adj_factors import _factor_continuity_findings
 
@@ -1869,3 +1891,53 @@ def test_backfilled_older_bars_are_realigned_from_cache(adj_config, monkeypatch,
     assert calls == fetched
     older = adj_config.derived_root / "adj_factors" / "trade_date=2024-06-27"
     assert list(older.glob("*.parquet")), "the older bar date now has a factor row"
+
+
+def _factor_row(symbol: str, factor: float, *, source: str = "sina", fetched: int = 1):
+    return {
+        "symbol": symbol,
+        "trade_date": date(2024, 6, 28),
+        "adjust_type": "hfq",
+        "factor": factor,
+        "source": source,
+        "data_version": "v1",
+        "fetched_at": datetime(2024, 6, 28, fetched, tzinfo=timezone.utc),
+    }
+
+
+def test_an_unchanged_factor_partition_is_not_rewritten(tmp_path):
+    """Restamping `fetched_at` republished every partition on every derive."""
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.derived_root / "adj_factors" / "trade_date=2024-06-28"
+    _write_adj_partitions(
+        cfg,
+        pl.DataFrame([_factor_row("600519.SH", 0.8), _factor_row("000001.SZ", 0.9)]),
+        replace=False,
+    )
+    stored = part / "part-0.parquet"
+    before = stored.read_bytes()
+
+    _write_adj_partitions(
+        cfg, pl.DataFrame([_factor_row("600519.SH", 0.8, fetched=9)]), replace=False
+    )
+    assert stored.read_bytes() == before
+
+    # A changed value or a changed source still lands.
+    _write_adj_partitions(
+        cfg,
+        pl.DataFrame(
+            [
+                _factor_row("600519.SH", 0.81, fetched=9),
+                _factor_row("000001.SZ", 0.9, source="derived_stock_actions", fetched=9),
+            ]
+        ),
+        replace=False,
+    )
+    written = pl.read_parquet(stored)
+    assert dict(zip(written["symbol"], written["factor"], strict=True)) == {
+        "600519.SH": 0.81,
+        "000001.SZ": 0.9,
+    }
+    assert dict(zip(written["symbol"], written["source"], strict=True))["000001.SZ"] == (
+        "derived_stock_actions"
+    )

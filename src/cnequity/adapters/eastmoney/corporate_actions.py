@@ -82,8 +82,13 @@ def _map_action_type(row: dict) -> str | None:
 
 
 def _ex_date(row: dict) -> date | None:
-    """Ex-date of one report row, or None when the row carries neither field."""
-    raw = row.get(_EX_DATE_COL) or row.get("EQUITY_RECORD_DATE")
+    """Ex-date of one report row, or None when the row does not carry one.
+
+    The record date is not a substitute: it falls on the session before the
+    ex-date, so an event dated by it moves the adjustment step a day early.
+    A plan without an ex-date has not been carried out yet.
+    """
+    raw = row.get(_EX_DATE_COL)
     if not raw:
         return None
     try:

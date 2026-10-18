@@ -152,6 +152,8 @@ class Config:
     # Keep this off by default so existing A-share lakes do not acquire a
     # fund-wide fetch obligation merely by upgrading.
     ingest_eligible_etfs: bool = False
+    # Fetch exchange-listed ETF/LOF quotes independently of research eligibility.
+    ingest_listed_funds: bool = False
     # How many trailing sessions the per-symbol Sina leg reconciles on a daily
     # run. TDX has no Beijing route, so all ~580 BJ symbols come through that
     # one-request-per-symbol endpoint; running daily_bars' full 5-session
@@ -274,6 +276,7 @@ class Config:
     _tdx_amount_repair: bool = False
     _tdx_volume_repair: bool = False
     _turnover_repair: bool = False
+    _turnover_peer_review: bool = False
     _sector_bars_force: bool = False
     _rate_limiters: object | None = field(default=None, repr=False)
     # ``workers`` is the legacy/global scheduler budget.  Source-specific
@@ -666,12 +669,26 @@ def push2_paused_by_env() -> bool:
     return os.environ.get("CNE_PUSH2_PAUSED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _data_root(raw: dict) -> Path:
+    return _absolute(Path(raw.get("data", {}).get("root", "./data/cnequity")).expanduser())
+
+
+def configured_data_root(path: str | Path) -> Path:
+    """The ``data.root`` *path* names now, resolved exactly as ``load_config`` does.
+
+    A long-running process holds the lake it started on; this lets it notice
+    the file has since been pointed somewhere else without loading the rest.
+    """
+    with open(Path(path).expanduser().resolve(), "rb") as f:
+        return _data_root(tomllib.load(f))
+
+
 def load_config(path: str | Path) -> Config:
     config_path = Path(path).expanduser().resolve()
     with open(config_path, "rb") as f:
         raw = tomllib.load(f)
 
-    data_root = _absolute(Path(raw.get("data", {}).get("root", "./data/cnequity")).expanduser())
+    data_root = _data_root(raw)
     lake_profile = raw.get("data", {}).get("profile") or None
     orch = raw.get("orchestrator", {})
     tdx = raw.get("tdx_protocol", {})
@@ -930,6 +947,9 @@ def load_config(path: str | Path) -> Config:
     ingest_eligible_etfs = raw.get("universe", {}).get("ingest_eligible_etfs", False)
     if not isinstance(ingest_eligible_etfs, bool):
         raise ValueError("[universe].ingest_eligible_etfs must be true or false")
+    ingest_listed_funds = raw.get("universe", {}).get("ingest_listed_funds", False)
+    if not isinstance(ingest_listed_funds, bool):
+        raise ValueError("[universe].ingest_listed_funds must be true or false")
 
     def _resolve_qmt_path(value: object) -> str | None:
         if not value:
@@ -1011,6 +1031,7 @@ def load_config(path: str | Path) -> Config:
         ths_official_backfill_enabled=ths_official_backfill_enabled,
         ingest_universe=str(raw.get("universe", {}).get("ingest", "all_a")).strip().lower(),
         ingest_eligible_etfs=ingest_eligible_etfs,
+        ingest_listed_funds=ingest_listed_funds,
         bj_history_lookback_days=int(
             raw.get("sources", {}).get("sina_bars", {}).get("reconciliation_lookback_days", 1)
         ),

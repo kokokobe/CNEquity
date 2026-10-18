@@ -1,13 +1,15 @@
 <div align="center">
+  <img src="docs/assets/cnequity-readme-banner.png" alt="CNEquity · China-market financial data lake" width="100%">
   <h1>CNEquity · A local data foundation for China-market research</h1>
   <p><strong>Collect once, keep it current, and research from the same traceable data.</strong></p>
 
-CNEquity turns market prices, financial statements, corporate events and capital-flow data into a local Parquet lake. It handles incremental ingestion, resumable batches, quality checks and consistent queries for individual researchers and small teams.
+CNEquity turns market prices, financial statements, corporate events and capital-flow data into a local Parquet lake. It handles incremental ingestion, resumable batches, quality checks and consistent queries for individual researchers, small teams and AI agents.
 
 [![CI](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cnequity?logo=pypi&logoColor=white)](https://pypi.org/project/cnequity/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](docs/en/getting-started/installation.md)
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Glama MCP score](https://glama.ai/mcp/servers/rootSunc/CNEquity/badges/score.svg)](https://glama.ai/mcp/servers/rootSunc/CNEquity)
 
 [中文](README.md) · [Documentation](https://rootsunc.github.io/CNEquity/en/) · [Dataset catalog](docs/en/datasets/catalog.md) · [Changelog](CHANGELOG.md)
 </div>
@@ -18,7 +20,7 @@ CNEquity turns market prices, financial statements, corporate events and capital
 
 ## Quick start
 
-Requires Python 3.10+ on macOS, Linux or Windows. No account or token needed.
+Requires Python 3.10+ on macOS, Linux or Windows. No account or token needed. The CLI and dashboard speak English and Chinese and follow your system language; `export CNE_LANG=en` pins English.
 
 **① Try it in a minute.** Fetch the last 30 trading days for 5 stocks from live sources into a separate directory that never touches your real lake:
 
@@ -40,6 +42,7 @@ See the [MCP guide](docs/en/reference/mcp.md#connecting-clients) for every clien
 
 ```bash
 cne init     # the first run can take hours; if it stops, run it again and nothing already downloaded is fetched twice
+             # a few-second network preflight runs first; a failure in a non-critical step such as corporate actions does not stop the build, and the summary lists what is left
 cne check    # confirm the data is complete and usable
 ```
 
@@ -71,6 +74,70 @@ The current development tree registers **55 datasets: 47 curated + 8 derived**, 
 
 Minutes, trade snapshots and futures/options are disabled by default. Check each source's historical horizon and actual coverage after opting in.
 
+<summary>Registered primary and backup sources (actual routing and history limits are in the catalog)</summary>
+
+| Dataset | Tier | Registered primary | Registered backup |
+|---|---|---|---|
+| `instruments` | L0 | tdx_protocol | baostock |
+| `etf_profiles` | L0 | exchange | — |
+| `trading_calendar` | L0 | tdx_protocol | exchange |
+| `trading_status` | L0 | eastmoney | exchange |
+| `adj_factors` | L1 | sina | baostock |
+| `daily_bars` | L1 | tdx_protocol | eastmoney |
+| `delisting_events` | L1 | derived | — |
+| `index_bars` | L1 | tdx_protocol | eastmoney |
+| `minute_bars` | L1 | tdx_protocol | — |
+| `minute_bars_5m` | L1 | tdx_protocol | — |
+| `minute_bars_15m` | L1 | derived | — |
+| `minute_bars_30m` | L1 | derived | — |
+| `minute_bars_60m` | L1 | derived | — |
+| `trade_ticks` | L1 | tdx_protocol | — |
+| `announcement_index` | L2 | cninfo | — |
+| `corporate_actions` | L2 | eastmoney | tdx_protocol |
+| `earnings_disclosure_schedule` | L2 | eastmoney | — |
+| `analyst_consensus` | L3 | eastmoney | — |
+| `financial_statement_items` | L3 | eastmoney | — |
+| `share_structure` | L3 | eastmoney | — |
+| `shareholder_counts` | L3 | eastmoney | — |
+| `top_holders` | L3 | eastmoney | — |
+| `valuation_metrics` | L3 | eastmoney | — |
+| `block_trades` | L4 | eastmoney | exchange |
+| `dragon_tiger` | L4 | eastmoney | exchange |
+| `fund_flow` | L4 | eastmoney | — |
+| `fund_flow_ths` | L4 | ths | — |
+| `institutional_holdings` | L4 | eastmoney | — |
+| `margin_trading` | L4 | exchange | — |
+| `northbound_flows` | L4 | eastmoney | — |
+| `northbound_holdings` | L4 | eastmoney | — |
+| `index_constituents` | L5 | eastmoney | — |
+| `industry_index` | L5 | derived | — |
+| `industry_members` | L5 | eastmoney | — |
+| `sector_members` | L5 | eastmoney | — |
+| `macro_indicators` | L6 | eastmoney | pboc |
+| `market_breadth` | L6 | derived | — |
+| `economic_calendar` | L7 | eastmoney | — |
+| `flash_news_wire` | L7 | eastmoney | — |
+| `hot_rank` | L7 | eastmoney | — |
+| `news_headlines` | L7 | eastmoney | — |
+| `sector_bars` | L7 | ths | — |
+| `sector_fund_flow` | L7 | eastmoney | — |
+| `sector_fund_flow_ths` | L7 | ths | — |
+| `sentiment_scores` | L7 | derived | eastmoney |
+| `regulatory_events` | L8 | cninfo | — |
+| `share_unlock_schedule` | L8 | eastmoney | — |
+| `commodity_bars` | L9 | sina | eastmoney |
+| `futures_bars` | L9 | futures_exchange | — |
+| `futures_continuous` | L9 | derived | — |
+| `futures_contracts` | L9 | futures_exchange | — |
+| `futures_minute_bars` | L9 | sina | — |
+| `option_bars` | L9 | futures_exchange | — |
+| `option_contracts` | L9 | futures_exchange | — |
+| `option_greeks` | L9 | derived | — |
+
+Registered sources are dataset metadata; the daily tip, historical backfill and explicit repairs may take different routes. Read them together with the [source notes](docs/en/datasets/sources.md).
+
+</details>
+
 ## Why keep a lake?
 
 - **Spend less time rebuilding ingestion.** Normalize symbols and columns once, track incremental windows, and resume failed work without discarding successful batches. There are 22 source-probe routes; costly endpoints require explicit selection.
@@ -87,8 +154,6 @@ The same equal-weight buy-and-hold strategy over the same dates produces a diffe
 *This historical sample illustrates universe selection. Its returns and stock counts do not describe current lake coverage or future investment performance. Delisted names are valued at their last available bar; see the [universe profiles](docs/en/reference/universe-profiles.md) for evidence limits.*
 
 CNEquity retains delisted identities and makes adjustment, historical membership and PIT semantics part of the query contract.
-
-If this is infrastructure you keep rebuilding, [give CNEquity a ⭐ Star](https://github.com/rootSunc/CNEquity) to find it again and help other researchers discover it.
 
 ## What can you research?
 
@@ -112,7 +177,7 @@ Adapters and batch orchestration collect data into staging; validated batches be
 cne run daily
 ```
 
-Schedule this one command every day, weekends included: on trading days it runs every enabled daily group, then updates announcements, regulatory events and news; on other days it runs only the event stream. The operations page in `cne serve` can install that daily run and the catch-up pass for the current user, without copying the repository scripts. Accept the lake with `cne check`, which exits non-zero on gaps or quality errors.
+Schedule this one command every day, weekends included: on trading days it runs every enabled daily group, then updates announcements, regulatory events and news; on other days it runs only the event stream. You can also do it from the operations page in `cne serve`: opening a daily run, catch-up or backfill shows the command it will run, and Start runs it. The same page installs the scheduled daily run and catch-up pass for the current user, without copying the repository scripts. Accept the lake with `cne check`, which exits non-zero on gaps or quality errors.
 
 When you upgrade:
 
@@ -123,7 +188,7 @@ cne config upgrade
 
 `cne config upgrade` adds the schedule steps a new release introduced to your config and keeps a backup of the original.
 
-Continue with [initialization and recovery](docs/en/getting-started/initialization.md), then the [runbook](docs/en/operations/runbook.md). Detailed documentation is primarily in Chinese.
+Continue with [initialization and recovery](docs/en/getting-started/initialization.md), then the [runbook](docs/en/operations/runbook.md). The full documentation is available in [English](https://rootsunc.github.io/CNEquity/en/) and [Chinese](https://rootsunc.github.io/CNEquity/).
 
 ## One lake for Python, SQL and AI agents
 

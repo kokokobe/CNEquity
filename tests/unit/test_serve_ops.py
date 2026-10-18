@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from cnequity.config import load_config
@@ -126,7 +127,7 @@ def test_command_templates_omit_the_local_config_path():
     assert (
         daily == "cne run daily [--trade-date TRADE_DATE] [--backfill] [--no-events] [--pack PACK]"
     )
-    assert command_template(spec_for("init.start")).startswith("cne init --profile PROFILE")
+    assert command_template(spec_for("init.start")).startswith("cne init --json --profile PROFILE")
     assert command_template(spec_for("backfill.run")).startswith("cne backfill DATASET")
     assert command_template(spec_for("daily.stale")).startswith("cne run daily --stale-only")
     cards = {card["id"]: card["command"] for card in describe(None, setup=True)}
@@ -435,6 +436,13 @@ def test_classify_uses_runs_before_stdout():
     assert classify("run_json", 0, [], '{"status": "nothing_stale"}')[0] == "skipped"
     assert classify("gate", 1, [], "")[0] == "findings"
     assert classify("report", 0, [], "hello")[0] == "complete"
+
+
+def test_a_usable_init_that_still_owes_a_step_is_partial():
+    usable = '{"status": "failed", "lake_usable": true, "owed_steps": ["corporate_actions"]}'
+    assert classify("run_json", 0, [{"status": "failed"}], usable)[0] == "partial"
+    unusable = '{"status": "failed", "lake_usable": false}'
+    assert classify("run_json", 1, [{"status": "failed"}], unusable)[0] == "failed"
     assert aggregate(["success", "skipped_non_trading_day"]) == "succeeded"
     assert last_json('noise {"a": 1} tail {"status": "failed"}')["status"] == "failed"
 
@@ -504,6 +512,74 @@ def test_setup_rejects_a_file_in_the_data_directory_ancestors(tmp_path):
     assert not target.exists()
     assert parent.read_text(encoding="utf-8") == "preserve me"
     assert client.get("/api/ops").json()["mode"]["setup"] is True
+
+
+def test_mode_reports_a_config_file_that_now_names_another_lake(tmp_path):
+    """The server keeps its lake; the page is told the file moved on."""
+    path = tmp_path / "cnequity.toml"
+    first, second = tmp_path / "lake-a", tmp_path / "lake-b"
+    path.write_text(f"[data]\nroot = '{first.as_posix()}'\n", encoding="utf-8")
+    app = create_app(load_config(path))
+    client = TestClient(app, base_url="http://127.0.0.1")
+
+    def mode():
+        response = client.get("/api/ops")
+        assert response.status_code == 200, response.text
+        return response.json()["mode"]
+
+    assert mode()["data_root"] == str(first)
+    assert mode()["config_drift"] is None
+
+    path.write_text(f"[data]\nroot = '{second.as_posix()}'\n", encoding="utf-8")
+    assert mode()["config_drift"] == {"kind": "data_root", "configured_data_root": str(second)}
+    assert mode()["data_root"] == str(first)
+    assert app.state.view.config.data_root == first
+    assert client.get("/api/health").status_code == 200
+
+    path.write_text("[data\nroot = ", encoding="utf-8")
+    broken = mode()["config_drift"]
+    assert (broken["kind"], broken["line"], broken["column"]) == ("invalid", 1, 6)
+    assert "(at line" not in broken["detail"]
+    assert client.get("/api/health").status_code == 200
+
+    path.unlink()
+    assert mode()["config_drift"] == {"kind": "missing"}
+
+    path.write_text(f"[data]\nroot = '{first.as_posix()}'\n", encoding="utf-8")
+    assert mode()["config_drift"] is None
+
+
+@pytest.mark.usefixtures("chinese_output")
+def test_jobs_cannot_start_while_the_config_file_names_another_lake(tmp_path):
+    """A job reads the file itself, so it would work on the lake the page is
+    not showing. Preview refuses; a token taken before the edit does too."""
+    path = tmp_path / "cnequity.toml"
+    first, second = tmp_path / "lake-a", tmp_path / "lake-b"
+    path.write_text(f"[data]\nroot = '{first.as_posix()}'\n", encoding="utf-8")
+    app = create_app(load_config(path))
+    client = TestClient(app, base_url="http://127.0.0.1")
+    headers = _csrf(client)
+    early = _preview(client, headers, "check.verify")
+    assert early["launch_token"]
+
+    path.write_text(f"[data]\nroot = '{second.as_posix()}'\n", encoding="utf-8")
+    held = _preview(client, headers, "check.verify")
+    assert held["launch_token"] is None
+    assert any(str(second) in item and "重启" in item for item in held["blockers"])
+    refused = client.post(
+        "/api/ops/jobs",
+        headers=headers,
+        json={"preview_id": early["preview_id"], "launch_token": early["launch_token"]},
+    )
+    assert refused.status_code == 422
+    assert "重启" in refused.json()["detail"]
+    assert not app.state.ops._previews[early["preview_id"]].used
+
+    path.write_text("[data", encoding="utf-8")
+    assert any("读不出来" in item for item in _preview(client, headers, "check.verify")["blockers"])
+
+    path.write_text(f"[data]\nroot = '{first.as_posix()}'\n", encoding="utf-8")
+    assert _preview(client, headers, "check.verify")["launch_token"]
 
 
 def test_failed_group_retries_inherit_the_process_environment():
@@ -599,6 +675,7 @@ def test_a_later_success_clears_the_continue_init_prompt(config):
     assert all("没跑完" not in note for note in preview["hints"])
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_init_resume_only_accepts_the_latest_incomplete_run(config):
     manifest = Manifest(config.manifest_path)
     older = manifest.start_run("init", {"phases": ["phase1_reference"], "trade_date": "2026-07-30"})
@@ -673,6 +750,7 @@ def test_real_checks_on_a_sample_lake(tmp_path, monkeypatch):
     assert {status["state"], verify["state"], audit["state"]} <= {"complete", "findings"}
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_explicit_missing_config_does_not_start_setup(tmp_path, monkeypatch):
     import uvicorn
     from click.testing import CliRunner
@@ -688,6 +766,7 @@ def test_explicit_missing_config_does_not_start_setup(tmp_path, monkeypatch):
     assert "找不到配置" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_missing_default_config_opens_setup_without_binding(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
@@ -780,6 +859,7 @@ def test_loopback_accepts_ipv4_and_ipv6():
             sock.close()
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_taken_loopback_port_is_released_with_the_error():
     import socket
 

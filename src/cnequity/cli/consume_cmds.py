@@ -21,6 +21,7 @@ from cnequity.cli._shared import (
     config_option,
     resolve_config_path,
 )
+from cnequity.i18n import N_, _
 from cnequity.query.on_demand import OnDemandService
 from cnequity.query.views import ensure_duckdb_views
 
@@ -71,8 +72,9 @@ def bind_loopback(port: int) -> list[socket.socket]:
                 sock.close()
                 if _address_in_use(exc):
                     raise click.ClickException(
-                        f"端口 {chosen or port} 已被占用，面板没有启动。"
-                        "先停掉占用这个端口的进程，再运行 cne serve。"
+                        _(
+                            "Port {value} is already in use, so the dashboard did not start. Stop the process using this port, then run cne serve again."
+                        ).format(value=chosen or port)
                     ) from exc
                 continue
             chosen = sock.getsockname()[1]
@@ -82,7 +84,9 @@ def bind_loopback(port: int) -> list[socket.socket]:
             sock.close()
         raise
     if not bound:
-        raise click.ClickException("这台机器没有可用的回环地址，面板没有启动。")
+        raise click.ClickException(
+            _("This machine has no usable loopback address, so the dashboard did not start.")
+        )
     return bound
 
 
@@ -112,23 +116,31 @@ def _run_server(app, host: str, port: int, sockets: list[socket.socket] | None) 
     "--host",
     default="127.0.0.1",
     show_default=True,
-    help="回环地址会同时监听 127.0.0.1 和 localhost。非回环地址必须配 --token。",
+    help=N_(
+        "A loopback address listens on both 127.0.0.1 and localhost. A non-loopback address requires --token."
+    ),
 )
 @click.option("--port", default=8787, show_default=True)
 @click.option(
     "--token",
     default=None,
-    help="要求这个 bearer token（或 ?token=）。--host 不是回环地址时必须设置。",
+    help=N_(
+        "Require this bearer token (or ?token=). Required when --host is not a loopback address."
+    ),
 )
 @click.option(
     "--read-only",
     is_flag=True,
-    help="只浏览。不注册操作页和存储清理的写入口。",
+    help=N_(
+        "Browse only. Do not register the write endpoints of the operations page and storage cleanup."
+    ),
 )
 @click.option(
     "--allow-remote-ops",
     is_flag=True,
-    help="非回环地址上也可以从面板发起取数。默认远程只能浏览和做存储清理；令牌在网址里，局域网又是明文。",
+    help=N_(
+        "Allow starting fetches from the dashboard on non-loopback addresses too. By default remote clients can only browse and run storage cleanup; the token is in the URL and the LAN is plaintext."
+    ),
 )
 def serve(
     config_path: str,
@@ -138,14 +150,16 @@ def serve(
     read_only: bool,
     allow_remote_ops: bool,
 ):
-    """启动数据湖面板。回环地址上可以从页面发起取数和日更。
+    """Start the lake dashboard. On a loopback address the page can start fetches and daily updates.
 
     \b
-    查看覆盖、新鲜度和来源；操作页按白名单启动初始化、日更、回填和巡检；
-    取数设置预览后写回配置，不启动取数；
-    存储运维页检查并确认已到期版本和试验清理。``--read-only`` 关掉这些写入口。
-    非回环地址必须带 ``--token``。远程默认不能发起取数，除非同时给 ``--allow-remote-ops``。
-    回环地址同时接受 127.0.0.1 和 localhost。
+    View coverage, freshness and sources; the operations page starts init, daily updates,
+    backfills and checks from an allowlist; fetch settings are previewed and written back to
+    the config without starting a fetch; the storage page reviews and confirms expired
+    version and experiment cleanup. ``--read-only`` turns off these write paths.
+    A non-loopback address requires ``--token``. Remote browsers cannot start fetches unless
+    ``--allow-remote-ops`` is also given. Loopback accepts both 127.0.0.1 and localhost.
+
     """
     from cnequity.serve.app import create_app
 
@@ -155,8 +169,9 @@ def serve(
     # sources that built it.
     if host not in _LOOPBACK and not token:
         raise click.ClickException(
-            f"--host {host} 会把面板暴露到本机之外；"
-            "请用 --token 要求令牌，或者把 --host 留在 127.0.0.1。"
+            _(
+                "--host {host} exposes the dashboard beyond this machine; require a token with --token, or keep --host at 127.0.0.1."
+            ).format(host=host)
         )
     if allow_remote_ops and host in _LOOPBACK:
         allow_remote_ops = False
@@ -168,39 +183,49 @@ def serve(
     config_file = Path(config_path).expanduser()
     setup = config_was_default and not config_file.exists()
     if setup and host not in _LOOPBACK:
-        raise click.ClickException("首次配置只能在本机打开，请把 --host 留在 127.0.0.1。")
+        raise click.ClickException(
+            _("First-time setup can only be opened on this machine; keep --host at 127.0.0.1.")
+        )
 
     cfg = None if setup else _cfg(config_path)
     if read_only:
-        mode = "只读（--read-only）"
+        mode = _("read-only (--read-only)")
     elif setup:
-        mode = "首次配置"
+        mode = _("first-time setup")
     elif host not in _LOOPBACK and not allow_remote_ops:
-        mode = "远程浏览（取数未开启；存储清理仍可用）"
+        mode = _("remote browsing (fetching off; storage cleanup still available)")
     else:
-        mode = "可从面板发起取数和日更"
+        mode = _("fetches and daily updates can be started from the dashboard")
     sockets: list[socket.socket] | None = None
     try:
         if host in _LOOPBACK:
             sockets = bind_loopback(port)
             port = sockets[0].getsockname()[1]
         if cfg is not None:
-            click.echo(f"数据湖：  {cfg.data_root}")
+            click.echo(_("Lake:      {data_root}").format(data_root=cfg.data_root))
         else:
-            click.echo(f"还没有配置文件 {config_file}，面板进入首次配置。")
+            click.echo(
+                _(
+                    "No config file at {config_file} yet; the dashboard opens first-time setup."
+                ).format(config_file=config_file)
+            )
         if sockets is not None:
             url = _panel_url(sockets, token)
-            click.echo(f"面板：    {url}")
+            click.echo(_("Dashboard: {url}").format(url=url))
             primary = url.split("?", 1)[0].rstrip("/")
         else:
             suffix = f"?token={token}" if token else ""
             primary = f"http://{host}:{port}"
-            click.echo(f"面板：    {primary}/{suffix}")
-        click.echo(f"API 文档：{primary}/api/docs")
+            click.echo(_("Dashboard: {primary}/{suffix}").format(primary=primary, suffix=suffix))
+        click.echo(_("API docs:  {primary}/api/docs").format(primary=primary))
         if not setup:
             query = f"?token={token}" if token else ""
-            click.echo(f"源健康：  {primary}/source-health{query}")
-        click.echo(f"模式：    {mode}")
+            click.echo(
+                _("Source health: {primary}/source-health{query}").format(
+                    primary=primary, query=query
+                )
+            )
+        click.echo(_("Mode:      {mode}").format(mode=mode))
         _run_server(
             create_app(
                 cfg,
@@ -225,12 +250,12 @@ def serve(
 @cli.command()
 @config_option
 @click.option("--sql", default="SELECT COUNT(*) AS n FROM daily_bars")
-@click.option("--dataset", default=None, help="按需抓取的数据集名")
-@click.option("--symbol", default=None, help="按需抓取的标的代码")
+@click.option("--dataset", default=None, help=N_("Dataset name to fetch on demand"))
+@click.option("--symbol", default=None, help=N_("Symbol to fetch on demand"))
 @click.option(
     "--refresh",
     is_flag=True,
-    help="抓取前先刷新按需缓存（需要同时给 --dataset 和 --symbol）。",
+    help=N_("Refresh the on-demand cache before fetching (requires both --dataset and --symbol)."),
 )
 def query(
     config_path: str,
@@ -239,12 +264,12 @@ def query(
     symbol: str | None,
     refresh: bool,
 ):
-    """跑 DuckDB SQL，或按需抓取单个数据集。"""
+    """Run DuckDB SQL, or fetch a single dataset on demand."""
     cfg = _cfg(config_path)
     if (dataset is None) != (symbol is None):
-        raise click.UsageError("--dataset 和 --symbol 必须一起给")
+        raise click.UsageError(_("--dataset and --symbol must be given together"))
     if refresh and dataset is None:
-        raise click.UsageError("--refresh 需要同时给 --dataset 和 --symbol")
+        raise click.UsageError(_("--refresh needs both --dataset and --symbol"))
     if dataset and symbol:
         svc = OnDemandService(cfg)
         fetch_kwargs = {"refresh": True} if refresh else {}
@@ -279,50 +304,57 @@ def query(
     "--live",
     is_flag=True,
     help=(
-        "湖里没有的数据就按需向源头取，并且不落盘。只支持标的查找和未复权日线；其它工具宁可拒绝，也不会在没有复权、universe "
-        "和 PIT 的情况下作答。"
+        N_(
+            "Fetch data missing from the lake on demand from the source, without writing it to disk. Supports only symbol lookup and unadjusted daily bars; other tools refuse rather than answer without price adjustment, universe and PIT."
+        )
     ),
 )
 @click.option(
     "--http",
     "use_http",
     is_flag=True,
-    help="改用 Streamable HTTP，在 /mcp 上监听。给只接远程 URL 的客户端（如 ChatGPT）配合隧道使用。",
+    help=N_(
+        "Use Streamable HTTP instead, listening on /mcp. For clients that only accept a remote URL (such as ChatGPT), used with a tunnel."
+    ),
 )
 @click.option(
     "--host",
     default="127.0.0.1",
     show_default=True,
-    help="--http 的监听地址。非回环地址必须配 --token。",
+    help=N_("Listen address for --http. A non-loopback address requires --token."),
 )
-@click.option("--port", default=8788, show_default=True, help="--http 的端口。")
+@click.option("--port", default=8788, show_default=True, help=N_("Port for --http."))
 @click.option(
     "--token",
     default=None,
-    help="--http：每个请求都要带这个令牌（Bearer 头、/mcp/<令牌> 路径或 ?token=）。经隧道公开时必须设置。",
+    help=N_(
+        "--http: every request must carry this token (Bearer header, /mcp/<token> path or ?token=). Required when exposed publicly through a tunnel."
+    ),
 )
 def mcp_cmd(config_path: str, live: bool, use_http: bool, host: str, port: int, token: str | None):
-    """通过 MCP（stdio 或 HTTP）把这个湖开放给 AI agent。
+    """Open this lake to AI agents over MCP (stdio or HTTP).
 
     \b
-    它不是拿来手敲的：任何兼容 MCP 的客户端会拉起这个进程，并在管道上讲 JSON-RPC。
-    各家客户端的注册界面不一样，但可移植的命令和参数就是：
+    It is not meant to be typed by hand: any MCP-compatible client launches this process
+    and speaks JSON-RPC over the pipe. Clients register servers differently, but the
+    portable command and arguments are:
 
     \b
       cne mcp --config /path/to/cnequity.toml
 
     \b
-    把它填进客户端 MCP 配置里的 `command` / `args`。这里用的是标准 stdio 传输，
-    不是某一家厂商专有的 Claude 集成。
+    Put that into the `command` / `args` of the client's MCP config. This is the standard
+    stdio transport, not a vendor-specific Claude integration.
 
     \b
     \b
-    只接远程 URL 的客户端（如 ChatGPT）用 `--http`，再用隧道把 /mcp 公开成 HTTPS，并且一定要配 `--token`：
+    Clients that only take a remote URL (such as ChatGPT) use `--http`, with a tunnel exposing /mcp over HTTPS, and must set `--token`:
 
     \b
-      cne mcp --config /path/to/cnequity.toml --http --token <随机串>
+      cne mcp --config /path/to/cnequity.toml --http --token <random-string>
 
-    MCP 工具只读，不提供 serve 的操作页和网页确认清理。这些工具只查询湖；采集从 CLI 或 serve 的操作页发起。
+    The MCP tools are read-only and do not offer serve's operations page or web-confirmed cleanup. They only query the lake; fetching starts from the CLI or serve's operations page.
+
     """
 
     from cnequity.mcp_server import serve_stdio
@@ -335,10 +367,14 @@ def mcp_cmd(config_path: str, live: bool, use_http: bool, host: str, port: int, 
             if ctx.get_parameter_source(name) is not click.core.ParameterSource.DEFAULT
         ]
         if given:
-            raise click.UsageError(f"{', '.join(given)} 只用于 --http")
+            raise click.UsageError(
+                _("{value} only applies with --http").format(value=", ".join(given))
+            )
     elif host not in _LOOPBACK and not token:
         raise click.ClickException(
-            f"--host {host} 会把 MCP 暴露到本机之外；请用 --token 要求令牌，或者把 --host 留在 127.0.0.1。"
+            _(
+                "--host {host} exposes MCP beyond this machine; require a token with --token, or keep --host at 127.0.0.1."
+            ).format(host=host)
         )
 
     cfg = _cfg(config_path)
@@ -372,12 +408,20 @@ def _serve_mcp_http(cfg, host: str, port: int, token: str | None) -> None:
             port = sockets[0].getsockname()[1]
             host = "127.0.0.1"
         base = f"http://{host}:{port}/mcp"
-        click.echo(f"数据湖：  {cfg.data_root}")
-        click.echo(f"MCP 端点：{base}")
+        click.echo(_("Lake:         {data_root}").format(data_root=cfg.data_root))
+        click.echo(_("MCP endpoint: {base}").format(base=base))
         if token:
-            click.echo(f"带令牌：  {base}/{token}（隧道公开后把主机换成隧道的 HTTPS 域名）")
+            click.echo(
+                _(
+                    "With token:   {base}/{token} (once tunnelled, replace the host with the tunnel's HTTPS domain)"
+                ).format(base=base, token=token)
+            )
         else:
-            click.echo("未设令牌：只接受本机直连；经隧道或代理的请求一律拒绝。")
+            click.echo(
+                _(
+                    "No token set: only direct connections from this machine are accepted; requests through a tunnel or proxy are refused."
+                )
+            )
         _run_server(create_app(cfg, token=token), host, port, sockets)
     finally:
         for sock in sockets or []:
@@ -404,12 +448,11 @@ def _guard_mcp_data_root(cfg, config_path: str) -> None:
     if curated.exists() and next(curated.rglob("*.parquet"), None) is not None:
         return
     raise click.ClickException(
-        f"{curated} 下没有任何 curated 数据。\n"
-        f"  配置：     {resolve_config_path(config_path).resolve()}\n"
-        f"  data.root：{cfg.data_root}\n"
-        "如果这不是你的湖：`data.root` 是相对路径，会相对客户端拉起这个进程时的工作目录解析。"
-        "请把 `--config` 和 `[data].root` 都写成绝对路径。\n"
-        "如果这确实是你的湖、而且它真的是空的：`cne init` 会建一个，"
-        "`cne init --profile demo` 三十秒内做出一个 5 只票的样例，"
-        "而 `--live` 不需要湖也能直接从源头提供标的查找和未复权日线。"
+        _(
+            "There is no curated data under {curated}.\n  config:    {value}\n  data.root: {data_root}\nIf this is not your lake: `data.root` is a relative path, resolved against the working directory the client launched this process from. Write both `--config` and `[data].root` as absolute paths.\nIf this really is your lake and it really is empty: `cne init` builds one, `cne init --profile demo` makes a 5-symbol sample in thirty seconds, and `--live` serves symbol lookup and unadjusted daily bars straight from the source with no lake at all."
+        ).format(
+            curated=curated,
+            value=resolve_config_path(config_path).resolve(),
+            data_root=cfg.data_root,
+        )
     )

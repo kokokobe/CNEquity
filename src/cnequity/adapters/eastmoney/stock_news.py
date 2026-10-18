@@ -86,16 +86,11 @@ def fetch_stock_news(
             if not isinstance(payload, dict):
                 raise RuntimeError("EastMoney stock_news response is not an object")
             raw_data = payload.get("data")
-            if raw_data is None:
-                raw_list = []
-            elif not isinstance(raw_data, dict):
+            if not isinstance(raw_data, dict):
                 raise RuntimeError("EastMoney stock_news response data is not an object")
-            else:
-                raw_list = raw_data.get("list")
-                if raw_list is None:
-                    raw_list = []
-                elif not isinstance(raw_list, list):
-                    raise RuntimeError("EastMoney stock_news response data.list is not a list")
+            raw_list = raw_data.get("list")
+            if not isinstance(raw_list, list):
+                raise RuntimeError("EastMoney stock_news response data.list is not a list")
             if not raw_list:
                 break
 

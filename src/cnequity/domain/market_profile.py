@@ -85,7 +85,7 @@ BJ = MarketProfile(
             date(2020, 7, 27),
             date(2021, 11, 12),
             0.30,
-            "NEEQ select tier (精选层), continuous auction with a 30% limit",
+            "NEEQ select tier (精选层), continuous auction with a 30% limit",  # i18n-ignore: Chinese term in an English description
         ),
         MarketEra(
             "bse",

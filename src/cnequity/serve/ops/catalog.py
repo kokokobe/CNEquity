@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from cnequity.domain.market_time import shanghai_today
-from cnequity.serve.labels_en import en
+from cnequity.i18n import N_, _, use_language
+from cnequity.serve.display import en, zh
 
 # Targets ``cne derive`` accepts that the page may run. The command's other
 # names rewrite data only with ``--apply`` or have no schedule at all; those
@@ -79,99 +80,123 @@ class OpSpec:
     heavy_text: str = ""
 
 
-STANDARD_ACK = {"id": "confirm", "text": "我确认现在启动这一次操作。"}
+STANDARD_ACK = {"id": "confirm", "text": N_("I confirm starting this operation now.")}
 
 
 def _ops() -> tuple[OpSpec, ...]:
-    trade_date = Param("trade_date", "date", "交易日", flag="--trade-date", help="默认今天。")
+    trade_date = Param(
+        "trade_date", "date", N_("Trading day"), flag="--trade-date", help=N_("Defaults to today.")
+    )
     backfill = Param(
-        "backfill", "bool", "按补跑语义", flag="--backfill", help="补跑某一天，不走增量窗口。"
+        "backfill",
+        "bool",
+        N_("Run as catch-up"),
+        flag="--backfill",
+        help=N_("Re-run a specific day instead of the incremental window."),
     )
     return (
         OpSpec(
             id="snapshot.create",
-            title="创建数据备份",
-            group="备份与恢复",
-            summary="把明确选择的数据集复制成可校验的湖快照，不请求数据源。",
+            title=N_("Create data backup"),
+            group=N_("Backup and restore"),
+            summary=N_(
+                "Copy the selected datasets into a verifiable lake snapshot. Does not contact data sources."
+            ),
             command=("snapshot", "create"),
             lock_class="lake-write",
             result="report",
             params=(
-                Param("name", "snapshot_name", "新备份名称", required=True),
+                Param("name", "snapshot_name", N_("New backup name"), required=True),
                 Param(
                     "snapshot_root",
                     "directory",
-                    "备份存放目录（可选，绝对路径）",
+                    N_("Backup directory (optional, absolute path)"),
                     flag="--snapshot-root",
                 ),
                 Param(
                     "datasets",
                     "multi",
-                    "备份数据集",
+                    N_("Datasets to back up"),
                     flag="--dataset",
                     required=True,
                     choice_source="stored_datasets",
                     repeat=True,
-                    empty_reason="还没有已发布的数据。",
+                    empty_reason=N_("No published data yet."),
                 ),
             ),
         ),
         OpSpec(
             id="snapshot.verify",
-            title="校验数据备份",
-            group="备份与恢复",
-            summary="重新计算备份文件摘要，检查缺失、损坏与清单一致性。",
+            title=N_("Verify data backup"),
+            group=N_("Backup and restore"),
+            summary=N_(
+                "Recompute backup file digests and check for missing or corrupt files and manifest mismatches."
+            ),
             command=("snapshot", "verify"),
             result="gate",
             params=(
-                Param("name", "snapshot_name", "备份名称", required=True),
+                Param("name", "snapshot_name", N_("Backup name"), required=True),
                 Param(
                     "snapshot_root",
                     "directory",
-                    "备份存放目录（可选，绝对路径）",
+                    N_("Backup directory (optional, absolute path)"),
                     flag="--snapshot-root",
                 ),
             ),
         ),
         OpSpec(
             id="snapshot.restore",
-            title="恢复数据备份",
-            group="备份与恢复",
-            summary="校验后恢复到新的或空目录，完成后可检查恢复结果。",
+            title=N_("Restore data backup"),
+            group=N_("Backup and restore"),
+            summary=N_(
+                "Verify, then restore into a new or empty directory. You can inspect the result afterward."
+            ),
             command=("snapshot", "restore"),
             lock_class="lake-write",
             result="report",
             confirm="heavy",
-            heavy_text="我确认恢复目标在当前数据湖之外，并了解仅恢复所选备份的内容。",
+            heavy_text=N_(
+                "I confirm the restore target is outside the current data lake and understand only the selected backup's contents are restored."
+            ),
             params=(
-                Param("name", "snapshot_name", "备份名称", required=True),
+                Param("name", "snapshot_name", N_("Backup name"), required=True),
                 Param(
                     "snapshot_root",
                     "directory",
-                    "备份存放目录（可选，绝对路径）",
+                    N_("Backup directory (optional, absolute path)"),
                     flag="--snapshot-root",
                 ),
-                Param("target", "path", "恢复目录（绝对路径）", required=True, position=1),
+                Param(
+                    "target",
+                    "path",
+                    N_("Restore directory (absolute path)"),
+                    required=True,
+                    position=1,
+                ),
             ),
         ),
         OpSpec(
             id="daily.full",
-            title="跑一天的更新",
-            summary="按配置顺序跑全部日更调度组，再跑事件流。某组失败也继续。",
-            group="日更",
+            title=N_("Run a day's update"),
+            summary=N_(
+                "Run every daily-update schedule group in config order, then the event streams. Continues if a group fails."
+            ),
+            group=N_("Daily update"),
             command=("run", "daily"),
             params=(
                 trade_date,
                 backfill,
-                Param("no_events", "bool", "不跑事件流", flag="--no-events"),
+                Param("no_events", "bool", N_("Skip event streams"), flag="--no-events"),
                 Param(
                     "pack",
                     "multi",
-                    "研究包",
+                    N_("Research packs"),
                     flag="--pack",
                     repeat=True,
                     choices=("market", "fundamentals", "universe"),
-                    help="不选则跑全部调度组和事件流。选择后只跑对应调度组。",
+                    help=N_(
+                        "Leave empty to run all schedule groups and event streams. If selected, only the matching schedule groups run."
+                    ),
                 ),
             ),
             lock_class="ingest-daily",
@@ -179,19 +204,21 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="daily.group",
-            title="跑一个调度组",
-            summary="只跑选定的日更调度组。不写“今天已跑过”的标记，定时全流程仍会执行。",
-            group="日更",
+            title=N_("Run a schedule group"),
+            summary=N_(
+                "Run only the selected daily-update schedule group. Does not mark today as done, so the scheduled full run still happens."
+            ),
+            group=N_("Daily update"),
             command=("run", "daily"),
             params=(
                 Param(
                     "group",
                     "choice",
-                    "调度组",
+                    N_("Schedule group"),
                     flag="--group",
                     required=True,
                     choice_source="schedule_groups",
-                    empty_reason="这份配置没有日更调度组。",
+                    empty_reason=N_("This config has no daily-update schedule groups."),
                 ),
                 trade_date,
                 backfill,
@@ -201,20 +228,22 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="daily.stale",
-            title="补抓落后的数据集",
-            summary="只重抓仍然落后于最后交易日的数据集。可限定调度组，或只重抓快照。",
-            group="补抓与恢复",
+            title=N_("Catch up lagging datasets"),
+            summary=N_(
+                "Re-fetch only datasets still behind the last trading day. Optionally limit to schedule groups or to snapshots."
+            ),
+            group=N_("Catch-up and recovery"),
             command=("run", "daily"),
             fixed=("--stale-only",),
             params=(
-                Param("snapshots_only", "bool", "只重抓快照", flag="--snapshots-only"),
+                Param("snapshots_only", "bool", N_("Snapshots only"), flag="--snapshots-only"),
                 Param(
                     "groups",
                     "multi",
-                    "限定调度组",
+                    N_("Limit to schedule groups"),
                     flag="--groups",
                     choice_source="schedule_groups",
-                    help="不选就是全部已启用的组。",
+                    help=N_("Leave empty for all enabled groups."),
                 ),
             ),
             lock_class="ingest-daily",
@@ -222,37 +251,41 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="events.run",
-            title="跑事件流",
-            summary="公告、监管事件和资讯。周末和节假日也会跑。",
-            group="日更",
+            title=N_("Run event streams"),
+            summary=N_(
+                "Announcements, regulatory events and news. Also runs on weekends and holidays."
+            ),
+            group=N_("Daily update"),
             command=("run", "events"),
             params=(
                 Param(
                     "group",
                     "choice",
-                    "事件组",
+                    N_("Event groups"),
                     flag="--group",
                     choice_source="events_groups",
-                    help="不选就按配置顺序跑全部。",
+                    help=N_("Leave empty to run all in config order."),
                 ),
                 Param(
                     "trade_date",
                     "date",
-                    "自然日",
+                    N_("Calendar day"),
                     flag="--trade-date",
-                    help="默认今天，含周末与节假日。",
+                    help=N_("Defaults to today, including weekends and holidays."),
                 ),
             ),
             lock_class="ingest-events",
             needs="events_groups",
-            needs_reason="这份配置没有事件流调度组。",
+            needs_reason=N_("This config has no event-stream schedule groups."),
             result="run_json",
         ),
         OpSpec(
             id="run.retry",
-            title="重试一次 run",
-            summary="重试指定 run 里失败的批次。初始化 run 会按初始化续跑。",
-            group="补抓与恢复",
+            title=N_("Retry a run"),
+            summary=N_(
+                "Retry the failed batches in a run. Initialization runs resume as initialization."
+            ),
+            group=N_("Catch-up and recovery"),
             command=("run", "retry"),
             params=(Param("run_id", "run_id", "run", flag="--run-id", required=True),),
             lock_class="run",
@@ -260,9 +293,9 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="run.retry_failed_groups",
-            title="重试失败的日更组",
-            summary="每个日更调度组最近一次失败的 run 各重试一次。",
-            group="补抓与恢复",
+            title=N_("Retry failed daily-update groups"),
+            summary=N_("Retry the latest failed run of each daily-update schedule group once."),
+            group=N_("Catch-up and recovery"),
             command=("run", "retry"),
             fixed=("--failed-groups",),
             lock_class="ingest-daily",
@@ -270,9 +303,9 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="run.compact",
-            title="发布 staging",
-            summary="把这次 run 留在 staging 里、已经结束的数据发布到湖里。",
-            group="补抓与恢复",
+            title=N_("Publish staging"),
+            summary=N_("Publish the finished data this run left in staging to the lake."),
+            group=N_("Catch-up and recovery"),
             command=("run", "compact"),
             params=(Param("run_id", "run_id", "run", flag="--run-id", required=True),),
             lock_class="lake-write",
@@ -280,9 +313,11 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="diag.doctor",
-            title="环境体检",
-            summary="离线检查配置、依赖和会悄悄坏掉的地方。不访问网络。",
-            group="初始化",
+            title=N_("Environment health check"),
+            summary=N_(
+                "Offline check of config, dependencies and silent failure points. No network access."
+            ),
+            group=N_("Initialize"),
             command=("doctor",),
             fixed=("--json",),
             lock_class="read",
@@ -292,119 +327,148 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="init.start",
-            title="初始化数据湖",
-            summary="全市场标的。quick 是近 3 年，full 从各数据集的历史起点起，日线从 2016-01-01 起。",
-            group="初始化",
+            title=N_("Initialize data lake"),
+            summary=N_(
+                "All market instruments. quick covers the last 3 years; full starts from each dataset's history start, with daily bars from 2016-01-01."
+            ),
+            group=N_("Initialize"),
             command=("init",),
+            # The page reads the machine result; the terminal summary is for people.
+            fixed=("--json",),
             params=(
                 Param(
                     "profile",
                     "choice",
-                    "深度",
+                    N_("Depth"),
                     flag="--profile",
                     required=True,
                     choices=("quick", "full"),
-                    help="quick 为近 3 年；full 更深。",
+                    help=N_("quick is the last 3 years; full goes deeper."),
                 ),
-                Param("since", "date", "历史起点", flag="--since", help="填写后覆盖上面的深度。"),
+                Param(
+                    "since",
+                    "date",
+                    N_("History start"),
+                    flag="--since",
+                    help=N_("Overrides the depth above when set."),
+                ),
                 Param(
                     "pack",
                     "multi",
-                    "研究包",
+                    N_("Research packs"),
                     flag="--pack",
                     repeat=True,
                     choices=("market", "fundamentals", "universe"),
-                    help="不改变初始化下载的内容。market 行情，fundamentals 基本面，universe 历史 ST。",
+                    help=N_(
+                        "Does not change what initialization downloads. market: quotes, fundamentals: fundamentals, universe: historical ST."
+                    ),
                 ),
-                Param("keep_going", "bool", "某阶段失败后继续", flag="--keep-going"),
+                Param(
+                    "keep_going", "bool", N_("Continue after a stage fails"), flag="--keep-going"
+                ),
             ),
             lock_class="init",
             confirm="heavy",
-            heavy_text="我知道初始化会按所选深度请求数据源，可能持续数小时。",
+            heavy_text=N_(
+                "I understand initialization fetches from data sources at the selected depth and may take hours."
+            ),
             result="run_json",
         ),
         OpSpec(
             id="init.resume",
-            title="继续初始化",
-            summary="续跑最近一次没跑完的初始化，已成功的批次会保留。",
-            group="初始化",
+            title=N_("Resume initialization"),
+            summary=N_(
+                "Resume the latest unfinished initialization, keeping batches that succeeded."
+            ),
+            group=N_("Initialize"),
             command=("init",),
+            # The page reads the machine result; the terminal summary is for people.
+            fixed=("--json",),
             params=(
                 Param("run_id", "run_id", "init run", flag="--run-id", required=True),
-                Param("keep_going", "bool", "某阶段失败后继续", flag="--keep-going"),
+                Param(
+                    "keep_going", "bool", N_("Continue after a stage fails"), flag="--keep-going"
+                ),
             ),
             lock_class="init",
             result="run_json",
         ),
         OpSpec(
             id="backfill.run",
-            title="回填一个数据集",
-            summary="先给出来源、范围和抓取方式，确认后才取数。",
-            group="定向补数",
+            title=N_("Backfill a dataset"),
+            summary=N_(
+                "Shows the source, range and fetch method first; fetching starts only after you confirm."
+            ),
+            group=N_("Targeted backfill"),
             command=("backfill",),
             params=(
                 Param(
                     "dataset",
                     "choice",
-                    "数据集",
+                    N_("Dataset"),
                     required=True,
                     choice_source="datasets",
                     position=0,
-                    empty_reason="没有可从面板回填的数据集。",
+                    empty_reason=N_("No datasets can be backfilled from the dashboard."),
                 ),
-                Param("start", "date", "起点", flag="--start"),
-                Param("end", "date", "终点", flag="--end", help="默认今天。"),
+                Param("start", "date", N_("Start"), flag="--start"),
+                Param("end", "date", N_("End"), flag="--end", help=N_("Defaults to today.")),
                 Param(
                     "symbols",
                     "symbols",
-                    "标的",
+                    N_("Instruments"),
                     flag="--symbols",
-                    help="逗号分隔，如 600519.SH,000001.SZ。不填就是该数据集的默认范围。",
+                    help=N_(
+                        "Comma-separated, e.g. 600519.SH,000001.SZ. Leave empty for the dataset's default range."
+                    ),
                 ),
             ),
             lock_class="lake-write",
             confirm="standard",
-            heavy_text="我确认按预览范围回填；不限标的或超过一年会大量请求数据源。",
+            heavy_text=N_(
+                "I confirm the backfill for the previewed range. No instrument limit or more than a year means heavy data source requests."
+            ),
             result="run_json",
         ),
         OpSpec(
             id="derive.run",
-            title="重算派生数据",
+            title=N_("Rebuild derived data"),
             summary=(
-                "从已发布的数据重算。全量会重写分区。15 / 30 / 60 分钟线默认不计算，"
-                "选中后在这里入湖。"
+                N_(
+                    "Recompute from published data. Full mode rewrites partitions. 15 / 30 / 60-minute bars are skipped by default; select them to write them to the lake here."
+                )
             ),
-            group="定向补数",
+            group=N_("Targeted backfill"),
             command=("derive",),
             params=(
                 Param(
                     "name",
                     "choice",
-                    "派生",
+                    N_("Derived"),
                     required=True,
                     choices=DERIVE_NAMES,
                     position=0,
                 ),
-                Param("start", "date", "起点", flag="--start"),
-                Param("end", "date", "终点", flag="--end"),
-                Param("full", "bool", "全量重写", flag="--full"),
+                Param("start", "date", N_("Start"), flag="--start"),
+                Param("end", "date", N_("End"), flag="--end"),
+                Param("full", "bool", N_("Full rewrite"), flag="--full"),
             ),
             lock_class="lake-write",
-            heavy_text="我确认全量重算并重写分区。",
+            heavy_text=N_("I confirm a full rebuild that rewrites partitions."),
             result="run_json",
         ),
         OpSpec(
             id="check.status",
-            title="新鲜度",
-            summary="按数据集查看覆盖和新鲜度，只读。",
-            group="巡检",
+            title=N_("Freshness"),
+            summary=N_("View coverage and freshness by dataset. Read-only."),
+            group=N_("Inspection"),
             command=("status",),
             fixed=("--datasets",),
             params=(
                 Param(
                     "groups",
                     "multi",
-                    "限定调度组",
+                    N_("Limit to schedule groups"),
                     flag="--groups",
                     choice_source="schedule_groups",
                 ),
@@ -415,9 +479,11 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="check.verify",
-            title="校验覆盖",
-            summary="只读校验湖的覆盖。退出码 1 表示有发现，不是命令出错。",
-            group="巡检",
+            title=N_("Verify coverage"),
+            summary=N_(
+                "Read-only check of lake coverage. Exit code 1 means findings, not a command error."
+            ),
+            group=N_("Inspection"),
             command=("verify",),
             lock_class="read",
             confirm="none",
@@ -425,9 +491,9 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="check.audit",
-            title="全湖审计",
-            summary="跑一次全湖审计并写下快照。",
-            group="巡检",
+            title=N_("Full lake audit"),
+            summary=N_("Run a full lake audit and save a snapshot."),
+            group=N_("Inspection"),
             command=("audit",),
             fixed=("--full",),
             lock_class="report",
@@ -436,18 +502,20 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="check.sources_probe",
-            title="探测数据源",
-            summary="复用 12 小时内的采集证据，只补探没碰过的来源。会请求第三方主机。",
-            group="巡检",
+            title=N_("Probe data sources"),
+            summary=N_(
+                "Reuses collection evidence from the last 12 hours and probes only untouched sources. Contacts third-party hosts."
+            ),
+            group=N_("Inspection"),
             command=("sources", "probe"),
             fixed=("--stale-only",),
             params=(
                 Param(
                     "vantage",
                     "text",
-                    "出口标签",
+                    N_("Vantage label"),
                     flag="--vantage",
-                    help="如 local、cn。不填用 local。",
+                    help=N_("e.g. local, cn. Defaults to local."),
                 ),
             ),
             lock_class="report",
@@ -455,9 +523,9 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="maint.stats_rebuild",
-            title="重建度量表",
-            summary="重算行数、体积和来源分布。不取数。",
-            group="巡检",
+            title=N_("Rebuild metrics table"),
+            summary=N_("Recompute row counts, sizes and source distribution. No fetching."),
+            group=N_("Inspection"),
             command=("stats", "rebuild"),
             lock_class="report",
             confirm="none",
@@ -465,9 +533,11 @@ def _ops() -> tuple[OpSpec, ...]:
         ),
         OpSpec(
             id="config.upgrade_preview",
-            title="预览配置升级",
-            summary="列出当前版本要补进配置的 step 和调度组，不写文件。",
-            group="巡检",
+            title=N_("Preview config upgrade"),
+            summary=N_(
+                "List the steps and schedule groups this version would add to the config. Writes no files."
+            ),
+            group=N_("Inspection"),
             command=("config",),
             fixed=("upgrade", "--dry-run"),
             lock_class="read",
@@ -480,14 +550,21 @@ def _ops() -> tuple[OpSpec, ...]:
 OPS: tuple[OpSpec, ...] = _ops()
 OPS_BY_ID: dict[str, OpSpec] = {spec.id: spec for spec in OPS}
 
-GROUP_ORDER = ("日更", "补抓与恢复", "初始化", "定向补数", "备份与恢复", "巡检")
+GROUP_ORDER = (
+    N_("Daily update"),
+    N_("Catch-up and recovery"),
+    N_("Initialize"),
+    N_("Targeted backfill"),
+    N_("Backup and restore"),
+    N_("Inspection"),
+)
 
 
 def spec_for(op_id: str) -> OpSpec:
     try:
         return OPS_BY_ID[op_id]
     except KeyError as exc:
-        raise UnknownOp(f"未知操作 {op_id}") from exc
+        raise UnknownOp(_("Unknown operation {op_id}").format(op_id=op_id)) from exc
 
 
 def flags_of(spec: OpSpec) -> list[str]:
@@ -537,16 +614,18 @@ def _choice_list(param: Param, config) -> list[str]:
 
 def unavailable_reason(spec: OpSpec, config, *, setup: bool) -> str | None:
     if setup and spec.available_in == "normal":
-        return "先完成首次配置。"
+        return _("Finish first-time setup first.")
     if not setup and spec.available_in == "setup":
-        return "只在首次配置时使用。"
+        return _("Only used during first-time setup.")
     if config is None:
-        return None if spec.available_in != "normal" else "先完成首次配置。"
+        return None if spec.available_in != "normal" else _("Finish first-time setup first.")
     if spec.needs and not choices_for(spec.needs, config):
-        return spec.needs_reason or "配置里没有这一项。"
+        return _(spec.needs_reason) if spec.needs_reason else _("The config has no such entry.")
     for param in spec.params:
         if param.required and param.choice_source and not _choice_list(param, config):
-            return param.empty_reason or f"没有可选的{param.label}。"
+            if param.empty_reason:
+                return _(param.empty_reason)
+            return _("No {value} to choose from.").format(value=_(param.label))
     return None
 
 
@@ -571,29 +650,34 @@ def describe(config, *, setup: bool) -> list[dict[str, Any]]:
     """Cards and form fields. Choices come from the loaded config."""
     cards = []
     for spec in OPS:
-        reason = unavailable_reason(spec, config, setup=setup)
+        # Computed text, so it is rendered once in each language rather than
+        # looked up afterwards.
+        with use_language("zh_CN"):
+            reason = unavailable_reason(spec, config, setup=setup)
+        with use_language("en"):
+            reason_en = unavailable_reason(spec, config, setup=setup)
         cards.append(
             {
                 "id": spec.id,
-                "title": spec.title,
+                "title": zh(spec.title),
                 "title_en": en(spec.title),
-                "summary": spec.summary,
+                "summary": zh(spec.summary),
                 "summary_en": en(spec.summary),
-                "group": spec.group,
+                "group": zh(spec.group),
                 "group_en": en(spec.group),
                 "command": command_template(spec),
                 "confirm": spec.confirm,
                 "result": spec.result,
                 "available": reason is None,
                 "unavailable_reason": reason,
-                "unavailable_reason_en": en(reason),
+                "unavailable_reason_en": reason_en,
                 "params": [
                     {
                         "name": param.name,
                         "kind": param.kind,
-                        "label": param.label,
+                        "label": zh(param.label),
                         "label_en": en(param.label),
-                        "help": param.help,
+                        "help": zh(param.help),
                         "help_en": en(param.help),
                         "required": param.required,
                         "choices": _choice_list(param, config) or None,
@@ -607,13 +691,13 @@ def describe(config, *, setup: bool) -> list[dict[str, Any]]:
 
 def _parse_date(value: object, label: str) -> str:
     if not isinstance(value, str):
-        raise OpsError(f"{label}须是 YYYY-MM-DD。")
+        raise OpsError(_("{label} must be YYYY-MM-DD.").format(label=label))
     try:
         parsed = date.fromisoformat(value)
     except ValueError as exc:
-        raise OpsError(f"{label}须是 YYYY-MM-DD。") from exc
+        raise OpsError(_("{label} must be YYYY-MM-DD.").format(label=label)) from exc
     if parsed > shanghai_today():
-        raise OpsError(f"{label}不能晚于今天（北京时间）。")
+        raise OpsError(_("{label} cannot be later than today (Beijing time).").format(label=label))
     return parsed.isoformat()
 
 
@@ -625,49 +709,53 @@ def _parse_symbols(value: object) -> list[str]:
     elif isinstance(value, list):
         parts = [str(part).strip() for part in value if str(part).strip()]
     else:
-        raise OpsError("标的须是逗号分隔的代码。")
+        raise OpsError(_("Symbols must be comma-separated codes."))
     if len(parts) > 200:
-        raise OpsError("一次最多 200 个标的。")
+        raise OpsError(_("At most 200 symbols at a time."))
     parsed = []
     for part in parts:
         try:
             parsed.append(parse_symbol(part).symbol)
         except ValueError as exc:
-            raise OpsError(f"无法识别的标的 {part}") from exc
+            raise OpsError(_("Unrecognized symbol {part}").format(part=part)) from exc
     return parsed
 
 
 def _parse_run_id(value: object, config) -> str:
     if not isinstance(value, str) or not value or len(value) > 80:
-        raise OpsError("run id 无效。")
+        raise OpsError(_("Invalid run id."))
     if any(
         char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-"
         for char in value
     ):
-        raise OpsError("run id 无效。")
+        raise OpsError(_("Invalid run id."))
     if config is None or not Path(config.manifest_path).exists():
-        raise OpsError("还没有运行记录。")
+        raise OpsError(_("No run records yet."))
     from cnequity.orchestrator.manifest import Manifest
     from cnequity.orchestrator.run_lock import is_run_locked
 
     record = Manifest(config.manifest_path).get_run(value)
     if record is None:
-        raise OpsError(f"没有 run {value}。")
+        raise OpsError(_("No run {value}.").format(value=value))
     if record["status"] == "running" and is_run_locked(config.meta_root, value):
-        raise OpsError(f"run {value} 还在运行。")
+        raise OpsError(_("Run {value} is still running.").format(value=value))
     return value
 
 
 def _parse_text(value: object, label: str) -> str:
     if not isinstance(value, str):
-        raise OpsError(f"{label}无效。")
+        raise OpsError(_("{label} is invalid.").format(label=label))
     if not value:
         return ""
     if len(value) > 32 or any(
         char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
         for char in value
     ):
-        raise OpsError(f"{label}只能是字母、数字、下划线和短横线。")
+        raise OpsError(
+            _("{label} may only contain letters, digits, underscores and hyphens.").format(
+                label=label
+            )
+        )
     return value
 
 
@@ -676,16 +764,16 @@ def normalize(spec: OpSpec, raw: dict[str, Any] | None, config) -> dict[str, Any
     if raw is None:
         raw = {}
     if not isinstance(raw, dict):
-        raise OpsError("参数格式无效。")
+        raise OpsError(_("Invalid parameter format."))
     known = {param.name for param in spec.params}
     extra = sorted(set(raw) - known)
     if extra:
-        raise OpsError("不能指定：" + "、".join(extra))
+        raise OpsError(_("Cannot be specified: ") + _(", ").join(extra))
     values: dict[str, Any] = {}
     for param in spec.params:
         if param.name not in raw or raw[param.name] is None or raw[param.name] == "":
             if param.required:
-                raise OpsError(f"请填写{param.label}。")
+                raise OpsError(_("Fill in {value}.").format(value=_(param.label)))
             if param.kind == "bool":
                 values[param.name] = False
             elif param.kind == "multi":
@@ -696,16 +784,16 @@ def normalize(spec: OpSpec, raw: dict[str, Any] | None, config) -> dict[str, Any
         value = raw[param.name]
         if param.kind == "bool":
             if not isinstance(value, bool):
-                raise OpsError(f"{param.label}须是布尔值。")
+                raise OpsError(_("{value} must be a boolean.").format(value=_(param.label)))
             values[param.name] = value
         elif param.kind == "date":
-            values[param.name] = _parse_date(value, param.label)
+            values[param.name] = _parse_date(value, _(param.label))
         elif param.kind == "choice":
             if not isinstance(value, str):
-                raise OpsError(f"{param.label}无效。")
+                raise OpsError(_("{value} is invalid.").format(value=_(param.label)))
             allowed = _choice_list(param, config)
             if value not in allowed:
-                raise OpsError(f"{param.label}不在可选范围内。")
+                raise OpsError(_("{value} is not among the choices.").format(value=_(param.label)))
             values[param.name] = value
         elif param.kind == "multi":
             if isinstance(value, str):
@@ -713,34 +801,40 @@ def normalize(spec: OpSpec, raw: dict[str, Any] | None, config) -> dict[str, Any
             elif isinstance(value, list) and all(isinstance(part, str) for part in value):
                 items = [part.strip() for part in value if part.strip()]
             else:
-                raise OpsError(f"{param.label}无效。")
+                raise OpsError(_("{value} is invalid.").format(value=_(param.label)))
             allowed = set(_choice_list(param, config))
             unknown = [item for item in items if item not in allowed]
             if unknown:
-                raise OpsError(f"{param.label}不在可选范围内：{'、'.join(unknown)}")
+                raise OpsError(
+                    _("{value} is not among the choices: {value2}").format(
+                        value=_(param.label), value2=_(", ").join(unknown)
+                    )
+                )
             values[param.name] = items
         elif param.kind == "symbols":
             values[param.name] = _parse_symbols(value)
         elif param.kind == "text":
-            values[param.name] = _parse_text(value, param.label) or None
+            values[param.name] = _parse_text(value, _(param.label)) or None
         elif param.kind == "run_id":
             values[param.name] = _parse_run_id(value, config)
         elif param.kind == "snapshot_name":
             from cnequity.storage.snapshots import SnapshotStore
 
             if not isinstance(value, str):
-                raise OpsError("备份名称无效。")
+                raise OpsError(_("Invalid backup name."))
             try:
                 values[param.name] = SnapshotStore._validate_name(value)
             except ValueError as exc:
-                raise OpsError("备份名称须为 1–80 个字母、数字、点、下划线或短横线。") from exc
+                raise OpsError(
+                    _("A backup name must be 1–80 letters, digits, dots, underscores or hyphens.")
+                ) from exc
         elif param.kind == "path":
             if (
                 not isinstance(value, str)
                 or len(value) > 4096
                 or any(ord(char) < 32 for char in value)
             ):
-                raise OpsError("目录路径无效。")
+                raise OpsError(_("Invalid directory path."))
             from cnequity.serve.ops.backups import restore_target
 
             values[param.name] = str(restore_target(config, value, raw.get("snapshot_root")))
@@ -753,16 +847,16 @@ def normalize(spec: OpSpec, raw: dict[str, Any] | None, config) -> dict[str, Any
                 or len(value) > 4096
                 or any(ord(char) < 32 for char in value)
             ):
-                raise OpsError("备份目录路径无效。")
+                raise OpsError(_("Invalid backup directory path."))
             path = Path(value).expanduser()
             if not path.is_absolute():
-                raise OpsError("备份目录必须是绝对路径。")
+                raise OpsError(_("The backup directory must be an absolute path."))
             _reject_symlink_path(path, label="snapshot root")
             if path.exists() and not path.is_dir():
-                raise OpsError("备份存放目录不是目录。")
+                raise OpsError(_("The backup storage directory is not a directory."))
             values[param.name] = str(path)
         else:
-            raise OpsError(f"未知参数类型 {param.kind}")
+            raise OpsError(_("Unknown parameter type {kind}").format(kind=param.kind))
     _check_cross(spec, values, config)
     return values
 
@@ -770,25 +864,25 @@ def normalize(spec: OpSpec, raw: dict[str, Any] | None, config) -> dict[str, Any
 def _check_cross(spec: OpSpec, values: dict[str, Any], config) -> None:
     start, end = values.get("start"), values.get("end")
     if start and end and start > end:
-        raise OpsError("起点不能晚于终点。")
+        raise OpsError(_("The start cannot be after the end."))
     if spec.id == "snapshot.create" and not values.get("datasets"):
-        raise OpsError("至少选择一个备份数据集。")
+        raise OpsError(_("Select at least one dataset to back up."))
     if spec.id == "snapshot.create":
         from cnequity.serve.ops.backups import create_root
 
         create_root(config, values.get("snapshot_root"))
     if spec.id == "init.resume":
         if config is None:
-            raise OpsError("尚未配置。")
+            raise OpsError(_("Not configured yet."))
         from cnequity.orchestrator.manifest import Manifest
 
         latest = None
         if Path(config.manifest_path).exists():
             latest = Manifest(config.manifest_path).latest_incomplete_init_run()
         if latest is None or latest["run_id"] != values["run_id"]:
-            raise OpsError("只能续跑最近一次没完成的初始化。")
+            raise OpsError(_("Only the latest unfinished init can be resumed."))
     if spec.id == "init.start" and values.get("profile") not in {"quick", "full"}:
-        raise OpsError("初始化深度只能是 quick 或 full。")
+        raise OpsError(_("Init depth can only be quick or full."))
 
 
 def confirm_level(spec: OpSpec, params: dict[str, Any]) -> str:
@@ -807,12 +901,15 @@ def confirm_level(spec: OpSpec, params: dict[str, Any]) -> str:
 
 
 def acknowledgements(spec: OpSpec, level: str) -> list[dict[str, str]]:
-    if level == "none":
+    # Clicking Start after a preview is the confirmation for routine work; a
+    # checkbox that only repeats "start this now" adds a click and no
+    # information. Heavy work still names its specific cost.
+    if level != "heavy":
         return []
-    items = [{**STANDARD_ACK, "text_en": en(STANDARD_ACK["text"])}]
-    if level == "heavy" and spec.heavy_text:
-        items.append({"id": "heavy", "text": spec.heavy_text, "text_en": en(spec.heavy_text)})
-    return items
+    if spec.heavy_text:
+        return [{"id": "heavy", "text": zh(spec.heavy_text), "text_en": en(spec.heavy_text)}]
+    text = STANDARD_ACK["text"]
+    return [{**STANDARD_ACK, "text": zh(text), "text_en": en(text)}]
 
 
 def lock_class_for(spec: OpSpec, params: dict[str, Any], config) -> str:
@@ -901,7 +998,11 @@ def prepared(spec: OpSpec, raw: dict[str, Any] | None, config) -> dict[str, Any]
         params["snapshot_root"] = str(store_for(config, params.get("snapshot_root")).root)
     path = pass_config(spec, config)
     if path is None and spec.id != "diag.doctor":
-        raise OpsError("这份服务没有可写入的配置文件路径，不能从面板启动。")
+        raise OpsError(
+            _(
+                "This service has no writable config file path, so it cannot be started from the dashboard."
+            )
+        )
     level = confirm_level(spec, params)
     argv = build_argv(spec, params, path)
     return {
@@ -916,6 +1017,6 @@ def prepared(spec: OpSpec, raw: dict[str, Any] | None, config) -> dict[str, Any]
         "target_run_id": target_run_id(spec, params),
         "config_path": str(path) if path is not None else None,
         "result": spec.result,
-        "title": spec.title,
+        "title": zh(spec.title),
         "title_en": en(spec.title),
     }

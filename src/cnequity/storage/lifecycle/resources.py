@@ -27,7 +27,7 @@ def resource_holds(meta_root: Path, *, dry_run: bool = False):
             yield set()
         else:
             if (
-                reference_fingerprint(registry["reference_roots"])
+                reference_fingerprint(registry["reference_roots"], meta_root=store.meta)
                 != registry["reference_fingerprint"]
             ):
                 raise LifecycleError(

@@ -33,9 +33,11 @@ from cnequity.quality.cross_checks import (
     share_structure_vendor_findings,
     st_label_crosscheck_findings,
     trading_calendar_horizon_findings,
+    trading_status_bars_findings,
     undeclared_source_findings,
     universe_survivorship_findings,
     unrecorded_ex_event_findings,
+    unstepped_corporate_action_findings,
     untraded_instrument_findings,
     valuation_bars_coverage_findings,
 )
@@ -52,6 +54,7 @@ from cnequity.quality.run_health import degraded_job_findings
 from cnequity.quality.source_diff import run_source_diffs
 from cnequity.quality.st_coverage import st_evidence_coverage_report
 from cnequity.quality.tick_checks import trade_ticks_findings
+from cnequity.quality.trading_status_coverage import trading_state_coverage_findings
 from cnequity.quality.unit_checks import (
     daily_bars_amount_completeness_findings,
     daily_bars_implied_price_findings,
@@ -548,6 +551,8 @@ def _collect_lake_findings(
             },
         )
     )
+    if feeds("adj_factors", "corporate_actions", "instruments", "trading_calendar"):
+        findings.extend(unstepped_corporate_action_findings(config, trade_date))
     if feeds("daily_bars"):
         findings.extend(daily_bars_arbitration_findings(config))
     findings.extend(financial_statement_peer_findings(config))
@@ -558,6 +563,12 @@ def _collect_lake_findings(
     )
     # Both sides already in curated — costs no requests (issue #10).
     findings.extend(st_label_crosscheck_findings(config, trade_date))
+    if feeds("trading_status", "daily_bars"):
+        findings.extend(trading_status_bars_findings(config, trade_date))
+    # This warning-only inventory spans all history. A partition-scoped
+    # publication compares errors; repeating it there cannot change the gate.
+    if full and scope is None:
+        findings.extend(trading_state_coverage_findings(config, trade_date))
     findings.extend(macro_staleness_findings(config, trade_date))
     # Reaches the statistics bureau and the exchanges; gated on [sources.nbs]
     # and [sources.exchange] so an offline lake (and every unit test) stays off
@@ -587,16 +598,45 @@ def _optional_intraday_findings(config: Config, trade_date: date) -> list[dict]:
     return findings
 
 
+def _finding_key(finding: Mapping) -> str:
+    """The persisted JSON form, so equality matches what a reload would see."""
+    return json.dumps(finding, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def recorded_step_findings(config: Config, run_id: str) -> list[dict]:
+    """Retain run evidence separately from checks recomputed against the lake.
+
+    Legacy reports did not distinguish the two; preserve their evidence on
+    the first rewrite rather than silently discard an unclassified finding.
+    """
+    if not run_id or run_id in {".", ".."} or any(char in run_id for char in ("/", "\\", "\x00")):
+        raise ValueError("invalid run_id")
+    path = config.meta_root / "quality" / "findings" / f"{run_id}.json"
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return payload.get("step_findings", payload.get("findings", []))
+
+
+def _unique_findings(findings: list[dict]) -> list[dict]:
+    return list({_finding_key(finding): finding for finding in findings}.values())
+
+
 def persist_step_findings(
     config: Config, run_id: str, trade_date: date, findings: list[dict]
 ) -> None:
-    """Write a failing step's own findings where the audit file would be.
+    """Write step findings where the audit file would be, without ``run_audit``.
 
     A step that raises never reaches ``run_audit``, so everything it learned
     died with the exception message. ``daily_bars`` was the expensive case: its
     interior-gap finding carries the missing symbols and sample keys, but only
     the one-line message survived the raise, leaving the operator to reverse
-    engineer the cause out of a log file.
+    engineer the cause out of a log file. A scheduled group that does not run
+    ``audit`` at all lost every step finding the same way.
+
+    Appends, skipping findings the file already holds, so a step that persisted
+    its own findings and the run that persists them again record them once.
 
     Best effort by construction — losing the diagnostic must never replace the
     real failure with an I/O error.
@@ -611,12 +651,24 @@ def persist_step_findings(
         if out_path.exists():
             with open(out_path, encoding="utf-8") as handle:
                 existing = json.load(handle).get("findings", [])
+        seen = {_finding_key(finding) for finding in existing}
+        added: list[dict] = []
+        for finding in findings:
+            key = _finding_key(finding)
+            if key not in seen:
+                seen.add(key)
+                added.append(finding)
+        previous_steps = recorded_step_findings(config, run_id)
+        steps = _unique_findings(previous_steps + findings)
+        if not added and steps == previous_steps:
+            return
         write_json_atomic(
             out_path,
             {
                 "run_id": run_id,
                 "trade_date": trade_date.isoformat(),
-                "findings": existing + findings,
+                "findings": existing + added,
+                "step_findings": steps,
             },
             ensure_ascii=False,
             indent=2,
@@ -627,6 +679,16 @@ def persist_step_findings(
 
 
 def run_audit(config: Config, run_id: str, trade_date: date, context: dict | None = None) -> int:
+    steps = _unique_findings(
+        recorded_step_findings(config, run_id) + ((context or {}).get("audit_findings") or [])
+    )
+    related: list[dict] = []
+    for other_run in (context or {}).get("related_run_ids") or []:
+        if other_run != run_id:
+            related.extend(
+                {**finding, "origin_run_id": other_run}
+                for finding in recorded_step_findings(config, other_run)
+            )
     findings = _profile_adjusted_findings(
         config,
         _collect_lake_findings(config, trade_date, context),
@@ -636,13 +698,20 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
     # not the second directory) can mistake "audit completed" for "sources
     # agreed".
     findings.extend(run_source_diffs(config, run_id, trade_date))
+    findings = _unique_findings(findings + _profile_adjusted_findings(config, steps + related))
 
     out_dir = config.meta_root / "quality" / "findings"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{run_id}.json"
     write_json_atomic(
         out_path,
-        {"run_id": run_id, "trade_date": trade_date.isoformat(), "findings": findings},
+        {
+            "run_id": run_id,
+            "trade_date": trade_date.isoformat(),
+            "findings": findings,
+            "step_findings": steps,
+            "related_run_ids": (context or {}).get("related_run_ids") or [],
+        },
         ensure_ascii=False,
         indent=2,
         default=str,
@@ -671,6 +740,9 @@ def run_audit(config: Config, run_id: str, trade_date: date, context: dict | Non
 
 def _profile_adjusted_findings(config: Config, findings: list[dict]) -> list[dict]:
     """Keep sample-lake synthetic rows visible without declaring setup broken."""
+    from cnequity.quality.factor_policy import advisory_factor_findings
+
+    findings = advisory_factor_findings(findings)
     if getattr(config, "lake_profile", None) != "sample":
         return findings
     adjusted: list[dict] = []

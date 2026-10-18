@@ -25,21 +25,27 @@ from cnequity.config import load_config
 from cnequity.config.loader import push2_paused_by_env
 from cnequity.config.upgrade import _table_span, tomllib
 from cnequity.file_lock import LockUnavailable, exclusive_lock
-from cnequity.serve.labels_en import en
+from cnequity.i18n import N_, _, use_language
+from cnequity.serve.display import en, zh
 from cnequity.serve.ops.catalog import OpsError, config_file
 from cnequity.serve.ops.scheduler import replace_config, state_dir
 
-HOME_NOTE = (
-    "这些开关会改之后的每一次取数，包括定时日更和收尾补抓。"
-    "保存设置不会启动取数。标的列表、频率和交易所仍在配置文件里。"
+HOME_NOTE = N_(
+    "These switches affect all future fetching, including scheduled daily updates and closing catch-up. Saving does not start fetching. Instrument lists, frequencies and exchanges stay in the config file."
 )
-NOTE_CHANGED = "将写入当前配置，并先备份原文件。这次不会启动取数。"
-NOTE_UNCHANGED = "没有需要保存的改动。"
-ACKNOWLEDGEMENT = "我确认保存这些设置。定时日更、收尾补抓和之后的命令都会按新值执行。"
-PUSH2_ENV_NOTE = (
-    "本机环境变量 CNE_PUSH2_PAUSED 开着，关掉配置里的暂停无效，push2 仍然不会发出请求。"
+NOTE_CHANGED = N_(
+    "Writes to the current config after backing up the original file. Does not start fetching."
 )
-STRUCTURE = "配置结构不支持自动修改这些开关，请使用标准 TOML 表。"
+NOTE_UNCHANGED = N_("No changes to save.")
+ACKNOWLEDGEMENT = N_(
+    "I confirm saving these settings. Scheduled daily updates, closing catch-up and later commands will use the new values."
+)
+PUSH2_ENV_NOTE = N_(
+    "The local environment variable CNE_PUSH2_PAUSED is on, so turning off the pause in config has no effect; push2 still sends no requests."
+)
+STRUCTURE = N_(
+    "The config structure does not support changing these switches automatically; use standard TOML tables."
+)
 
 _PREVIEW_TTL = 600
 _VALUE = (
@@ -66,100 +72,51 @@ def _listed(items, *, empty: str) -> str:
     names = [str(item) for item in items if str(item).strip()]
     if not names:
         return empty
-    shown = "、".join(names[:8])
+    shown = _(", ").join(names[:8])
     if len(names) > 8:
-        shown += f" 等 {len(names)} 个"
+        shown += _(" and others ({total} in all)").format(total=len(names))
     return shown
 
 
+# The scope notes are computed from the config, so the settings page renders
+# each once per language (see `SettingsService.home`).
 def _minute_scope(config) -> str:
-    freqs = _listed(config.minute_bars_frequencies, empty="未指定频率")
+    freqs = _listed(config.minute_bars_frequencies, empty=_("no frequency set"))
     symbols = _listed(config.minute_bars_symbols, empty="")
-    extra = f"，标的 {symbols}" if symbols else ""
-    return f"范围仍在配置文件里：{config.minute_bars_scope}，频率 {freqs}{extra}。"
+    extra = _(", symbols {symbols}").format(symbols=symbols) if symbols else ""
+    return _("The scope stays in the config file: {scope}, frequencies {freqs}{extra}.").format(
+        scope=config.minute_bars_scope, freqs=freqs, extra=extra
+    )
 
 
 def _ticks_scope(config) -> str:
-    symbols = _listed(config.trade_ticks_symbols, empty="未列标的")
-    return (
-        f"范围仍在配置文件里：{config.trade_ticks_scope}，"
-        f"上限 {config.trade_ticks_max_symbols}，标的 {symbols}。"
-    )
+    symbols = _listed(config.trade_ticks_symbols, empty=_("no symbols listed"))
+    return _(
+        "The scope stays in the config file: {scope}, limit {limit}, symbols {symbols}."
+    ).format(scope=config.trade_ticks_scope, limit=config.trade_ticks_max_symbols, symbols=symbols)
 
 
 def _futures_scope(config) -> str:
-    exchanges = _listed(config.futures_exchanges, empty="全部已支持的路由")
-    options = "含期权" if config.futures_options else "不含期权"
-    return (
-        f"范围仍在配置文件里：交易所 {exchanges}，{options}，"
-        f"大商所路由 {config.futures_dce_route}。"
-    )
+    exchanges = _listed(config.futures_exchanges, empty=_("every supported route"))
+    options = _("with options") if config.futures_options else _("without options")
+    return _(
+        "The scope stays in the config file: exchanges {exchanges}, {options}, DCE route {route}."
+    ).format(exchanges=exchanges, options=options, route=config.futures_dce_route)
 
 
 def _futures_minute_scope(config) -> str:
-    products = _listed(config.futures_minute_products, empty="未列品种")
-    contracts = _listed(config.futures_minute_contracts, empty="未列合约")
-    return (
-        f"范围仍在配置文件里：品种 {products}，合约 {contracts}，"
-        f"上限 {config.futures_minute_max_contracts}。"
-    )
-
-
-def _listed_en(items, *, empty: str) -> str:
-    names = [str(item) for item in items if str(item).strip()]
-    if not names:
-        return empty
-    shown = ", ".join(names[:8])
-    if len(names) > 8:
-        shown += f" and {len(names) - 8} more"
-    return shown
-
-
-def _minute_scope_en(config) -> str:
-    freqs = _listed_en(config.minute_bars_frequencies, empty="no frequency set")
-    symbols = _listed_en(config.minute_bars_symbols, empty="")
-    extra = f", symbols {symbols}" if symbols else ""
-    return f"The scope stays in the config file: {config.minute_bars_scope}, frequencies {freqs}{extra}."
-
-
-def _ticks_scope_en(config) -> str:
-    symbols = _listed_en(config.trade_ticks_symbols, empty="no symbols listed")
-    return (
-        f"The scope stays in the config file: {config.trade_ticks_scope}, "
-        f"limit {config.trade_ticks_max_symbols}, symbols {symbols}."
-    )
-
-
-def _futures_scope_en(config) -> str:
-    exchanges = _listed_en(config.futures_exchanges, empty="every supported route")
-    options = "with options" if config.futures_options else "without options"
-    return (
-        f"The scope stays in the config file: exchanges {exchanges}, {options}, "
-        f"DCE route {config.futures_dce_route}."
-    )
-
-
-def _futures_minute_scope_en(config) -> str:
-    products = _listed_en(config.futures_minute_products, empty="no products listed")
-    contracts = _listed_en(config.futures_minute_contracts, empty="no contracts listed")
-    return (
-        f"The scope stays in the config file: products {products}, contracts {contracts}, "
-        f"limit {config.futures_minute_max_contracts}."
-    )
-
-
-_SCOPE_EN = {
-    "_minute_scope": _minute_scope_en,
-    "_ticks_scope": _ticks_scope_en,
-    "_futures_scope": _futures_scope_en,
-    "_futures_minute_scope": _futures_minute_scope_en,
-}
+    products = _listed(config.futures_minute_products, empty=_("no products listed"))
+    contracts = _listed(config.futures_minute_contracts, empty=_("no contracts listed"))
+    return _(
+        "The scope stays in the config file: products {products}, contracts {contracts}, "
+        "limit {limit}."
+    ).format(products=products, contracts=contracts, limit=config.futures_minute_max_contracts)
 
 
 _INGEST = (
-    ("all_a", "全部 A 股"),
-    ("all_a_sh_sz", "不含北交所"),
-    ("all_instruments", "全部代码（含 ETF/LOF）"),
+    ("all_a", N_("All A-shares")),
+    ("all_a_sh_sz", N_("Excluding BSE")),
+    ("all_instruments", N_("All codes (incl. ETF/LOF)")),
 )
 
 SETTINGS: tuple[Setting, ...] = (
@@ -169,9 +126,10 @@ SETTINGS: tuple[Setting, ...] = (
         "sources.eastmoney",
         "push2_paused",
         "bool",
-        "暂停 push2",
-        "停掉 push2、push2his 和 push2delay，请求不会发出。datacenter 和其他东财主机继续。"
-        "这和下面的东财总闸是两个开关。",
+        N_("Pause push2"),
+        N_(
+            "Stops push2, push2his and push2delay; no requests are sent. datacenter and other EastMoney hosts continue. This is separate from the EastMoney master switch below."
+        ),
         False,
     ),
     Setting(
@@ -180,8 +138,8 @@ SETTINGS: tuple[Setting, ...] = (
         "tdx_protocol",
         "enabled",
         "bool",
-        "通达信",
-        "日线主源。关掉后日线不再向通达信取数。",
+        N_("TDX"),
+        N_("Primary daily bar source. When off, daily bars are no longer fetched from TDX."),
         True,
     ),
     Setting(
@@ -190,11 +148,15 @@ SETTINGS: tuple[Setting, ...] = (
         "qmt_bridge",
         "enabled",
         "bool",
-        "QMT 本地桥",
-        "启用本地 BigQMT 终端桥。"
-        "日线、指数、分钟线、交易日历、财务、公司行动和复权因子优先走 QMT；"
-        "逐笔成交、指数成分和股东户数只在原源失败或关闭时用 QMT 补位。"
-        "BigQMT 离线时自动回落，桥路径和终端参数仍在配置文件里。",
+        N_("Local QMT bridge"),
+        N_(
+            "Enable the local BigQMT terminal bridge. Daily bars, index bars, minute bars, "
+            "the trading calendar, financials, corporate actions and adjustment factors "
+            "prefer QMT; trade ticks, index constituents and shareholder counts only fall "
+            "back to QMT when their primary source fails or is disabled. Falls back "
+            "automatically when BigQMT is offline; bridge paths and terminal settings "
+            "stay in the config file."
+        ),
         False,
     ),
     Setting(
@@ -203,8 +165,8 @@ SETTINGS: tuple[Setting, ...] = (
         "sources.eastmoney",
         "enabled",
         "bool",
-        "东财",
-        "公告、财务和资金流。关掉后不再请求东财。",
+        N_("EastMoney"),
+        N_("Announcements, financials and fund flows. When off, EastMoney is no longer requested."),
         True,
     ),
     Setting(
@@ -213,8 +175,8 @@ SETTINGS: tuple[Setting, ...] = (
         "sources.sina_bars",
         "enabled",
         "bool",
-        "新浪日线",
-        "日线兜底。关掉后不再用新浪补日线。",
+        N_("Sina daily bars"),
+        N_("Daily bar fallback. When off, Sina is no longer used to fill daily bars."),
         True,
     ),
     Setting(
@@ -224,7 +186,7 @@ SETTINGS: tuple[Setting, ...] = (
         "enabled",
         "bool",
         "Baostock",
-        "历史行情兜底。",
+        N_("Historical quotes fallback."),
         True,
     ),
     Setting(
@@ -233,8 +195,8 @@ SETTINGS: tuple[Setting, ...] = (
         "sources.bse",
         "enabled",
         "bool",
-        "北交所官网",
-        "当日北交所行情。它不是历史源。",
+        N_("BSE website"),
+        N_("Same-day BSE quotes. Not a historical source."),
         True,
     ),
     Setting(
@@ -243,8 +205,8 @@ SETTINGS: tuple[Setting, ...] = (
         "sources.ths",
         "enabled",
         "bool",
-        "同花顺页面",
-        "板块行情。关掉后不再请求同花顺公开页。",
+        N_("THS pages"),
+        N_("Sector quotes. When off, THS public pages are no longer requested."),
         True,
     ),
     Setting(
@@ -253,8 +215,8 @@ SETTINGS: tuple[Setting, ...] = (
         "sources.cninfo",
         "enabled",
         "bool",
-        "巨潮",
-        "公告和监管。关掉后不再请求巨潮。",
+        N_("CNINFO"),
+        N_("Announcements and regulatory filings. When off, CNINFO is no longer requested."),
         True,
     ),
     Setting(
@@ -263,8 +225,8 @@ SETTINGS: tuple[Setting, ...] = (
         "minute_bars",
         "enabled",
         "bool",
-        "分钟线",
-        "默认关闭。打开后日更会按当前范围持续抓取。",
+        N_("Minute bars"),
+        N_("Off by default. When on, the daily update keeps fetching for the current scope."),
         False,
         scope=_minute_scope,
     ),
@@ -274,8 +236,8 @@ SETTINGS: tuple[Setting, ...] = (
         "trade_ticks",
         "enabled",
         "bool",
-        "分笔",
-        "默认关闭。打开后日更会按当前范围持续抓取。",
+        N_("Trade ticks"),
+        N_("Off by default. When on, the daily update keeps fetching for the current scope."),
         False,
         scope=_ticks_scope,
     ),
@@ -285,8 +247,8 @@ SETTINGS: tuple[Setting, ...] = (
         "futures",
         "enabled",
         "bool",
-        "期货与期权",
-        "默认关闭。打开后日更会抓取期货和期权。",
+        N_("Futures and options"),
+        N_("Off by default. When on, the daily update fetches futures and options."),
         False,
         scope=_futures_scope,
     ),
@@ -296,8 +258,8 @@ SETTINGS: tuple[Setting, ...] = (
         "futures",
         "minute_enabled",
         "bool",
-        "期货分钟线",
-        "默认关闭。打开后日更会抓取期货分钟线。",
+        N_("Futures minute bars"),
+        N_("Off by default. When on, the daily update fetches futures minute bars."),
         False,
         scope=_futures_minute_scope,
     ),
@@ -307,10 +269,24 @@ SETTINGS: tuple[Setting, ...] = (
         "universe",
         "ingest",
         "choice",
-        "日更覆盖的证券",
-        "决定日更抓哪些证券。ST、停牌和已退市名称都会保留。",
+        N_("Securities in the daily update"),
+        N_(
+            "Choose which securities the daily update fetches. ST, suspended and delisted names are kept."
+        ),
         "all_a",
         choices=_INGEST,
+    ),
+    Setting(
+        "ingest_listed_funds",
+        "universe",
+        "universe",
+        "ingest_listed_funds",
+        "bool",
+        N_("Also fetch listed ETF/LOF daily bars"),
+        N_(
+            "Fetch fund quotes from the security master independently of research eligibility; unknown listing dates are reported separately. Off by default."
+        ),
+        False,
     ),
     Setting(
         "ingest_eligible_etfs",
@@ -318,21 +294,27 @@ SETTINGS: tuple[Setting, ...] = (
         "universe",
         "ingest_eligible_etfs",
         "bool",
-        "同时抓取符合条件的 ETF 日线",
-        "额外抓取最近可回放、且交易所目录判定合格的 ETF 日线。默认关闭。",
+        N_("Also fetch eligible ETF daily bars"),
+        N_(
+            "Also fetch daily bars for ETFs that are recently replayable and qualify per the exchange directory. Off by default."
+        ),
         False,
     ),
 )
 
 _BY_ID = {spec.id: spec for spec in SETTINGS}
-GROUPS = (("sources", "数据源"), ("capture", "可选采集"), ("universe", "日更覆盖"))
+GROUPS = (
+    ("sources", N_("Data sources")),
+    ("capture", N_("Optional collection")),
+    ("universe", N_("Daily update coverage")),
+)
 
 
 def _read(path: Path) -> str:
     try:
         return path.read_bytes().decode("utf-8")
     except UnicodeError as exc:
-        raise OpsError("配置文件不是 UTF-8，无法在页面上修改。") from exc
+        raise OpsError(_("The config file is not UTF-8 and cannot be edited on the page.")) from exc
 
 
 def _lookup(raw: dict, spec: Setting):
@@ -355,42 +337,48 @@ def read_values(text: str) -> dict[str, Any]:
     try:
         raw = tomllib.loads(text)
     except ValueError as exc:
-        raise OpsError("配置文件无法解析，请先修正 TOML。") from exc
+        raise OpsError(_("The config file cannot be parsed; fix the TOML first.")) from exc
     found: dict[str, Any] = {}
     for spec in SETTINGS:
         value = _lookup(raw, spec)
         if spec.kind == "bool" and not isinstance(value, bool):
-            raise OpsError(f"{spec.label} 的配置不是 true 或 false。")
+            raise OpsError(
+                _("The config of {value} is not true or false.").format(value=_(spec.label))
+            )
         if spec.kind == "choice" and value not in {item[0] for item in spec.choices}:
-            raise OpsError(f"{spec.label} 的当前取值不在可选范围内。")
+            raise OpsError(
+                _("The current value of {value} is not among the choices.").format(
+                    value=_(spec.label)
+                )
+            )
         found[spec.id] = value
     return found
 
 
 def normalize(raw: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        raise OpsError("设置不完整。")
+        raise OpsError(_("The settings are incomplete."))
     unknown = set(raw) - set(_BY_ID)
     if unknown:
-        raise OpsError("有页面不接受的设置。")
-    missing = [spec.label for spec in SETTINGS if spec.id not in raw]
+        raise OpsError(_("Some settings are not accepted by the page."))
+    missing = [_(spec.label) for spec in SETTINGS if spec.id not in raw]
     if missing:
-        raise OpsError("设置不完整。")
+        raise OpsError(_("The settings are incomplete."))
     out: dict[str, Any] = {}
     for spec in SETTINGS:
         value = raw[spec.id]
         if spec.kind == "bool":
             if not isinstance(value, bool):
-                raise OpsError(f"{spec.label} 需要是开关。")
+                raise OpsError(_("{value} must be a switch.").format(value=_(spec.label)))
         elif not isinstance(value, str) or value not in {item[0] for item in spec.choices}:
-            raise OpsError(f"{spec.label} 的取值无效。")
+            raise OpsError(_("The value of {value} is invalid.").format(value=_(spec.label)))
         out[spec.id] = value
     return out
 
 
 def _display(spec: Setting, value: Any) -> str:
     if spec.kind == "bool":
-        return "开" if value else "关"
+        return N_("On") if value else N_("Off")
     for choice, label in spec.choices:
         if choice == value:
             return label
@@ -417,7 +405,7 @@ def _assign_expected(tree: dict, spec: Setting, value: Any) -> None:
             node[part] = {}
             current = node[part]
         if not isinstance(current, dict):
-            raise OpsError(STRUCTURE)
+            raise OpsError(_(STRUCTURE))
         node = current
     leaf_name = parts[-1]
     leaf = node.get(leaf_name)
@@ -425,7 +413,7 @@ def _assign_expected(tree: dict, spec: Setting, value: Any) -> None:
         node[leaf_name] = {}
         leaf = node[leaf_name]
     if not isinstance(leaf, dict):
-        raise OpsError(STRUCTURE)
+        raise OpsError(_(STRUCTURE))
     leaf[spec.key] = value
 
 
@@ -473,7 +461,7 @@ def revise(text: str, desired: dict[str, Any]) -> tuple[str, list[dict[str, Any]
     try:
         raw = tomllib.loads(text)
     except ValueError as exc:
-        raise OpsError("配置文件无法解析，请先修正 TOML。") from exc
+        raise OpsError(_("The config file cannot be parsed; fix the TOML first.")) from exc
     expected = copy.deepcopy(raw)
     for spec in SETTINGS:
         if current[spec.id] != desired[spec.id]:
@@ -486,9 +474,9 @@ def revise(text: str, desired: dict[str, Any]) -> tuple[str, list[dict[str, Any]
     try:
         parsed = tomllib.loads(edited)
     except ValueError as exc:
-        raise OpsError(STRUCTURE) from exc
+        raise OpsError(_(STRUCTURE)) from exc
     if parsed != expected:
-        raise OpsError(STRUCTURE)
+        raise OpsError(_(STRUCTURE))
     return edited, changes
 
 
@@ -509,16 +497,23 @@ def _public(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for change in changes:
         row = {key: change[key] for key in keys}
         for key in ("label", "before_label", "after_label"):
-            row[f"{key}_en"] = en(change[key])
+            row[key], row[f"{key}_en"] = zh(change[key]), en(change[key])
         shown.append(row)
     return shown
+
+
+def _scope_in(language: str, spec: Setting, config) -> str | None:
+    if spec.scope is None:
+        return None
+    with use_language(language):
+        return spec.scope(config)
 
 
 class SettingsService:
     def __init__(self, config):
         path = config_file(config)
         if path is None:
-            raise OpsError("先生成配置，再修改取数设置。")
+            raise OpsError(_("Generate the config before changing fetch settings."))
         self.config = config
         self.path = path
         self.previews: dict[str, dict] = {}
@@ -526,7 +521,11 @@ class SettingsService:
     def _fresh(self):
         config = load_config(self.path)
         if Path(config.meta_root) != Path(self.config.meta_root):
-            raise OpsError("配置的数据目录已经变化，请重新启动 serve 后再改取数设置。")
+            raise OpsError(
+                _(
+                    "The configured data directory has changed; restart serve before changing fetch settings."
+                )
+            )
         return config
 
     def home(self) -> dict:
@@ -541,29 +540,29 @@ class SettingsService:
                 item = {
                     "id": spec.id,
                     "kind": spec.kind,
-                    "label": spec.label,
+                    "label": zh(spec.label),
                     "label_en": en(spec.label),
-                    "help": spec.help,
+                    "help": zh(spec.help),
                     "help_en": en(spec.help),
                     "value": values[spec.id],
-                    "scope": spec.scope(config) if spec.scope else None,
-                    "scope_en": _SCOPE_EN[spec.scope.__name__](config) if spec.scope else None,
+                    "scope": _scope_in("zh_CN", spec, config),
+                    "scope_en": _scope_in("en", spec, config),
                 }
                 if spec.choices:
                     item["choices"] = [
-                        {"value": value, "label": label, "label_en": en(label)}
+                        {"value": value, "label": zh(label), "label_en": en(label)}
                         for value, label in spec.choices
                     ]
                 items.append(item)
             sections.append(
-                {"id": group_id, "title": title, "title_en": en(title), "settings": items}
+                {"id": group_id, "title": zh(title), "title_en": en(title), "settings": items}
             )
         env = push2_paused_by_env()
         return {
-            "note": HOME_NOTE,
+            "note": zh(HOME_NOTE),
             "note_en": en(HOME_NOTE),
             "push2_env_paused": env,
-            "push2_env_note": PUSH2_ENV_NOTE if env else None,
+            "push2_env_note": zh(PUSH2_ENV_NOTE) if env else None,
             "push2_env_note_en": en(PUSH2_ENV_NOTE) if env else None,
             "sections": sections,
         }
@@ -574,17 +573,19 @@ class SettingsService:
         try:
             text = file_bytes.decode("utf-8")
         except UnicodeError as exc:
-            raise OpsError("配置文件不是 UTF-8，无法在页面上修改。") from exc
+            raise OpsError(
+                _("The config file is not UTF-8 and cannot be edited on the page.")
+            ) from exc
         edited, changes = revise(text, desired)
         env = push2_paused_by_env()
         payload = {
             "token": None,
             "changes": _public(changes),
-            "note": NOTE_CHANGED if changes else NOTE_UNCHANGED,
+            "note": zh(NOTE_CHANGED if changes else NOTE_UNCHANGED),
             "note_en": en(NOTE_CHANGED if changes else NOTE_UNCHANGED),
-            "acknowledgement": ACKNOWLEDGEMENT if changes else None,
+            "acknowledgement": zh(ACKNOWLEDGEMENT) if changes else None,
             "acknowledgement_en": en(ACKNOWLEDGEMENT) if changes else None,
-            "push2_env_note": PUSH2_ENV_NOTE if env else None,
+            "push2_env_note": zh(PUSH2_ENV_NOTE) if env else None,
             "push2_env_note_en": en(PUSH2_ENV_NOTE) if env else None,
         }
         if not changes:
@@ -608,28 +609,30 @@ class SettingsService:
 
     def apply(self, token: str, *, acknowledged: bool) -> dict:
         if not acknowledged:
-            raise OpsError("请先确认这些设置会用于之后的取数。")
+            raise OpsError(_("First confirm these settings will be used for later fetches."))
         try:
             with exclusive_lock(state_dir(self.config) / "control.lock", blocking=False):
                 plan = self.previews.get(token)
                 if plan is None or plan["expires"] <= time.monotonic():
                     self.previews.pop(token, None)
-                    raise OpsError("预览已失效，请重新预览。")
+                    raise OpsError(_("The preview has expired; preview again."))
                 if hashlib.sha256(self.path.read_bytes()).hexdigest() != plan["digest"]:
                     self.previews.pop(token, None)
-                    raise OpsError("配置文件已经变了，请重新预览。")
+                    raise OpsError(_("The config file has changed; preview again."))
                 backup = _backup(self.path)
                 try:
                     replace_config(self.path, plan["text"])
                     written = read_values(_read(self.path))
                     if any(written[spec.id] != plan["desired"][spec.id] for spec in SETTINGS):
-                        raise OpsError("写入后的配置和预览不一致。")
+                        raise OpsError(_("The written config does not match the preview."))
                     load_config(self.path)
                 except Exception as exc:
                     shutil.copy2(backup, self.path)
                     if isinstance(exc, OpsError):
                         raise
-                    raise OpsError("写入配置失败，已恢复原文件。") from exc
+                    raise OpsError(
+                        _("Writing the config failed; the original file was restored.")
+                    ) from exc
                 self.previews.pop(token, None)
                 return {
                     "saved": True,
@@ -637,4 +640,4 @@ class SettingsService:
                     "changes": plan["public"],
                 }
         except LockUnavailable as exc:
-            raise OpsError("配置正在被修改，请稍后重试。") from exc
+            raise OpsError(_("The config is being changed; try again shortly.")) from exc

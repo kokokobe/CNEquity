@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Small launchd/cron-compatible lock for the shell-level scheduled jobs.
 #
-# macOS does not ship `flock`, and the Python run lock is scoped to one `cne`
-# invocation.  The daily pipeline invokes several commands, so it needs one
+# Python provides the shared host-aware marker transitions; macOS needs no
+# shell `flock` binary. The ingestion run lock is scoped to one `cne` invocation.  The daily pipeline invokes several commands, so it needs one
 # lock around the whole script; otherwise the late stale pass could start in
 # the gap between two daily groups.  `mkdir` is atomic on the local filesystems
 # supported by macOS and gives us a lock that works with the system Bash 3.2.
@@ -50,68 +50,30 @@ _scheduler_lock_root() {
 scheduler_lock_acquire() {
   local repo_root="$1"
   local lock_name="${2:-daily}"
-  local lock_root lock_dir lock_pid owner attempt
-
+  local lock_root py token rc
   lock_root="$(_scheduler_lock_root "$repo_root")"
-  lock_dir="$lock_root/$lock_name.lock"
-  lock_pid="$lock_dir/pid"
-
-  SCHEDULER_LOCK_DIR="$lock_dir"
-  SCHEDULER_LOCK_PID_FILE="$lock_pid"
-  SCHEDULER_LOCK_HELD=0
-
-  if ! mkdir -p "$lock_root" 2>/dev/null; then
-    return 2
+  # The checkout's venv when there is one; otherwise the python3 on PATH that
+  # has cnequity installed (a CI runner or a pip install without a venv).
+  py="${CNE_PYTHON:-}"
+  if [[ -z "$py" ]]; then
+    if [[ -x "$repo_root/.venv/bin/python" ]]; then
+      py="$repo_root/.venv/bin/python"
+    else
+      py="python3"
+    fi
   fi
-
-  # A second attempt is enough when the previous owner exited between the
-  # `mkdir` and the first process writing its pid file.
-  attempt=0
-  while [[ "$attempt" -lt 2 ]]; do
-    if mkdir "$lock_dir" 2>/dev/null; then
-      if ! printf '%s\n' "$$" >"$lock_pid"; then
-        rmdir "$lock_dir" 2>/dev/null || true
-        return 2
-      fi
-      SCHEDULER_LOCK_HELD=1
-      return 0
-    fi
-
-    # Never remove a lock with no owner marker: it may be an active process
-    # that has not reached the marker write yet.  Such a process will release
-    # it on EXIT; a hard-killed process leaves an operator-visible lock that can
-    # be removed after checking the process (see the message from callers).
-    owner=""
-    if [[ -f "$lock_pid" ]]; then
-      owner="$(cat "$lock_pid" 2>/dev/null || true)"
-    fi
-    if [[ "$owner" =~ ^[0-9]+$ ]] && kill -0 "$owner" 2>/dev/null; then
-      return 1
-    fi
-    if [[ -n "$owner" ]]; then
-      # The recorded process is gone.  Take the removal exclusively before
-      # touching the directory: `mv` is atomic, so of two processes that both
-      # read the same dead marker exactly one moves it and the other finds it
-      # gone and backs off.  Reading the marker and then deleting the
-      # directory as two independent steps is not the same thing — the loser
-      # of that race deletes the *winner's* freshly created lock in the
-      # moment before its pid is written, and both then believe they hold it.
-      # A process that has not written a marker has nothing to move, so its
-      # young lock can never be mistaken for this stale one.
-      if ! mv "$lock_pid" "$lock_dir/.reclaimed.$$" 2>/dev/null; then
-        return 1
-      fi
-      # Remove only the marker and the empty lock directory; never recurse
-      # into a user directory.
-      rm -f "$lock_dir/.reclaimed.$$" 2>/dev/null || return 2
-      rmdir "$lock_dir" 2>/dev/null || return 1
-      attempt=$((attempt + 1))
-      continue
-    fi
-    return 1
-  done
-
-  return 1
+  export SCHEDULER_LOCK_DIR="$lock_root/$lock_name.lock"
+  SCHEDULER_LOCK_ROOT="$lock_root"
+  SCHEDULER_LOCK_NAME="$lock_name"
+  SCHEDULER_LOCK_PYTHON="$py"
+  SCHEDULER_LOCK_HELD=0
+  rc=0
+  token="$("$py" -m cnequity.orchestrator.scheduler_lock --acquire "$lock_root" "$lock_name" --pid "$$")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    return "$rc"
+  fi
+  SCHEDULER_LOCK_TOKEN="$token"
+  SCHEDULER_LOCK_HELD=1
 }
 
 scheduler_lock_install_traps() {
@@ -123,17 +85,10 @@ scheduler_lock_install_traps() {
 }
 
 scheduler_lock_release() {
-  local owner=""
   if [[ "${SCHEDULER_LOCK_HELD:-0}" != "1" ]]; then
     return 0
   fi
-
-  if [[ -f "${SCHEDULER_LOCK_PID_FILE:-}" ]]; then
-    owner="$(cat "$SCHEDULER_LOCK_PID_FILE" 2>/dev/null || true)"
-  fi
-  if [[ "$owner" == "$$" ]]; then
-    rm -f "$SCHEDULER_LOCK_PID_FILE" 2>/dev/null || true
-    rmdir "$SCHEDULER_LOCK_DIR" 2>/dev/null || true
-  fi
+  "$SCHEDULER_LOCK_PYTHON" -m cnequity.orchestrator.scheduler_lock \
+    --release "$SCHEDULER_LOCK_ROOT" "$SCHEDULER_LOCK_NAME" --pid "$$" --token "$SCHEDULER_LOCK_TOKEN" || true
   SCHEDULER_LOCK_HELD=0
 }

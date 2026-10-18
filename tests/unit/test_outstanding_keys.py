@@ -184,9 +184,18 @@ def test_a_repair_settles_after_every_pass(tmp_path, monkeypatch):
 
     settled: list[int] = []
     passes: list[str] = []
+    followed: list[tuple] = []
 
     monkeypatch.setattr(
         bf, "_backfill_once", lambda cfg, ds: passes.append(ds) or {"status": "success"}
+    )
+    monkeypatch.setattr(bf, "_bar_fingerprint", lambda cfg, window: len(passes))
+    monkeypatch.setattr(
+        bf,
+        "_after_daily_bars",
+        lambda cfg, before, window, result: (
+            followed.append((before, window)) or {"synchronized": True}
+        ),
     )
     monkeypatch.setattr(
         bf,
@@ -199,6 +208,26 @@ def test_a_repair_settles_after_every_pass(tmp_path, monkeypatch):
 
     assert len(passes) == 3, "one pass per month present in the ledger"
     assert settled == [0, 1, 2, 3], "reconciled before requests, then after each pass"
+    assert [before for before, _ in followed] == [0, 1, 2]
+    assert [window[0].month for _, window in followed] == [1, 2, 3]
+
+
+def test_bar_repair_reports_failed_followup_even_when_debts_are_settled(tmp_path, monkeypatch):
+    from cnequity.cli import backfill_cmds as bf
+
+    cfg = Config(data_root=tmp_path / "lake")
+    init_data_layout(cfg)
+    StateStore(cfg.meta_root).record_outstanding_keys(
+        "daily_bars", [("000001.SZ", date(2026, 9, 15))], run_id="seed", reason="interior_gap"
+    )
+    monkeypatch.setattr(bf, "_bar_fingerprint", lambda *a: {"before": 1})
+    monkeypatch.setattr(bf, "_backfill_once", lambda *a: {"status": "success"})
+    monkeypatch.setattr(bf, "_after_daily_bars", lambda *a: {"status": "failed", "error": "derive"})
+    monkeypatch.setattr(bf, "_settle_outstanding", lambda *a, **kw: {"filled": 1, "still_owed": 0})
+    result = bf._repair_outstanding(cfg, "daily_bars", 1)
+    assert result["status"] == "degraded"
+    assert result["coverage_status"] == "complete"
+    assert result["followups"] == [{"month": "2026-09", "status": "failed", "error": "derive"}]
 
 
 def test_outstanding_reconciles_published_keys_without_fetching(tmp_path, monkeypatch):
@@ -249,8 +278,6 @@ def test_reconcile_does_not_count_a_missing_key_as_a_repair_attempt(tmp_path):
     assert "attempts" not in store.get_outstanding_keys("daily_bars")[0]
 
 
-
-
 def test_a_repair_parks_keys_after_the_attempt_limit(tmp_path, monkeypatch):
     """A key no vendor has served for many runs must stop consuming passes.
 
@@ -263,6 +290,10 @@ def test_a_repair_parks_keys_after_the_attempt_limit(tmp_path, monkeypatch):
     passes: list[str] = []
     monkeypatch.setattr(
         bf, "_backfill_once", lambda cfg, ds: passes.append(ds) or {"status": "success"}
+    )
+    monkeypatch.setattr(bf, "_bar_fingerprint", lambda cfg, window: len(passes))
+    monkeypatch.setattr(
+        bf, "_after_daily_bars", lambda cfg, before, window, result: {"synchronized": True}
     )
     monkeypatch.setattr(
         bf, "_settle_outstanding", lambda cfg, ds, **kwargs: {"filled": 0, "still_owed": 1}
@@ -283,6 +314,10 @@ def test_parked_keys_can_be_retried_explicitly(tmp_path, monkeypatch):
     passes: list[str] = []
     monkeypatch.setattr(
         bf, "_backfill_once", lambda cfg, ds: passes.append(ds) or {"status": "success"}
+    )
+    monkeypatch.setattr(bf, "_bar_fingerprint", lambda cfg, window: len(passes))
+    monkeypatch.setattr(
+        bf, "_after_daily_bars", lambda cfg, before, window, result: {"synchronized": True}
     )
     monkeypatch.setattr(
         bf, "_settle_outstanding", lambda cfg, ds, **kwargs: {"filled": 0, "still_owed": 1}

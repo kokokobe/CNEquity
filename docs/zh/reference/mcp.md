@@ -1,4 +1,4 @@
-# MCP：把湖接给 AI agent
+# MCP 接入：把湖接给 AI agent
 
 `cne serve` 把湖给人看，也可以从操作页发起白名单里的取数和日更。`cne mcp` 把湖给模型用，并且**只读**：这里没有任何触发采集、重试、清理的入口。
 
@@ -139,6 +139,7 @@ agent 每轮都要从一个平铺列表里选工具。按数据集给工具会�
 - `describe_lake` 的 `contract` 字段列出复权、PIT、`snapshot_only`、`history_horizon_days`、`universe` 的含义。
 - `query_bars` 不带 `adjust` 时返回 `warning`；带了但有行缺因子时，报出「N/M 行 `adj_is_exact=false`」。响应同时回显 `adjust` 与 `universe`，使显式的 `all_a_sh_sz` 沪深子集口径不会在分页或下游处理时丢失。
 - `query_fundamentals` 不给 `as_of` 直接报错并解释为什么没有默认值——默认成今天，等于用今天的信息回答历史问题，而 agent 无从察觉。
+- `query_fundamentals` 默认 `pit_mode="best_effort"`：回填进湖的历史行也会返回，带 `pit_is_exact=false`，响应里的 `exact_rows` 给出精确行数。`pit_mode="strict"` 只返回湖在 `as_of` 当天已持有的行；结果为空而回填行存在时，`note` 会说明并提示改用 best_effort。
 
 ### 分页永远说实话
 

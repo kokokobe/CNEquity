@@ -72,6 +72,7 @@ def test_web_backup_verify_restore_real_children(published, tmp_path, monkeypatc
     assert client.app.state.config.data_root == config.data_root
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_changed_manifest_requires_new_preview(published):
     store = SnapshotStore(published)
     manifest = store.create("baseline", ["daily_bars"])
@@ -134,6 +135,7 @@ def test_restore_target_rejects_active_nested_parent_occupied_or_linked(publishe
     assert (occupied / "keep").read_text() == "keep"
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_backup_args_are_repeated_and_bad_inventory_is_visible(published):
     spec = spec_for("snapshot.create")
     params = normalize(spec, {"name": "backup", "datasets": ["daily_bars"]}, published)
@@ -184,6 +186,7 @@ def auto_preview(service, **options):
     )
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_auto_backup_and_events_can_enable_without_daily(automation, tmp_path):
     plan = auto_preview(
         automation,
@@ -289,6 +292,7 @@ def wait_timer(config, report):
     pytest.fail("timer child did not finish")
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_real_auto_backup_runs_once_on_weekend_without_web(automation, monkeypatch):
     monkeypatch.delenv("CNE_OPS_HANDLER", raising=False)
     freeze_children(monkeypatch)
@@ -308,6 +312,7 @@ def test_real_auto_backup_runs_once_on_weekend_without_web(automation, monkeypat
         claim_session(config, job["scheduled"])
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_real_events_attempt_is_throttled_even_after_failure(automation, monkeypatch):
     from test_serve_ops import _use_stub
 
@@ -327,6 +332,7 @@ def test_real_events_attempt_is_throttled_even_after_failure(automation, monkeyp
         claim_session(config, job["scheduled"])
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_busy_timer_waits_without_consuming_attempt_and_changed_scope_rejects(
     automation, monkeypatch
 ):

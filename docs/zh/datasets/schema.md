@@ -1,6 +1,23 @@
-# Schema 契约
+# 字段与单位
 
 本页用于查字段、类型和单位。数据集用途见[目录](catalog.md)，读取方式见[查询指南](query-guide.md)，兼容性与版本见[数据契约](contract.md)。列名与类型由 `scripts/dev/sync_docs.py` 同步，解释文字人工维护。
+
+### 按层查找
+
+按[研究分层](catalog.md#数据分层)排列，点名字跳到该数据集的列定义。
+
+| 层次 | 数据集 |
+|------|--------|
+| **L0** 基础参考 | [instruments](#instruments), [etf_profiles](#etf_profiles), [trading_calendar](#trading_calendar), [trading_status](#trading_status) |
+| **L1** 行情 | [daily_bars](#daily_bars), [index_bars](#index_bars), [minute_bars](#minute_bars--minute_bars_5m), [minute_bars_5m](#minute_bars--minute_bars_5m), [trade_ticks](#trade_ticks), [adj_factors](#adj_factors), [minute_bars_15m](#minute_bars_15m--minute_bars_30m--minute_bars_60m), [minute_bars_30m](#minute_bars_15m--minute_bars_30m--minute_bars_60m), [minute_bars_60m](#minute_bars_15m--minute_bars_30m--minute_bars_60m), [delisting_events](#delisting_events) |
+| **L2** 公司事件 | [corporate_actions](#corporate_actions), [announcement_index](#announcement_index), [earnings_disclosure_schedule](#earnings_disclosure_schedule) |
+| **L3** 基本面 | [financial_statement_items](#financial_statement_items), [share_structure](#share_structure), [shareholder_counts](#shareholder_counts), [top_holders](#top_holders), [valuation_metrics](#valuation_metrics), [analyst_consensus](#analyst_consensus) |
+| **L4** 资金面 | [fund_flow](#fund_flow), [margin_trading](#margin_trading), [northbound_holdings](#northbound_holdings), [northbound_flows](#northbound_flows), [dragon_tiger](#dragon_tiger), [block_trades](#block_trades), [institutional_holdings](#institutional_holdings), [fund_flow_ths](#fund_flow_ths) |
+| **L5** 结构行业 | [sector_members](#sector_members), [index_constituents](#index_constituents), [industry_members](#industry_members), [industry_index](#industry_index) |
+| **L6** 宏观 | [macro_indicators](#macro_indicators), [market_breadth](#market_breadth) |
+| **L7** 舆情 / 轮动 | [sentiment_scores](#sentiment_scores), [hot_rank](#hot_rank), [sector_bars](#sector_bars), [sector_fund_flow](#sector_fund_flow), [sector_fund_flow_ths](#sector_fund_flow_ths), [news_headlines](#news_headlines), [flash_news_wire](#flash_news_wire), [economic_calendar](#economic_calendar) |
+| **L8** 风险合规 | [share_unlock_schedule](#share_unlock_schedule), [regulatory_events](#regulatory_events) |
+| **L9** 衍生品 | [commodity_bars](#commodity_bars), [futures_contracts](#futures_contracts), [option_contracts](#option_contracts), [futures_bars](#futures_bars), [futures_minute_bars](#futures_minute_bars), [option_bars](#option_bars), [futures_continuous](#futures_continuous), [option_greeks](#option_greeks) |
 
 ### 全局约定
 
@@ -150,6 +167,21 @@
 | fetched_at | timestamp |  |
 
 `status` 表示交易状态，`risk_warning` 表示风险警示，两者独立。停牌不能清除 ST 标志；已知退市证券不应被作为正常交易证券处理。
+
+`derived_traded` 表示已提交日线证明当天有实际成交（成交量大于零），不是一手状态快照。
+它只补已知上市期间、没有任何状态行的股票或 ETF 键，写 `normal`、`is_trading=true`，
+`risk_warning=null`。`normal` 不表示“确认非 ST”。可信的当日一手状态优先于此派生行；
+它不参与东财中断时的一手记录沿用，也不生成历史 ST 覆盖凭证。零成交量、未知成交量、
+未知上市日期和上市期间之外的日线不会生成此类行；已有矛盾状态需另行修复。
+
+历史快照只覆盖本湖开始采集之后的日期，不能根据第一条状态记录宣称此前完整。
+`cne check --full` 的 `trading_state_historical_coverage` 按资产类别及月份统计成交键，
+包括每只证券首次状态记录之前的历史；缺状态、派生成交、ST 未知和排除原因分别报告。
+该报告只检查有成交的键，不证明停牌日期或全部历史 ST 已完整覆盖。
+
+用 `cne repair status-traded --start YYYY-MM-DD --end YYYY-MM-DD` 离线预览补缺，
+核对后加 `--apply` 发布并保留旧版本。建议按年或月分段；执行时重新核对当前已提交版本。
+严格的历史股票池读取仍需独立 ST 证据，成交补行不会解除该要求。
 
 **读旧湖不会出错。** 旧行把 ST 编码成 `status="st"`，`validate_dataframe` 在读入时
 自动升级（见 `cnequity/domain/trading_status.py`）。把物理 schema 统一过来跑：
@@ -825,7 +857,7 @@ PIT 查询过滤 `announce_date <= as_of`。
 | index_symbol | string | 如 ``000300.SH`` |
 | symbol | string | 成分股 |
 | as_of_date | date | 快照 / 调样日 |
-| weight | float64 | 权重（百分比或比率，依源） |
+| weight | float64 | 权重比例，可空；东财与国证调样史缺失时写 null；官方权重文件百分数转比例，总和约 1 |
 | source | string | 溯源 |
 | data_version | string | 溯源 |
 | fetched_at | timestamp | 溯源 |

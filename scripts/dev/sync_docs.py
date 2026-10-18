@@ -21,10 +21,12 @@ Targets:
   made absolute, since PyPI resolves none of them.
 
 The English site (``docs/en``) has its own copy of each generated page:
-``schema-en``, ``derivatives-en``, ``cli-options-en`` and ``cli-surface-en``. Text
-that comes from code in Chinese — Click help, the side-effect inventory — is
-translated through ``scripts/dev/i18n/*.en.yml``; a help text without an entry
-there fails the check instead of reaching the English page in Chinese.
+``schema-en``, ``derivatives-en``, ``cli-options-en`` and ``cli-surface-en``. Click
+help is English in the code and Chinese in the package catalog, so each page
+renders its own language from there (``scripts/dev/i18n_catalog.py`` fails on a
+help text with no Chinese). The side-effect inventory is written below in
+Chinese and translated through ``scripts/dev/i18n/cli_surface.en.yml``; a
+command without an entry there fails the check.
 
 Schema page notes:
 
@@ -56,6 +58,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from cnequity.adapters.futures_exchange.registry import capabilities  # noqa: E402
 from cnequity.cli.main import cli  # noqa: E402
+from cnequity.i18n import translate_to  # noqa: E402
 
 DOC_PATH = REPO_ROOT / "docs" / "zh" / "datasets" / "schema.md"
 DOC_PATH_EN = REPO_ROOT / "docs" / "en" / "datasets" / "schema.md"
@@ -256,33 +259,17 @@ def _load_catalog(name: str) -> dict:
     return yaml.safe_load((I18N / name).read_text(encoding="utf-8")) or {}
 
 
-def _help_texts() -> list[str]:
-    seen: list[str] = []
-    for _, command in _option_leaves(cli):
-        for param in command.params:
-            if isinstance(param, click.Option) and param.help and param.help not in seen:
-                seen.append(param.help)
-    return seen
+def _help_in(lang: str, param: click.Parameter) -> str:
+    """An option's help in a docs language, from the package catalog.
 
-
-def _help_translations() -> dict[str, str]:
-    """English for every option help text; refuses gaps and leftovers."""
-    catalog = _load_catalog("cli_help.en.yml")
-    texts = _help_texts()
-    missing = [text for text in texts if not catalog.get(text)]
-    unused = sorted(set(catalog) - set(texts))
-    if missing or unused:
-        raise SystemExit(
-            "scripts/dev/i18n/cli_help.en.yml is out of date:\n"
-            + "".join(f"  missing: {text}\n" for text in missing)
-            + "".join(f"  unused:  {text}\n" for text in unused)
-        )
-    return catalog
+    The written help is the English msgid; `docs/zh` renders its Chinese.
+    """
+    written = param.__dict__.get("help") or ""
+    return translate_to("zh_CN" if lang == "zh" else "en", written) if written else ""
 
 
 def render_cli_options(lang: str = "zh") -> str:
     words = _OPTION_WORDS[lang]
-    translate = _help_translations() if lang == "en" else {}
     lines = [words["title"], "", words["intro"], ""]
     for path, command in _option_leaves(cli):
         ctx = click.Context(command)
@@ -290,7 +277,7 @@ def render_cli_options(lang: str = "zh") -> str:
         for param in command.params:
             if isinstance(param, click.Option):
                 label = ", ".join([*param.opts, *param.secondary_opts])
-                description = translate.get(param.help, param.help) if param.help else ""
+                description = _help_in(lang, param)
             else:
                 label = param.name or ""
                 description = words["positional"]
@@ -336,6 +323,10 @@ EFFECTS: dict[str, tuple[str, str]] = {
         "默认离线预览；--apply 按缺口查询 Baostock 与巨潮资讯，核验后发布新版本并保留旧版本",
     ),
     "repair layout": ("无", "默认只预览；--apply 发布新版本，保留旧版本和重复观察证据"),
+    "repair misdated-valuation": (
+        "--apply 时",
+        "默认离线预览；--apply 向东财 datacenter 取被替换交易日的估值，核验后发布新版本并保留旧版本",
+    ),
     "repair orphan-symbols": (
         "无",
         "默认预览，可能登记旧湖基线版本；--apply 移除无日线证券的因子和公司行为行，发布新版本并保留旧版本",
@@ -343,6 +334,66 @@ EFFECTS: dict[str, tuple[str, str]] = {
     "repair stale-suspensions": (
         "无",
         "默认预览，可能登记旧湖基线版本；--apply 移除成交日线否定的推断停牌，发布新版本并保留旧版本",
+    ),
+    "repair status-listing-window": (
+        "无",
+        "默认预览，可能登记旧湖基线版本；--apply 删除上市日之前和没有退市记录支撑的状态行，发布新版本并保留旧版本",
+    ),
+    "repair status-outages": (
+        "无",
+        "默认预览，可能登记旧湖基线版本；--apply 按现行规则重建窗口内的东财中断缓存行，发布新版本并保留旧版本",
+    ),
+    "repair status-traded": (
+        "无",
+        "默认只读预览；--apply 用已提交成交日线补缺失状态键，ST 保持未知，发布新版本并保留旧版本",
+    ),
+    "repair adj-factors": (
+        "仅 --refresh-sources 联网",
+        "默认离线预览并保存计划；--apply 发布有证据支持的修正、保留旧版本和未解决提示，分批保存历史进度",
+    ),
+    "repair fund-factors": (
+        "无",
+        "默认只读预览；--apply 从原始来源序列补入已记录基金拆分和转增，经修复门禁发布并保留旧版本",
+    ),
+    "repair fund-listing-dates": (
+        "请求交易所当前 ETF/LOF 目录",
+        "默认预览；--apply 归档来源响应并补未知上市日期，经修复门禁发布并保留已有日期和旧版本",
+    ),
+    "repair stock-listing-dates": (
+        "仅 --refresh-sources 联网",
+        "默认离线回放 IPO 日历；--apply 补官方上市事件证实的股票上市日期，经修复门禁发布并保留旧版本",
+    ),
+    "repair index-snapshots": (
+        "仅 --refresh-sources 联网",
+        "默认离线回放官方文件；--apply 按实际日期替换完整指数成分快照及真实权重，经修复门禁发布并保留旧版本",
+    ),
+    "repair index-history": (
+        "仅 --refresh-sources 联网",
+        "默认离线回放所选深证成指或科创50的已核验官方附件目录；--apply 按生效日替换完整历史名单，保留官方实际日期权重及旧版本；未知历史权重为空",
+    ),
+    "repair financial-originals": (
+        "仅 --refresh-sources 联网",
+        "默认离线回放原始定期报告；--apply 追加能明确识别的合并报表当期数，经修复门禁发布并保留已有版本和真实采集时间",
+    ),
+    "repair fund-no-print": (
+        "仅 --refresh-sources 联网",
+        "默认离线预览；联网采证会归档报表并更新缓存；--apply 保存基金竞价日线覆盖证明、结清对应欠账并刷新水位，不生成日线或停牌行",
+    ),
+    "repair fund-volume": (
+        "仅 --refresh-sources 联网",
+        "默认离线预览；联网归档上交所行情服务的历史 K 线，金额冲突时复用或采集东财证据；--apply 核验后修复沪深场内基金成交量，经修复门禁发布并保留旧版",
+    ),
+    "repair missing-values": (
+        "无",
+        "默认只读预览；--apply 将估值占位零及东财、国证缺失权重改为空值，经修复门禁发布并保留旧版本",
+    ),
+    "repair financial-announcements": (
+        "无",
+        "默认只读预览；--apply 追加有 LICO 原始披露日证据的财报重建版本，经修复门禁发布并保留已有版本",
+    ),
+    "repair daily-bar-coverage": (
+        "无",
+        "默认只读预览；--apply 按已提交数据结清北交所整日欠账及已证明的上市前欠账并刷新覆盖水位，保存证据收据，不改日线",
     ),
     "repair valuation-basis": ("无", "默认只预览；--apply 发布新版本并保留旧版本"),
     "run clean": ("无", "仅预览过期文件；显式 --reconcile-runs 可修改运行状态"),
@@ -404,7 +455,7 @@ def _surface_leaves(group: click.Group, prefix: str = "") -> list[str]:
 
 _SURFACE_HEAD = {
     "zh": [
-        "# CLI 命令副作用清单",
+        "# 联网与写入清单",
         "",
         "由 `scripts/dev/sync_docs.py` 从 Click 命令注册表核对。‘执行时’指运行命令主体；`--help` 不执行。详细源选择与限制见[取数策略](../operations/fetch-policy.md)。",
         "",
@@ -412,7 +463,7 @@ _SURFACE_HEAD = {
         "|---|---|---|",
     ],
     "en": [
-        "# CLI side-effect inventory",
+        "# Network and write inventory",
         "",
         "Checked against the Click command registry by `scripts/dev/sync_docs.py`. \u201cWhen run\u201d means when the command body executes; `--help` executes nothing. For source selection and limits, see [Fetching and source protection](../operations/fetch-policy.md).",
         "",

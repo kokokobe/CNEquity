@@ -24,6 +24,7 @@ from cnequity.cli._shared import (
 from cnequity.derive.adj_factors import compute_adj_factors
 from cnequity.domain.datasets import RESAMPLED_MINUTE_DATASETS
 from cnequity.domain.market_time import shanghai_today
+from cnequity.i18n import N_, _
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.query.parquet_scan import scan_parquet_files
@@ -41,14 +42,20 @@ from cnequity.storage.staging_cleanup import (
 
 @run.command("compact")
 @config_option
-@click.option("--run-id", default=None, help="只发布这一次 run；默认处理所有待发布的 run。")
+@click.option(
+    "--run-id",
+    default=None,
+    help=N_("Publish only this run; by default handles all runs pending publication."),
+)
 def compact(config_path: str, run_id: str | None):
-    """把 staging 里已经结束、但还没发布的 run compact 进 curated。
+    """Compact runs in staging that have finished but are not yet published into curated.
 
     \b
-    不带 --run-id 时逐个处理所有这样的 run：进程已结束、有暂存文件、还没有成功的 compact。
-    正在跑的 run 和 init run（由 `cne init` 自己续跑）不动；每个数据集仍受 compact
-    门禁保护，有未完成批次的数据集留给 `cne run retry`。
+    Without --run-id it handles every such run in turn: the process has ended, it has staged
+    files, and it has no successful compact yet. Runs still going, and init runs (which
+    `cne init` resumes itself), are left alone; each dataset is still guarded by the compact
+    gate, and datasets with unfinished batches are left for `cne run retry`.
+
     """
     cfg = _cfg(config_path)
     attach_log_file(cfg, "run-compact")
@@ -66,14 +73,14 @@ def compact(config_path: str, run_id: str | None):
 
     pending = _unpublished_runs(cfg, engine)
     if not pending:
-        click.echo("没有待发布的 staging：所有已结束的 run 都已经 compact。")
+        click.echo(_("Nothing in staging to publish: every finished run has been compacted."))
         return
     results = []
     worst = 0
     for rid in pending:
         out = engine.run_step("compact", shanghai_today(), rid)
         status = str(out.get("status", "success"))
-        click.echo(f"compact {rid}：{status}", err=True)
+        click.echo(_("compact {rid}: {status}").format(rid=rid, status=status), err=True)
         results.append({"run_id": rid, "rows_written": out.get("rows_written", 0), **out})
         exit_code = _run_status_exit_code(status)
         if exit_code == 1 or worst == 0:
@@ -173,7 +180,9 @@ def _require_minute_input(cfg, dataset: str) -> None:
         dataset_has_parquet(read_root(cfg, name)) for name in ("minute_bars", "minute_bars_5m")
     ):
         raise InputUnavailableError(
-            f"{dataset}: 湖里没有 minute_bars 或 minute_bars_5m，先开启 [minute_bars] 并回填分钟线"
+            _(
+                "{dataset}: the lake has no minute_bars or minute_bars_5m; enable [minute_bars] and backfill minute bars first"
+            ).format(dataset=dataset)
         )
 
 
@@ -298,8 +307,9 @@ def _published_derive(cfg, dataset: str):
     is_flag=True,
     default=False,
     help=(
-        "重写 adj_factors / industry_index / option_greeks / minute_bars_15m|30m|60m 的全部分区"
-        "（默认只补增量）。"
+        N_(
+            "Rewrite all partitions of adj_factors / industry_index / option_greeks / minute_bars_15m|30m|60m (default: incremental only)."
+        )
     ),
 )
 @click.option(
@@ -307,8 +317,9 @@ def _published_derive(cfg, dataset: str):
     "start_str",
     default=None,
     help=(
-        "industry_index / trading_status / option_greeks / minute_bars_15m|30m|60m："
-        "只派生这个日期（YYYY-MM-DD）及之后的。"
+        N_(
+            "industry_index / trading_status / option_greeks / minute_bars_15m|30m|60m: derive only this date (YYYY-MM-DD) and later."
+        )
     ),
 )
 @click.option(
@@ -316,8 +327,9 @@ def _published_derive(cfg, dataset: str):
     "end_str",
     default=None,
     help=(
-        "industry_index / trading_status / option_greeks / minute_bars_15m|30m|60m："
-        "只派生这个日期（YYYY-MM-DD）及之前的。"
+        N_(
+            "industry_index / trading_status / option_greeks / minute_bars_15m|30m|60m: derive only this date (YYYY-MM-DD) and earlier."
+        )
     ),
 )
 @click.option(
@@ -325,8 +337,9 @@ def _published_derive(cfg, dataset: str):
     "apply_changes",
     is_flag=True,
     help=(
-        "bse_code_migration：真正重写分区；adj_factor_source：写入逐证券来源覆盖并重算这些证券的因子"
-        "（默认只报告）。"
+        N_(
+            "bse_code_migration: actually rewrite partitions; adj_factor_source: write per-security source overrides and recompute factors for those securities (default: report only)."
+        )
     ),
 )
 def derive(
@@ -337,21 +350,22 @@ def derive(
     end_str: str | None,
     apply_changes: bool,
 ):
-    """派生计算类数据集。
+    """Derive computed datasets.
 
     \b
-    `adj_factors` 和 `industry_index` 本来就是日更里的 step（`derive_adj_factors`、
-    `derive_industry_index`）；`trading_status` 的停牌派生在 init 和
-    `cne backfill daily_bars` 之后自动运行，`cne backfill corporate_actions` 之后也会自动重算受影响证券的因子。
-    所以在这里跑它们属于修复或补更早的窗口，不是正常一天的一部分。
-    `sector_routing`、`sector_code_map` 和 `valuation_orphans` 没有任何调度会跑，只能手动执行。
-    `adj_factor_source` 用 Baostock 仲裁因子与公司行为的矛盾；证明新浪有误且 Baostock
-    与其余事件一致的证券，`--apply` 后整条因子改用 Baostock。
-    `futures_continuous` 和 `option_greeks` 在 `derivatives` 组里日更。
-    `futures_continuous` 每次全量重算；`option_greeks` 自动检测行情、合约、利率和模型依赖变化。
-    衍生品回填后自动更新合约及派生；`--full` 可显式全部重算。
-    `minute_bars_15m`、`minute_bars_30m`、`minute_bars_60m` 默认不计算，只在这里手动派生：
-    某只股票某天有 1m 就用 1m，否则用 5m。不给窗口时只重算还没算过、或分钟线输入已更新的交易日。
+    `adj_factors` and `industry_index` are already steps in the daily update (`derive_adj_factors`,
+    `derive_industry_index`); the suspension derivation for `trading_status` runs automatically after init
+    and after `cne backfill daily_bars`, and `cne backfill corporate_actions` also recomputes factors for the affected securities.
+    So running them here is a repair or covers an earlier window, not part of a normal day.
+    `sector_routing`, `sector_code_map` and `valuation_orphans` are run by no schedule and only by hand.
+    `adj_factor_source` arbitrates conflicts between factors and corporate actions with Baostock; securities
+    where Sina is shown wrong and Baostock agrees with the other events switch their whole factor to Baostock with `--apply`.
+    `futures_continuous` and `option_greeks` update daily in the `derivatives` group.
+    `futures_continuous` is recomputed in full every time; `option_greeks` detects changes in quotes, contracts, rates and model dependencies.
+    After a derivatives backfill, contracts and derived data update automatically; `--full` recomputes everything explicitly.
+    `minute_bars_15m`, `minute_bars_30m` and `minute_bars_60m` are not computed by default and are only derived here:
+    a stock's day uses 1m when it has 1m, otherwise 5m. Without a window, only sessions not yet computed, or whose minute inputs changed, are recomputed.
+
     """
     # Derive targets are lower case in the registry, and command names are
     # already case-insensitive; a target typed in caps should resolve the same.
@@ -361,36 +375,32 @@ def derive(
     start = parse_date_option(start_str, "--start")
     end = parse_date_option(end_str, "--end")
     if start and end and start > end:
-        raise click.ClickException("--start 必须早于或等于 --end")
+        raise click.ClickException(_("--start must be on or before --end"))
     if name == "adj_factors":
         with _published_derive(cfg, name) as outcome:
             result = compute_adj_factors(cfg, full=full)
             outcome["rows_written"] = result.rows
             if result.failed:
                 outcome["status"] = "degraded"
-        click.echo(f"已派生 {name}：{result.rows} 行")
+        click.echo(_("Derived {name}: {rows} rows").format(name=name, rows=result.rows))
         if result.failed:
             click.echo(
-                f"警告：{len(result.failed)} 个 标的×类型 抓取失败（{result.fail_ratio:.1%}）",
+                _("Warning: {value} symbol×type fetches failed ({fail_ratio:.1%})").format(
+                    value=len(result.failed), fail_ratio=result.fail_ratio
+                ),
                 err=True,
             )
             click.echo(json.dumps(outcome, indent=2, default=str, ensure_ascii=False))
     elif name == "adj_factor_source":
-        from cnequity.derive.factor_arbitration import (
-            arbitrate_factor_sources,
-            record_source_overrides,
-        )
+        from cnequity.derive.factor_arbitration import arbitrate_factor_sources
+        from cnequity.storage.repairs.adj_factors import repair_adj_factors
 
         report = arbitrate_factor_sources(cfg)
-        if apply_changes and report.get("switch"):
-            switched = record_source_overrides(cfg, report)
-            with _published_derive(cfg, "adj_factors") as outcome:
-                result = compute_adj_factors(cfg, refresh_symbols=switched)
-                outcome["rows_written"] = result.rows
-                if result.failed:
-                    outcome["status"] = "degraded"
-            report["applied"] = True
-            report["rows_rewritten"] = result.rows
+        if apply_changes:
+            repair_result = repair_adj_factors(cfg, apply=True)
+            report["repair"] = repair_result
+            report["applied"] = repair_result["applied"]
+            report["rows_rewritten"] = repair_result["rows"]
         else:
             report["applied"] = False
         report.pop("switch_detail", None)
@@ -404,7 +414,11 @@ def derive(
         click.echo(json.dumps(summary, indent=2, default=str))
     elif name == "futures_continuous":
         if start or end:
-            raise click.ClickException("futures_continuous 必须全量重算，不支持 --start / --end")
+            raise click.ClickException(
+                _(
+                    "futures_continuous must be recomputed in full and does not support --start / --end"
+                )
+            )
         from cnequity.derive.futures_continuous import derive_futures_continuous
 
         with _published_derive(cfg, name) as outcome:
@@ -462,31 +476,38 @@ def derive(
             summary["note"] = "report only; re-run with --apply to rewrite the partitions"
         click.echo(json.dumps(summary, indent=2, default=str))
     else:
-        raise click.ClickException(f"未知的 derive 目标：{name}")
+        raise click.ClickException(_("Unknown derive target: {name}").format(name=name))
 
 
 @run.command("clean")
 @config_option
-@click.option("--dry-run", is_flag=True, help="兼容选项；现在所有清理均只预览。")
+@click.option(
+    "--dry-run", is_flag=True, help=N_("Compatibility option; all cleanup is now preview-only.")
+)
 @click.option(
     "--orphan-retention-days",
     default=7,
     show_default=True,
-    help="预览超过这么多天、且 manifest 里没有记录的孤儿 staging。",
+    help=N_(
+        "Preview orphan staging older than this many days that is not recorded in the manifest."
+    ),
 )
 @click.option(
     "--snapshot-retention-days",
     default=DEFAULT_SNAPSHOT_RETENTION_DAYS,
     show_default=True,
     help=(
-        "预览超过这么多天的 meta/source_snapshots run_id 目录（每个数据集 / 源的最新一份始终保留）"
-        "。"
+        N_(
+            "Preview meta/source_snapshots run_id directories older than this many days (the latest one per dataset / source is always kept)."
+        )
     ),
 )
 @click.option(
     "--force",
     is_flag=True,
-    help="将未完成或未 compact 的 staging 也列入预览，不删除文件、不降级批次。",
+    help=N_(
+        "Also include unfinished or uncompacted staging in the preview; deletes no files and does not downgrade batches."
+    ),
 )
 @click.option(
     "--keep-revision-generations",
@@ -494,8 +515,9 @@ def derive(
     show_default=True,
     type=int,
     help=(
-        "每个数据集保留最近这么多代及 current/hold；其他版本只列出候选，不标记、不释放字节。"
-        "网页标记前须导入引用清单。0 表示跳过版本处理。"
+        N_(
+            "Keep the latest this many generations plus current/hold per dataset; other versions are only listed as candidates, not marked, and no bytes are freed. Import a reference manifest before marking in the web UI. 0 skips version handling."
+        )
     ),
 )
 @click.option(
@@ -503,18 +525,22 @@ def derive(
     default=DEFAULT_LOG_RETENTION_DAYS,
     show_default=True,
     type=int,
-    help="预览超过这么多天的 `logs/cne-*.log`，不删除；0 表示跳过。",
+    help=N_("Preview `logs/cne-*.log` older than this many days, without deleting; 0 skips."),
 )
 @click.option(
     "--reconcile-runs",
     is_flag=True,
-    help="清理前，把卡在 'running'（worker 崩溃）的 run 标成 failed。",
+    help=N_("Before cleanup, mark runs stuck in 'running' (crashed worker) as failed."),
 )
 @click.option(
     "--reconcile-after-seconds",
     default=None,
     type=float,
-    help=("只对静默超过这么多秒的 run 做上面的对账（默认取 [orchestrator].batch_stale_seconds）。"),
+    help=(
+        N_(
+            "Apply the reconciliation above only to runs silent for more than this many seconds (defaults to [orchestrator].batch_stale_seconds)."
+        )
+    ),
 )
 def clean(
     config_path: str,
@@ -527,18 +553,21 @@ def clean(
     reconcile_runs: bool,
     reconcile_after_seconds: float | None,
 ):
-    """预览过期数据，不执行物理删除；删除须在 serve 运维网页确认。
+    """Preview expired data without physically deleting it; deletion must be confirmed on the serve operations page.
 
     \b
-    「可清理」是指：run 处于终态（success/warning/failed）、所有批次都已落定，
-    并且记录过一次成功的 compact。没跑完或从没 compact 过的 staging 会留着等重试，
-    --force 只扩大预览范围。来源快照和日志也仅预览，全部 bytes_freed 为 0。
-    历史版本和登记试验可在 serve 存储运维页确认删除；其他资源暂仅报告。
+    "Cleanable" means: the run is in a terminal state (success/warning/degraded/failed), every batch has settled,
+    and a successful compact has been recorded. Staging that did not finish or was never compacted stays for a retry;
+    --force only widens the preview. Source snapshots and logs are preview-only too, with bytes_freed 0 throughout.
+    Old versions, registered experiments, and staging that merged successfully with no unfinished batches can be deleted after confirming on the serve storage page.
+    Orphaned staging, source snapshots and logs are only reported for now.
+
     """
     if dry_run and reconcile_runs:
         raise click.UsageError(
-            "--dry-run 不能与 --reconcile-runs 同用：对账会修改运行状态。"
-            "请先去掉 --reconcile-runs 查看清理预演。"
+            _(
+                "--dry-run cannot be combined with --reconcile-runs: reconciling changes run state. Drop --reconcile-runs to see the cleanup preview."
+            )
         )
     # Scheduled invocations must never bypass the browser confirmation flow.
     dry_run = True
@@ -586,6 +615,9 @@ def clean(
                 "force_removed_run_ids": [],
                 "force_candidate_run_ids": result.force_removed_run_ids,
                 "skipped_run_ids": result.skipped_run_ids,
+                "skipped_reasons": result.skipped_reasons,
+                "staging_inventory": result.inventory,
+                "staging_run_count": len(result.inventory),
                 "bytes_freed": 0,
                 "logical_bytes_selected": (
                     result.bytes_freed
@@ -627,7 +659,7 @@ def clean(
 
 @cli.group()
 def stats():
-    """meta/stats 下的湖度量表（行数、字节数、来源构成）。"""
+    """Lake metrics under meta/stats (row counts, bytes, source mix)."""
 
 
 def _stats_rebuild_if_stale(cfg, *, as_json: bool) -> None:
@@ -648,9 +680,14 @@ def _stats_rebuild_if_stale(cfg, *, as_json: bool) -> None:
         click.echo(json.dumps({"rebuilt": True, **result.as_dict()}, indent=2, default=str))
         return
     click.echo(
-        f"已重算（{freshness.reason or 'stale'}）："
-        f"{len(result.datasets)} 个数据集、{result.rows:,} 行，"
-        f"耗时 {result.elapsed_seconds:.1f}s"
+        _(
+            "Recomputed ({value}): {value2} datasets, {rows:,} rows in {elapsed_seconds:.1f}s"
+        ).format(
+            value=freshness.reason or "stale",
+            value2=len(result.datasets),
+            rows=result.rows,
+            elapsed_seconds=result.elapsed_seconds,
+        )
     )
 
 
@@ -660,25 +697,28 @@ def _stats_rebuild_if_stale(cfg, *, as_json: bool) -> None:
     "--dataset",
     "dataset_names",
     multiple=True,
-    help="只重算这些数据集（可重复）。其它数据集的行保持不变。",
+    help=N_("Recompute only these datasets (repeatable). Rows for other datasets stay unchanged."),
 )
 @click.option(
     "--if-stale",
     is_flag=True,
-    help="除非统计建好之后又跑过采集，否则什么都不做。可以安全地挂定时器。",
+    help=N_(
+        "Do nothing unless collection has run since the stats were built. Safe to put on a timer."
+    ),
 )
-@click.option("--json", "as_json", is_flag=True, help="以 JSON 打印结果。")
+@click.option("--json", "as_json", is_flag=True, help=N_("Print the result as JSON."))
 def stats_rebuild(config_path: str, dataset_names: tuple[str, ...], if_stale: bool, as_json: bool):
-    """从 curated 和 derived 重算 partition_stats / provenance_stats。
+    """Recompute partition_stats / provenance_stats from curated and derived.
 
     \b
-    默认无条件重算。要挂定时器请用 `--if-stale`：没有任何变化时它直接返回，
-    并且在已有并发重算持锁时选择让路而不是排队 ——
-    一个卡在全量扫描后面的面板请求，比落后一次 run 的数字更糟。
+    Recomputes unconditionally by default. For a timer use `--if-stale`: it returns at once when nothing changed,
+    and steps aside rather than queueing when a concurrent recompute holds the lock;
+    a dashboard request stuck behind a full scan is worse than numbers one run behind.
 
     \b
-    是否过期按 run id 判断，不看时钟。只有采集会改变这个湖，
-    所以在最后一次 run 之后建的统计就是新的，无论看上去多旧。
+    Staleness is judged by run id, not by the clock. Only ingestion changes this lake,
+    so stats built after the last run are current, however old they look.
+
     """
     # Registry names are lower case; `--dataset` should not care about case.
     dataset_names = tuple(n.lower() for n in dataset_names)
@@ -689,7 +729,9 @@ def stats_rebuild(config_path: str, dataset_names: tuple[str, ...], if_stale: bo
 
     if if_stale:
         if dataset_names:
-            raise click.UsageError("--if-stale 会重算整个湖；请去掉 --dataset，或者去掉 --if-stale")
+            raise click.UsageError(
+                _("--if-stale recomputes the whole lake; drop --dataset, or drop --if-stale")
+            )
         _stats_rebuild_if_stale(cfg, as_json=as_json)
         return
 
@@ -702,12 +744,19 @@ def stats_rebuild(config_path: str, dataset_names: tuple[str, ...], if_stale: bo
         click.echo(json.dumps(result.as_dict(), indent=2, default=str))
         return
     click.echo(
-        f"{len(result.datasets)} 个数据集、{result.partitions} 个分区、"
-        f"{result.rows:,} 行、{result.files} 个文件、"
-        f"{result.bytes / 1e6:.1f}MB，耗时 {result.elapsed_seconds:.1f}s"
+        _(
+            "{value} datasets, {partitions} partitions, {rows:,} rows, {files} files, {value2:.1f}MB in {elapsed_seconds:.1f}s"
+        ).format(
+            value=len(result.datasets),
+            partitions=result.partitions,
+            rows=result.rows,
+            files=result.files,
+            value2=result.bytes / 1e6,
+            elapsed_seconds=result.elapsed_seconds,
+        )
     )
     if result.empty:
-        click.echo(f"还没有 parquet：{', '.join(sorted(result.empty))}")
+        click.echo(_("No parquet yet: {value}").format(value=", ".join(sorted(result.empty))))
 
 
 def _scan_curated_datasets(cfg) -> list[dict]:
@@ -734,18 +783,19 @@ def _scan_curated_datasets(cfg) -> list[dict]:
 
 @stats.command("show")
 @config_option
-@click.option("--dataset", default=None, help="某一个数据集的逐分区明细。")
-@click.option("--by-source", is_flag=True, help="改为按 source / data_version 分组。")
-@click.option("--json", "as_json", is_flag=True, help="输出机器可读的 JSON。")
+@click.option("--dataset", default=None, help=N_("Per-partition detail for one dataset."))
+@click.option("--by-source", is_flag=True, help=N_("Group by source / data_version instead."))
+@click.option("--json", "as_json", is_flag=True, help=N_("Output machine-readable JSON."))
 def stats_show(config_path: str, dataset: str | None, by_source: bool, as_json: bool):
-    """汇总统计表；统计表过期时先自动重算。
+    """Summarize the stats tables; recompute them first when they are stale.
 
     \b
-    统计表落后于最新一次采集时，先按 `cne stats rebuild --if-stale` 的规则重算再显示；
-    `--dataset` / `--by-source` 需要的统计表还没生成时，也会先生成。
-    其余情况下，从没建过统计表的湖退回到现场数 curated 的 Parquet：更薄 ——
-    没有字节总量、没有来源构成、没有逐分区明细 —— 但不用先建任何东西就能回答
-    「这个湖里有什么」。这个退路就是从前的 `cne catalog`，`--json` 是它的输出。
+    When the stats lag the latest ingestion, they are recomputed by the rules of `cne stats rebuild --if-stale` before showing;
+    stats that `--dataset` / `--by-source` need but that do not exist yet are generated first as well.
+    Otherwise a lake that never built stats falls back to counting curated Parquet on the spot: thinner
+    (no byte totals, no source mix, no per-partition detail) but able to answer
+    "what is in this lake" without building anything first. That fallback is the former `cne catalog`, and `--json` is its output.
+
     """
     dataset = dataset.lower() if dataset else None
     from cnequity.storage.stats import (
@@ -765,7 +815,11 @@ def stats_show(config_path: str, dataset: str | None, by_source: bool, as_json: 
         summary is None and (dataset or by_source)
     ):
         click.echo(
-            f"统计表{'过期' if summary is not None else '尚未生成'}，正在重算（耗时取决于湖的大小）…",
+            (
+                _("Stats are stale; recomputing (time depends on the lake's size)…")
+                if summary is not None
+                else _("Stats not generated yet; computing (time depends on the lake's size)…")
+            ),
             err=True,
         )
         refresh_stats_if_stale(cfg)
@@ -773,13 +827,19 @@ def stats_show(config_path: str, dataset: str | None, by_source: bool, as_json: 
     if summary is None:
         if dataset or by_source:
             raise click.ClickException(
-                "另一个统计重算正在进行 —— `--dataset` / `--by-source` 需要的统计表还没生成，稍后再试"
+                _(
+                    "Another stats recompute is in progress, and the stats `--dataset` / `--by-source` need do not exist yet; try again shortly"
+                )
             )
         entries = _scan_curated_datasets(cfg)
         if as_json:
             click.echo(json.dumps(entries, indent=2))
             return
-        click.echo("没有统计表 —— 已直接扫 curated；加 --dataset 或 --by-source 会自动生成统计表")
+        click.echo(
+            _(
+                "No stats tables: scanned curated directly; adding --dataset or --by-source generates the stats automatically"
+            )
+        )
         click.echo(
             pl.DataFrame(
                 entries, schema={"dataset": pl.String, "files": pl.Int64, "rows": pl.Int64}
@@ -792,7 +852,9 @@ def stats_show(config_path: str, dataset: str | None, by_source: bool, as_json: 
     if dataset:
         df = df.filter(pl.col("dataset") == dataset)
         if df.is_empty():
-            raise click.ClickException(f"数据集 {dataset!r} 没有统计行")
+            raise click.ClickException(
+                _("Dataset {dataset!r} has no stats rows").format(dataset=dataset)
+            )
     elif by_source:
         df = df.group_by(["dataset", "source", "data_version"]).agg(
             pl.col("row_count").sum(),
@@ -814,7 +876,11 @@ def stats_show(config_path: str, dataset: str | None, by_source: bool, as_json: 
         f"  STALE — {freshness.reason}; another rebuild is in progress" if freshness.stale else ""
     )
     click.echo(
-        f"生成于：{summary.get('generated_at')}  run：{summary.get('latest_run_id')}{stale_note}"
+        _("Generated: {value}  run: {value2}{stale_note}").format(
+            value=summary.get("generated_at"),
+            value2=summary.get("latest_run_id"),
+            stale_note=stale_note,
+        )
     )
     if as_json:
         click.echo(json.dumps(df.sort(df.columns[:2]).to_dicts(), indent=2, default=str))

@@ -94,6 +94,14 @@ def test_item_set_covers_the_factor_building_blocks():
 def test_exactly_one_report_owns_the_announcement_date():
     owners = [r for r in _REPORTS if r.authoritative_announce_date]
     assert owners == [_ANNOUNCE_SOURCE]
+    # Stored LICO summary items are the date repair's evidence. Another
+    # report must not reuse these names without adding explicit report lineage.
+    for report in _REPORTS:
+        if report is not _ANNOUNCE_SOURCE:
+            assert not any(
+                statement == "indicator" or code in {"revenue", "net_profit"}
+                for statement, code in report.items
+            )
 
 
 # --- announce-date resolution ----------------------------------------------
@@ -207,6 +215,94 @@ def test_daily_fetch_rejects_rows_from_another_notice_date():
 
     with pytest.raises(RuntimeError, match="NOTICE_DATE row for 2024-04-28"):
         fetch_financial_statement_items(date(2024, 4, 28), client=client)  # type: ignore[arg-type]
+
+
+def test_daily_comparative_keeps_notice_vintage_and_adds_marked_reconstruction(monkeypatch):
+    calls = []
+
+    def fetch(_client, report, expr, **kwargs):
+        calls.append(expr)
+        if report is _ANNOUNCE_SOURCE:
+            return [] if "NOTICE_DATE" in expr else [_lico_row()]
+        return [_balance_row()] if report is _BALANCE else []
+
+    monkeypatch.setattr(fundamentals_module, "_fetch_report", fetch)
+    frame = fetch_financial_statement_items(date(2018, 3, 27), client=FakeDatacenterClient({}))
+    assets = frame.filter(frame["item_code"] == "total_assets").sort("announce_date")
+    assert assets.select("announce_date", "source").rows() == [
+        (date(2017, 3, 27), "eastmoney_backfill"),
+        (date(2018, 3, 27), "eastmoney"),
+    ]
+    assert any("REPORTDATE='2016-12-31'" in call and '"000002.SZ"' in call for call in calls)
+
+
+def test_daily_reconstruction_does_not_replace_a_committed_original(tmp_path, monkeypatch):
+    import polars as pl
+
+    from cnequity.config import Config
+    from cnequity.domain.schemas import with_provenance
+
+    cfg = Config(data_root=tmp_path / "lake", raw_archive_enabled=False)
+    lico, _ = _parse_rows([_lico_row()], _ANNOUNCE_SOURCE, default_notice="2017-03-27")
+    balance, _ = _parse_rows(
+        [_balance_row(NOTICE_DATE="2017-03-27")], _BALANCE, default_notice="2017-03-27"
+    )
+    path = (
+        cfg.curated_root
+        / "financial_statement_items"
+        / "report_period=2016Q4"
+        / "part-merged.parquet"
+    )
+    path.parent.mkdir(parents=True)
+    with_provenance(
+        pl.DataFrame(lico + balance), source="eastmoney", data_version="v1"
+    ).write_parquet(path)
+    monkeypatch.setattr(
+        fundamentals_module,
+        "_fetch_report",
+        lambda client, report, expr, **kwargs: [_balance_row()] if report is _BALANCE else [],
+    )
+    frame = fetch_financial_statement_items(
+        date(2018, 3, 27), config=cfg, client=FakeDatacenterClient({})
+    )
+    assert frame["source"].unique().to_list() == ["eastmoney"]
+    assert frame["announce_date"].unique().to_list() == [date(2018, 3, 27)]
+
+
+def test_backfill_retains_an_earlier_committed_lico_date(tmp_path, monkeypatch):
+    import polars as pl
+
+    from cnequity.config import Config
+    from cnequity.domain.schemas import with_provenance
+
+    cfg = Config(data_root=tmp_path / "lake", raw_archive_enabled=False)
+    headline, _ = _parse_rows([_lico_row(BPS=None)], _ANNOUNCE_SOURCE, default_notice="2017-03-27")
+    path = (
+        cfg.curated_root
+        / "financial_statement_items"
+        / "report_period=2016Q4"
+        / "part-merged.parquet"
+    )
+    path.parent.mkdir(parents=True)
+    with_provenance(pl.DataFrame(headline), source="eastmoney", data_version="v1").write_parquet(
+        path
+    )
+    monkeypatch.setattr(fundamentals_module, "_report_period_dates", lambda *a, **k: ["2016-12-31"])
+    monkeypatch.setattr(
+        fundamentals_module,
+        "_fetch_report",
+        lambda client, report, expr, **kwargs: (
+            [_lico_row(NOTICE_DATE="2019-03-27")]
+            if report is _ANNOUNCE_SOURCE
+            else ([_balance_row()] if report is _BALANCE else [])
+        ),
+    )
+    frame = fetch_financial_statement_items(
+        date(2026, 10, 9), backfill=True, config=cfg, client=FakeDatacenterClient({})
+    )
+    assert frame.filter(pl.col("item_code") == "total_assets")["announce_date"].to_list() == [
+        date(2017, 3, 27)
+    ]
 
 
 def test_backfill_rejects_rows_from_another_report_period(monkeypatch):

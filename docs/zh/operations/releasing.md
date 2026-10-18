@@ -1,6 +1,6 @@
 # 维护者发布清单
 
-本仓库由维护者按需发布。推送正式版本标签会触发 [Release 工作流](https://github.com/rootSunc/CNEquity/blob/main/.github/workflows/release.yml)，并在构建通过后向 PyPI 发布；普通分支提交和手动触发工作流只构建、检查，不发布。标签必须是 `vMAJOR.MINOR.PATCH`，版本须与包一致，且标签所指提交已在 `main`。
+本仓库由维护者按需发布。推送正式版本标签会触发 [Release 工作流](https://github.com/rootSunc/CNEquity/blob/main/.github/workflows/release.yml)，并在构建通过后向 PyPI 发布，随后据 `CHANGELOG.md` 对应小节创建（或更新）同名 GitHub Release；普通分支提交和手动触发工作流只构建、检查，不发布。标签必须是 `vMAJOR.MINOR.PATCH`，版本须与包一致，且标签所指提交已在 `main`。
 
 ## 发布前
 
@@ -12,7 +12,7 @@
 
 ## 发布
 
-在已核验的 `main` 提交上创建并推送正式标签。确认 Release 工作流的构建、契约和发布 job 均通过，再核对 PyPI 页面中的版本、说明和安装后的 `cne --version`。标签与 PyPI 文件一经发布不可当作可重写草稿；若发现问题，发修复版本并说明影响。
+在已核验的 `main` 提交上创建并推送正式标签。确认 Release 工作流的构建、契约和发布 job 均通过；`github-release` job 随后创建 GitHub Release（说明由 `scripts/dev/release_notes.py` 从 CHANGELOG 生成，无需手动 `gh release create`）；核对 PyPI 页面中的版本、说明、Releases 页面和安装后的 `cne --version`。标签与 PyPI 文件一经发布不可当作可重写草稿；若发现问题，发修复版本并说明影响。
 
 PyPI 上线后，把同一版本登记到 [MCP Registry](https://registry.modelcontextprotocol.io)：安装 `mcp-publisher`，在仓库根目录运行 `mcp-publisher login github`（以 rootSunc 账号授权），再运行 `mcp-publisher publish`。Registry 通过 PyPI 说明里的 `mcp-name: io.github.rootSunc/cnequity` 注释核验包归属，这行注释在 `README.md` 末尾，由同步脚本带进 `README.pypi.md`，不要删。
 

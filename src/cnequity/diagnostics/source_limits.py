@@ -243,12 +243,15 @@ def build_source_limits(config) -> dict:
         "latest_run_metrics": _latest_run_metrics(config),
         "outstanding": outstanding,
         "note": (
-            "metered_attempts_today 是通过共享限流且进入网络作用域的次数，"
-            "包括已接入的握手和分页；一个作用域可能含多次底层发包。"
-            "wire_responses_today 只统计已接入响应钩子的返回响应及解码后正文大小，"
-            "端点为域名加路径哈希，避免保存查询参数；未返回响应的发包不在其中。"
-            "cache_reuse_today 是已接入响应缓存的本地复用次数，不当作新的源观察。"
-            "request_events_today 仅统计已标记的额外重试与直连 fallback，覆盖尚不完整。"
-            "最近 run 的 requests/retries 仍是适配器已记录遥测，不是全源发包总数。"
+            "metered_attempts_today counts entries into a network scope that passed the shared "
+            "rate limit, including handshakes and pages that are wired in; one scope may send "
+            "several underlying requests. wire_responses_today counts only responses returned "
+            "through a wired response hook, with their decoded body size; the endpoint is the "
+            "host plus a hash of the path, so query parameters are never stored, and requests "
+            "that got no response are not included. cache_reuse_today counts local reuses of "
+            "a wired response cache, which are not treated as new source observations. "
+            "request_events_today counts only the tagged extra retries and direct-connection "
+            "fallbacks, so its coverage is incomplete. The latest run's requests/retries are "
+            "still the telemetry adapters recorded, not the total requests sent to all sources."
         ),
     }

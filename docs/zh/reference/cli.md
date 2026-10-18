@@ -2,17 +2,7 @@
 
 参数与默认值由 Click 自动生成在[参数参考](cli-options.md)；所有命令的联网/写入边界见[完整副作用清单](cli-surface.md)；源选择和请求成本见[取数与源保护](../operations/fetch-policy.md)。
 
-命令：`cne`（`cnequity.cli.main:cli`）
-
-支持配置的叶命令接受 `--config PATH`；解析顺序为显式参数 → `CNE_CONFIG` → 当前工作目录的 `configs/cnequity.toml`。例如 `cne status --config /abs/path/to/cnequity.toml`。
-
-**命令名不区分大小写**：`cne STATUS`、`cne run DAILY`、`cne config CREATE` 与小写等价（Click 的 `token_normalize_func`）。`-h` 是 `--help` 的短写法。**不做前缀匹配**——`cne stat` 会被拒绝并提示 `stats` / `status`，而不是猜一个执行。
-
-**每个命令都有过程日志。** 管线自己的 INFO 记录统一在命令树根部接到 stderr，所以 stdout 上的 JSON 契约不受影响。耗时的采集和维护命令另外把日志 tee 进 `{data.root}/logs/cne-<命令>-<时间戳>.log`（`cne run clean --log-retention-days` 可预览过期日志）。`cne mcp` 与 `cne serve` 自管日志——前者 stdout 是 JSON-RPC 线路，stderr 必须压在 WARNING；后者交给 uvicorn。
-
-**任何失败都会留下一条日志记录。** Click 只往 stderr 打一行 `Error:` 就结束，定时任务读的是日志文件而不是终端——失败若没成为日志记录，留下的就是一个最后一行停在半路的文件。记录写在命令树的唯一入口，所有已注册命令共用该入口，且每次失败只有一条：用法错误（参数写错、名字不认识）记 `WARNING`，其余记 `ERROR`，未预期的异常还带 traceback。退出码与 Click 的渲染都不变。
-
-**六个命令不接受 `--config`**：`cne contract show|validate|diff`、`cne profile list|show`、`cne sources policy`。它们读的是随包发布的注册表而不是湖，所以指向哪个湖都给同一个答案。`cne doctor` 则相反——它接受 `--config`，但没有配置也能跑（这正是它存在的场景）。
+通用约定（`--config` 解析顺序、大小写、日志、显示语言、失败记录）集中在[通用约定](#通用约定)。
 
 ## 命令一览
 
@@ -103,6 +93,22 @@ Error: `cne retry` 已改名，请改用 `cne run retry`。
 
 顶层对照定义在 `cnequity/cli/_root.py` 的 `MOVED`，分组内旧名由 `moved_hints` 提示。提示不执行旧命令。
 
+## 通用约定
+
+命令：`cne`（`cnequity.cli.main:cli`）
+
+支持配置的叶命令接受 `--config PATH`；解析顺序为显式参数 → `CNE_CONFIG` → 当前工作目录的 `configs/cnequity.toml`。例如 `cne status --config /abs/path/to/cnequity.toml`。
+
+**命令名不区分大小写**：`cne STATUS`、`cne run DAILY`、`cne config CREATE` 与小写等价（Click 的 `token_normalize_func`）。`-h` 是 `--help` 的短写法。**不做前缀匹配**——`cne stat` 会被拒绝并提示 `stats` / `status`，而不是猜一个执行。
+
+**每个命令都有过程日志。** 管线自己的 INFO 记录统一在命令树根部接到 stderr，所以 stdout 上的 JSON 契约不受影响。耗时的采集和维护命令另外把日志 tee 进 `{data.root}/logs/cne-<命令>-<时间戳>.log`（`cne run clean --log-retention-days` 可预览过期日志）。`cne mcp` 与 `cne serve` 自管日志——前者 stdout 是 JSON-RPC 线路，stderr 必须压在 WARNING；后者交给 uvicorn。交互终端上显示的是简短视图：只留时分秒，警告和错误前加标记，不带日志器名，步骤、心跳和进度按显示语言输出；输出被重定向（管道、调度器捕获、CI）时仍是完整格式，日志文件始终是完整的英文格式，方便检索和贴进 issue。
+
+**显示语言。** 帮助、提示、报错和结束摘要支持中文和英文，依次取环境变量 `CNE_LANG`（`en` 或 `zh_CN`，也接受 `zh-CN` 等写法）、系统语言（`LC_ALL` / `LC_MESSAGES` / `LANG`，Windows 读界面语言），都没有时用英文；繁体中文系统落到英文。系统是英文、想看中文时：`export CNE_LANG=zh_CN`（PowerShell：`$env:CNE_LANG = "zh_CN"`）。不随语言变化的：`--json` 等 JSON 输出（其中的说明文字一律英文）、`HEALTHY` / `STALE` 等标记词、退出码、数据文件和日志文件。`cne serve` 控制台按页面所选语言显示，没选过时跟随浏览器；定时任务沿用安装时的语言。
+
+**任何失败都会留下一条日志记录。** Click 只往 stderr 打一行 `Error:` 就结束，定时任务读的是日志文件而不是终端——失败若没成为日志记录，留下的就是一个最后一行停在半路的文件。记录写在命令树的唯一入口，所有已注册命令共用该入口，且每次失败只有一条：用法错误（参数写错、名字不认识）记 `WARNING`，其余记 `ERROR`，未预期的异常还带 traceback。退出码与 Click 的渲染都不变。
+
+**六个命令不接受 `--config`**：`cne contract show|validate|diff`、`cne profile list|show`、`cne sources policy`。它们读的是随包发布的注册表而不是湖，所以指向哪个湖都给同一个答案。`cne doctor` 则相反——它接受 `--config`，但没有配置也能跑（这正是它存在的场景）。
+
 ## cne init --profile demo | sample
 
 小范围体验，是 `cne init` 的两档 profile（原 `cne demo`）：`demo` 拉少量流动性股票的真源近期日线，`sample` 在完全离线时生成明确标记为 `source=mock` 的合成小湖。两者都**不是**全市场——那是 `--profile quick|full`，见 [cne init](#cne-init)。
@@ -152,7 +158,9 @@ cne init --profile sample
 | `--trade-date YYYY-MM-DD` | init 截至交易日（默认今天） |
 | `--resume` | 续跑最近未完成 init |
 | `--run-id` | 续跑指定 init run（隐含 resume） |
-| `--keep-going` | phase 失败后继续后续 phase |
+| `--keep-going` | 任一 phase 失败后都继续后续 phase（公司行为、指数与交易状态阶段，以及日线入湖后的派生和审计默认就会继续） |
+| `--json` | 结束时输出完整的机器可读结果，而不是摘要 |
+| `--no-preflight` | 跳过开跑前的网络预检；也可设 `CNE_SKIP_PREFLIGHT=1` |
 | `--profile demo\|sample\|quick\|full` | 建多大的湖。`quick`（默认）= 全市场标的、最近 3 年；`full` = 全市场、各 step 自己的起点（`daily_bars` 为 2016-01-01），请求和落盘量更大；`demo` / `sample` 是几只票的小湖，见 [上一节](#cne-init---profile-demo--sample) |
 | `--since YYYY-MM-DD` | 显式指定历史起点，覆盖 `--profile` |
 | `--quiet` | 只留 warning 及以上，不打逐批进度 |
@@ -176,7 +184,11 @@ cne backfill daily_bars --start 2016-01-01 --end COVERAGE_START
 
 上表中 `--config` / `--layout-only` / `--resume` / `--run-id` / `--keep-going` / `--since` 只对 `quick|full` 生效；`--symbols` / `--days` / `--data-root` / `--config-out` / `--intraday` / `--research` 只对 `demo|sample` 生效。传错一侧会被按名字拒绝，不会被忽略。
 
-退出：成功、来源受限（`degraded` / `warning`，包括本次 0 行）返回 0；真实执行错误返回 1。
+**公司行为、指数日线和交易状态阶段失败不阻断建湖。** 这些阶段出错时，init 照常抓日线、入湖并派生复权因子，结束时列出没完成的步骤；重跑同一条 `cne init` 只补这些。证券目录、交易日历或日线失败仍会停在原处，已下载的部分保留，恢复后重跑即续跑。
+
+**结束时打印摘要。** 终端给出湖是否可用、还差哪些步骤、日志位置和下一步命令（`cne check`、`cne serve`、Python 读取、MCP 接入）。完整结果存到 `{data.root}/logs/cne-init-<run_id>.json`；需要在 stdout 上拿到它时加 `--json`。
+
+退出：成功、来源受限（`degraded` / `warning`，包括本次 0 行），以及只差上述不阻断步骤、日线已入湖的情况返回 0；其他执行错误返回 1。
 
 ## cne config create
 
@@ -391,6 +403,7 @@ diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别�
 | `--bj-amount-repair` | 已由 `--tdx-amount-repair` 取代，保留以兼容旧脚本：从 TDX 补 Sina 从未发布的 BJ 成交额，已存的价格与成交量一律不动。需要 `--start`/`--end` |
 | `--tdx-amount-repair` | 仅 `daily_bars`：新浪补上的沪深北历史行与通达信一起核对，只在开高低收一致且成交量差小于一手时补成交额；通达信没有的代码保留新浪行。需要 `--start`/`--end` |
 | `--turnover-repair` | 仅 `daily_bars`：成交额缺失、为 0 或量额单位错位的沪深股票行，用 Baostock 同日行整行替换；开高低收须在半分钱内一致，不一致或未提供的保留原值并计数。需要 `--start`/`--end` |
+| `--turnover-peer-review` | 与 `--turnover-repair` 同用，先用上交所历史日 K 或深交所实际日期报表核对 Baostock 价格，再用通达信和东财复查其余冲突。整行替换须有一致价格和可用量额；交易所汇总成交量、成交额不能拼接进竞价日线，仍有冲突或来源不可用的保留并计数。 |
 | `--tdx-volume-repair` | 仅 `daily_bars`：重读 TDX，只改写已存 TDX 行的成交量（及 64.5 元以下被放大的成交额），修 2026-09-17 前的解码错误；价格须一致，不新增行，不经内部缺口门禁。需要 `--symbols` 和 `--start`/`--end` |
 | `--bse-tip-repair` | 仅 `daily_bars`，历史迁移用：读取已有 session 的 OHLCV，仅向 BSE 请求成交额并严格核对；必须同时指定相同的 `--start/--end` 与 `--symbols` |
 
@@ -495,7 +508,7 @@ python scripts/delisted_ops.py coverage --start 2016-01-01 --universe all_a_sh_s
 | `futures_continuous` | 期货主力/次主力连续合约，按 T-1 持仓换月、只向后换；由 futures_bars 全量重建（需 `[futures] enabled`） |
 | `option_greeks` | 期权隐含波动率与希腊字母（Black-76 / BAW），自动检测行情、合约、利率和模型依赖变化；`--full` 全量重算，`--start`/`--end` 限定窗口 |
 | `minute_bars_15m` / `minute_bars_30m` / `minute_bars_60m` | 默认不计算。手动把 15m / 30m / 60m 算进湖：某只股票某天有 1m 用 1m，否则用 5m；缺组成 K 线的股票当天跳过并计数。不给窗口时只算还没算过或 1m / 5m 已更新的交易日；`--full` 全量重算，`--start`/`--end` 限定窗口。规则见 [15 / 30 / 60 分钟线](../recipes/minute-bars-15-30-60.md) |
-| `adj_factor_source` | 用 Baostock 仲裁复权因子与公司行为的矛盾（新浪漏步、新浪虚步、湖缺事件、事件存疑）；证明新浪有误（除权日前一交易日在 10 天内、不在 2005-04-29 至 2007-12-31 股改期间，两家台阶相差超过 0.45%，且原始股价的跳动更接近 Baostock）且 Baostock 与其余事件一致的沪深股票，`--apply` 后整条因子改用 Baostock，证据写入 `meta/quality/evidence/`。Baostock 结果按批缓存 7 天，仅复用覆盖本次查询起止日期的完整结果；每只证券选取最新完整快照，失败请求的残片不参与仲裁。相同窗口下，中断重跑只取尚未完成的证券，预览后的 `--apply` 可复用预览数据；查询截止日推进或旧缓存缺少覆盖日期时会重新取证 |
+| `adj_factor_source` | 用 Baostock 仲裁复权因子与公司行为的矛盾（新浪漏步、新浪虚步、湖缺事件、事件存疑）；证明新浪有误（除权日前一交易日在 10 天内、不在 2005-04-29 至 2007-12-31 股改期间，两家台阶相差超过 0.45%，且原生除权参考价支持 Baostock）且 Baostock 与其余事件一致的沪深股票，`--apply` 后整条因子改用 Baostock，证据写入 `meta/quality/evidence/`。Baostock 结果按批缓存 7 天，仅复用覆盖本次查询起止日期的完整结果；每只证券选取最新完整快照，失败请求的残片不参与仲裁。相同窗口下，中断重跑只取尚未完成的证券，预览后的 `--apply` 可复用预览数据；查询截止日推进或旧缓存缺少覆盖日期时会重新取证 |
 
 ```bash
 cne derive trading_status --start 2001-01-01 --end 2001-12-31
@@ -505,14 +518,27 @@ cne derive trading_status --start 2001-01-01 --end 2001-12-31
 
 默认基于湖中已有数据输出计划；加 `--apply` 后以新版本发布，旧版本继续保留，可按版本读取。`corporate-action-gaps --apply` 会按缺口向数据源补取证据。
 
-`--apply` 发布前会比较已提交版本与候选版本的离线质量检查，并核对受影响证券的因子/公司行为矛盾。新增或恶化的问题会阻止发布，候选版本移入 `_quarantine`，报告写入 `meta/quality/publication/`。这项修复门禁不受 `[quality].publication_gate` 的普通日更发布设置影响。
+`--apply` 发布前会比较已提交版本与候选版本的离线质量检查。历史因子/公司行为矛盾单独记录为非阻断诊断。无效因子数值、损坏文件、主键错误等结构问题新增或恶化时会阻止发布，候选版本移入 `_quarantine`，报告写入 `meta/quality/publication/`。这项修复门禁不受 `[quality].publication_gate` 的普通日更发布设置影响。
 
 | 子命令 | 说明 |
 |------|------|
 | `layout DATASET` | 把分区数据集根目录或错误键目录中的文件并入登记分区。同一主键的多份观察只在非空值完全一致时互补填空；有冲突的键按规范规则整行保留一份。重复键的全部原始观察写入 `_quarantine`。发布新版本时若检测到这类布局，会提示运行此命令 |
-| `corporate-action-gaps` | 补上新浪与 Baostock 因子都有台阶、湖里却没有记录的除权事件，依据最近一次 `cne derive adj_factor_source` 的证据。附近 10 天内日期错开的记录，若条款能解释台阶就移到台阶日；其余按证券和年份向 Baostock 取分红，按生效交易日匹配，只收条款能解释台阶的行；Baostock 也解释不了的，再到巨潮查发行人的重整转增公告，公告写明的除权参考价能解释台阶才记为 `reorg_transfer`。这是本组唯一会访问数据源的命令：计划仍离线，`--apply` 才请求 Baostock 和巨潮 |
+| `corporate-action-gaps` | 补上新浪与 Baostock 因子都有台阶、湖里却没有记录的除权事件，依据最近一次 `cne derive adj_factor_source` 的证据。附近 10 天内日期错开的记录，若条款能解释台阶就移到台阶日；其余按证券和年份向 Baostock 取分红，按生效交易日匹配，只收条款能解释台阶的行；Baostock 也解释不了的，再到巨潮查发行人的重整转增公告，公告写明的除权参考价能解释台阶才记为 `reorg_transfer`。此命令的计划仍离线，`--apply` 才请求 Baostock 和巨潮 |
 | `orphan-symbols` | 删除 `daily_bars` 中从未出现的证券在 `adj_factors` 与 `corporate_actions` 里的行：早年作为净值序列误入的场外基金（519xxx）行情已清理，因子和分红却残留；未采集行情的上市基金也在其列。这些行没有可复权的价格，只会被报成因子与公司行为矛盾。按数据集各发布一个新版本 |
 | `stale-suspensions` | 删除 `trading_status` 中已被实际成交日线否定的推断停牌（`derived_bar_gap`）：某次运行漏抓行情时，缺口曾被误记为停牌；行情补齐后同一天有成交的日线即证明该行错误。独立来源的停牌不受影响 |
+| `status-outages --start --end` | 按现行规则重建东财不可用期间写入的 `trading_status` 行（`eastmoney_cached`）。旧版兜底会沿用自己写的缓存行，长假会让缓存过期，并把没有记录的证券记成停牌。窗口内的缓存行全部删除；当天主源答复的证券不到前几个交易日一半的交易所，没有其他记录的证券沿用前 5 个交易日内最近的一手记录，并保留该记录的抓取时间，因此 Baostock 历史与日线缺口推断的停牌仍然优先。没有一手记录的证券不写行 |
+| `status-listing-window` | 删除 `trading_status` 中落在证券上市日之前、或没有退市记录支撑的行。旧版合并曾把尚无日线的新证券推断为退市，状态步骤随后在它们上市后的头几个交易日写入 `derived_delisted`；东财也会把尚未上市的代码报成正常交易。`derived_delisted` 行只在当前 `instruments` 仍记有不早于上市日、且不晚于该行的退市日时保留；上市日之前的行一律删除，除非日线在上市日之前就有成交（这时上市日有误）。不补写行。发布新版本，旧版本保留 |
+| `status-traded --start --end` | 默认只读预览：用已提交日线的正成交量补已知上市期间、缺状态行的股票/ETF 键，来源 `derived_traded`，ST 保持 null。已有状态不覆盖；`--apply` 重新核对当前版本后发布并保留旧版本。建议按年或月分段 |
+| `fund-listing-dates` | 从完整的上交所、深交所 ETF/LOF 当前目录补未知上市日期，独立于研究资格。预览也请求来源；`--apply` 归档响应、经修复门禁发布新版本，保留已有日期及旧版本，不把首根日线当上市日 |
+| `stock-listing-dates` | 用有成交但上市日期未知的股票首日定位巨潮 IPO 日历请求，也可用可重复的 `--event-date YYYY-MM-DD` 核验尚无日线的股票；只接受代码、日期匹配的明确上市事件，不能与更早成交矛盾。默认回放归档，`--refresh-sources` 联网采证，`--max-sessions` 分批；`--apply` 发布并保留已有日期和旧版本；若补入的官方上市日期晚于残留退市日期，同一修订清除该矛盾退市日期 |
+| `index-snapshots` | 回放官方带日期的完整成分、权重文件；`--refresh-sources` 更新归档，`--indices` 选择指数。`--apply` 替换整个指数快照，百分数转比例，成分与权重按各自日期保存，不倒推历史 |
+| `financial-originals` | `--symbols` 或 `--all-stocks` 选择股票，`--start-year/--end-year` 选择年份，`--quarter` 选择 Q1/Q2/Q3/Q4（默认年报），`--max-reports` 分批，`--after` 接续输出的 `next_cursor`。默认离线预览，`--refresh-sources` 归档巨潮完整查询和原始 PDF，`--apply` 追加可明确识别的合并报表当期数和累计数；`--reparse` 重放旧报告并保留未变行的首次观测时间；未识别布局或科目保留缺口，不回填采集时间 |
+| `adj-factors` | 统一股票因子与 ETF/LOF 份额折算修复。默认离线预览并保存计划；`--refresh-sources` 显式联网采证，`--apply` 复查输入后发布确定的修正。支持 `--symbols`、事件窗口 `--start/--end`、`--max-symbols` 和 `--plan`；未解决事件保留原值和提示。详见 [历史因子修复](../datasets/sources.md) |
+| `fund-factors` | 离线预览 ETF/LOF 已记录拆分、转增的漏跳；从原始来源序列重建完整历史，保留其他来源台阶和现金分红口径。`--apply` 经修复门禁发布 `derived_fund_actions` 并保留旧版本。条款冲突或缺少原始序列时不猜补 |
+| `fund-volume` | 用上交所完整历史 K 线修复沪深场内基金零成交量、正成交额的行。`--refresh-sources` 归档来源，默认离线回放；`--apply` 仅替换上市窗口内、开高低收及舍入金额一致的行并保留旧版本。若湖中金额冲突，须有已归档的东财未复权日线同时证实价格和金额，才替换整行；东财整手成交量不参与补量。优先复用相符的原始响应归档，避免重复请求。不得用成交额倒算成交量。 后续重抓的零量正额行不会覆盖已恢复的有效成交量。 |
+| `fund-no-print` | 用深交所明确的零成交额，或上交所按证券和日期返回的零竞价开高低及正参考价，核对日线欠账。默认离线预览；`--refresh-sources` 联网归档报表，`--max-sessions` 限制交易日数；`--apply` 保存证明并刷新覆盖水位。缺失响应不构成证明，正常可交易不等于当日有成交；舍入量额为零本身不足以证明无成交；上交所覆盖证明表示未形成竞价日线，不能据此否认汇总口径成交，不生成日线或停牌行。证据失效会重新打开欠账，实际成交记录优先 |
+| `daily-bar-coverage` | 逐证券复查 `bj_session_incomplete` 整日欠账；仅按已提交日线的正成交量或独立停牌证据结清已知上市区间。`--apply` 更新覆盖元数据和水位，保存输入版本及收据，不改日线。同样结清已提交且不与成交历史矛盾的上市日期所证明的上市前欠账；未知上市日期仍由逐证券覆盖报告列为未核实 |
+| `misdated-valuation` | 替换 `valuation_metrics` 中盖错交易日的 push2 快照行。快照不带日期，只描述抓取时最近一个已收盘的交易日；抓取时刻对应的交易日与行上日期不同的行，`--apply` 时删除，并在同一版本中换成东财 datacenter 按该日期发布的估值；datacenter 没有的键不再保留错误的行。计划离线，`--apply` 才请求 datacenter |
 | `valuation-basis` | 统一 `valuation_metrics` 口径：push2 动态市盈率移入 `pe_dynamic`；Baostock 流通市值由成交均价口径换算为收盘价口径，无法核对的保留原值并标为 `vwap_x_turn_implied_shares`；总市值按 `share_structure` 当日有效总股本重建，无记录的标为年末股本估算 |
 
 ```bash
@@ -524,7 +550,7 @@ cne repair layout futures_bars --apply
 
 | 选项 | 说明 |
 |------|------|
-| `--run-id` | 指定 run 的 findings（默认最近 run） |
+| `--run-id` | 指定 run 的 findings（默认最近 run）；可重复指定，合并这些运行的步骤证据并执行一次湖审计 |
 | `--full` | 湖级健康快照（非 per-run 文件） |
 | `--quality-only` | 配合 `--full`：只对质量 error 设门禁；调度新鲜度另用 `cne status` 单独查 |
 | `--research-start YYYY-MM-DD` | 与 `--full` 合用；严格验证所选历史宇宙，未通过时退出 1 |
@@ -630,7 +656,7 @@ cne verify --derivatives --dataset futures_bars --start 2026-09-01 --end 2026-09
 一条命令验收整个湖，依次给出：
 
 1. **新鲜度与覆盖**：与 `cne status --datasets --gate` 相同，含最新交易日截面核对和未完成的 init；
-2. **数据质量**：最近一次 run 的审计（error 会列出）和最近的全湖审计快照及其年龄；
+2. **数据质量**：最近一次 run 的审计和最近的全湖审计快照及其年龄，两者的 error 都会列出并计入退出码；
 3. **规模**：数据集、行数和体积，统计表过期时先自动重算。
 
 | 选项 | 说明 |
@@ -685,7 +711,9 @@ init 不属于任何调度组，因此不受 `--groups` 豁免；截面校验则
 | `--reconcile-after-seconds` | 覆盖对账静默窗口，默认取 `[orchestrator].batch_stale_seconds` |
 | `--force` | 将未 cleanup-ready 的 staging 也列入预览，不删除、不降级批次 |
 
-输出 `dry_run: true`、`confirmation_required: "serve_storage_page"`。`removed` / `removed_run_ids` 等实际删除字段为空或 0，`bytes_freed` 全部为 0；候选见 `candidate_run_ids`、`candidate_run_dirs`、`candidates`，账面大小见 `logical_bytes_selected`。历史版本与登记试验的物理删除入口在 serve 存储运维页；staging、来源快照和日志目前仅报告，不提供网页删除。
+输出 `dry_run: true`、`confirmation_required: "serve_storage_page"`。`removed` / `removed_run_ids` 等实际删除字段为空或 0，`bytes_freed` 全部为 0；候选见 `candidate_run_ids`、`candidate_run_dirs`、`candidates`，账面大小见 `logical_bytes_selected`。历史版本、登记试验和已成功 compact 且无未完成批次的终态 staging 可在 serve 存储运维页勾选、审核并确认删除。确认时重新核验运行锁、引用保留、运行状态和逐文件指纹；执行只处理原清单，并保留可恢复的删除收据。orphan、未合并和有未完成批次的 staging 不在网页删除范围，来源快照和日志仍仅报告。
+
+预览另返回 `staging_inventory`、`staging_run_count` 和 `skipped_reasons`，逐运行列出状态、大小、年龄、未完成批次和候选/保留原因。正在重试的运行由运行锁保护；`--force` 不绕过运行锁或 hold。未完成批次不会仅因年老或存在更新的成功运行而自动淘汰。
 
 ## cne storage
 
@@ -711,7 +739,7 @@ init 不属于任何调度组，因此不受 `--groups` 豁免；截面校验则
 
 每个子命令接受 `--config`。版本 `OBJECT_ID` 为当前湖内的 `revision/<dataset>/<revision_id>`；计划另外绑定湖身份及 metadata 根，不能直接在另一个湖使用。被引用但暂时缺失的版本也可通过清单登记保护，以便恢复后继续受到保护。
 
-引用清单 schema 为 `schema_version: 1`，包含绝对 `meta_root`、`holds`（对象 ID 到非空理由列表）、`reference_roots`（绝对目录及可选的相对 `exclude` 列表）、`reference_fingerprint` 和可选 `experiments`。集成程序可用 `cnequity.storage.lifecycle.reference_files()` 枚举引用源，分类后生成 holds，并用 `reference_fingerprint()` 计算文件集合及 SHA-256 的指纹。导入只校验清单是否仍对应这些文件，不代替引用语义审核；排除项和外部未登记消费者需由操作者核实。
+引用清单 schema 为 `schema_version: 1`，包含绝对 `meta_root`、`holds`（对象 ID 到非空理由列表）、`reference_roots`（绝对目录及可选的相对 `exclude` 列表）、`reference_fingerprint` 和可选 `experiments`。集成程序可用 `cnequity.storage.lifecycle.reference_files()` 枚举引用源，分类后生成 holds，并用 `reference_fingerprint()` 计算文件集合及 SHA-256 的指纹；两者都传 `meta_root=` 湖的 `meta` 目录。以该目录为根时，湖每次运行都会改写的内容（来源缓存、`state`、`checkpoints`、`quality`、`source_snapshots`、衍生品抓取记录等，完整列表见 `RUNTIME_META_PATHS`）不计入引用，否则任何一次运行都会让导入失效，清理随即拒绝执行。导入只校验清单是否仍对应这些文件，不代替引用语义审核；排除项和外部未登记消费者需由操作者核实。
 
 新增、删除或修改引用文件都会阻止旧计划继续标记，须重新审核并导入。重复导入保留已有 hold。当前没有自动解除 hold 的命令；改变保留承诺需要单独审核。无收据、缺少完整文件清单或缺少当前指针的目录不会成为清理候选。
 

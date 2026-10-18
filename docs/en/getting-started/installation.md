@@ -38,7 +38,7 @@ The generator handles TOML path escaping. PowerShell 5.1 does not support `&&`, 
 
 ## Install from source
 
-The repository's main branch may be ahead of the stable PyPI release; to use features just added to the development tree, install from source and record the commit.
+The repository's main branch may be ahead of the stable PyPI release; to use features on main that are not yet released, install from source and record the commit.
 
 ```bash
 git clone https://github.com/rootSunc/CNEquity.git
@@ -133,7 +133,7 @@ Migration notes are in the repository's [contracts/migrations](https://github.co
 
 Physical deletion lives at `#/storage` in `cne serve`. The page first lists the historical versions that can be deleted, summarized by dataset. You can select historical versions whose observation period has not yet expired, as well as versions among the latest 5 generations that are not the current pointer. The current version, versions still referenced, manually retained versions, experiments still in use, and items missing a receipt or archive cannot be selected. The confirmation form requires checking that the action is irreversible and that external tasks have been stopped; then click permanent delete. Afterwards it lists the deleted versions, their logical size, and free disk space before and after deletion; logical size is not the space actually freed.
 
-You can also first use “检查待标记项目” (Check items to mark) and, after confirming, start an observation period of at least 7 days. Marking does not free space; after 7 days it only produces an expiry notice and never deletes automatically. The CLI's `storage apply --phase purge` and experiment purge are disabled, and `--maintenance-window` cannot bypass the web confirmation. The operator must first stop external queries, other services and ingestion scheduling. The dashboard pauses its own reads but does not stop external processes for you. Staging, source snapshots and logs are currently report-only, with no web deletion.
+You can also first use “检查待标记项目” (Check items to mark) and, after confirming, start an observation period of at least 7 days. Marking does not free space; after 7 days it only produces an expiry notice and never deletes automatically. The CLI's `storage apply --phase purge` and experiment purge are disabled, and `--maintenance-window` cannot bypass the web confirmation. The operator must first stop external queries, other services and ingestion scheduling. The dashboard pauses its own reads but does not stop external processes for you. The page also lists staging runs. Terminal runs with recorded successful compaction and no incomplete batches can be selected for deletion. Confirmation rechecks holds, run locks, status and file fingerprints and processes only the reviewed list. Interrupted deletions can be reviewed again and resumed. Failed or incomplete batches, runs without compaction and orphan staging remain protected; age alone does not permit eviction. Source snapshots and logs remain report-only, with no web deletion.
 
 After upgrading, restart serve to load the new routes and safeguards. For detailed constraints, see [version lifecycle commands](../reference/cli.md#cne-storage).
 

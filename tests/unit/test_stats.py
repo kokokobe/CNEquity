@@ -480,6 +480,7 @@ def test_cli_if_stale_stands_down_when_the_lake_has_not_moved(config, tmp_path):
     assert load_summary(config)["generated_at"] == before
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cli_if_stale_rebuilds_once_a_run_has_landed(config, tmp_path):
     _seed(config)
     rebuild_stats(config, datasets=["daily_bars"])

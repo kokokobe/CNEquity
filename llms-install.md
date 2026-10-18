@@ -59,6 +59,8 @@ ChatGPT and other clients that only accept a remote URL need the HTTP mode and a
 
 Call the `describe_lake` tool. It returns the lake's `data_root`, the datasets it holds and their coverage. If it reports no data, the `--config` path is wrong or relative.
 
+The Docker image and directory-hosted sandboxes (such as Glama's Try in Browser) ship an offline sample lake of synthetic rows, so their prices are not real quotes; build a lake with `cne init` for real data.
+
 ## Tools
 
 | Tool | Use |

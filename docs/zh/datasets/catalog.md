@@ -1,14 +1,18 @@
 # 数据集目录
 
-cnequity 的注册数据集包含 curated 数据和 derived 数据（`adj_factors`、`industry_index`、`futures_continuous`、`option_greeks`、`delisting_events`，以及默认不计算、按需派生的 `minute_bars_15m` / `minute_bars_30m` / `minute_bars_60m`），按选股用途分为 L0–L9 十类。另有 **on-demand** 数据集不进 curated 主路径。其中日内数据集 `minute_bars` / `minute_bars_5m` 默认关闭，需在 `[minute_bars]` 显式开启；分笔 `trade_ticks` 同样默认关闭，开关在**独立的** `[trade_ticks]`。期货/期权主表（`futures_contracts`、`option_contracts`、`futures_bars`、`option_bars`）默认关闭，开关在 `[futures]`，不进 `cne init`（见 [产品边界](../architecture/overview.md)）。
+本页回答两件事：湖里登记了哪些数据集，以及每个数据集从哪来、能补多远。先按下方 L0–L9 分层找到数据集，再看它的采集语义和历史限制；要复制查询代码，去[查询指南](query-guide.md)。
 
-注册表包含可选、兼容和停用源占位入口：`flash_news_wire` 是新闻兼容读取，`economic_calendar` 为停用源占位。注册数不是物理独立表数，也不是默认采集完成数。
+| 想查 | 去哪里 |
+|------|--------|
+| 字段、类型和单位 | [字段与单位](schema.md) |
+| 每个来源的限制和更新频率 | [数据源与历史限制](sources.md) |
+| 程序里查起点和历史模式 | `list_datasets()` 的 `coverage_start` / `coverage_end` / `history_mode` / `backfill_source` |
 
-先按下方 L0–L9 找数据，再核对采集语义和历史限制；需要复制查询示例时转到[查询指南](query-guide.md)。
-
-权威字段定义：[schema.md](schema.md)。逐源限制：[sources.md](sources.md)。
-
-程序化可用起点与历史模式：`list_datasets()` → `coverage_start` / `coverage_end` / `history_mode` / `backfill_source`。
+!!! note "登记不等于默认采集"
+    - 默认关闭、需要显式开启：分钟线 `minute_bars` / `minute_bars_5m`（`[minute_bars]`）、分笔 `trade_ticks`（独立的 `[trade_ticks]`）、期货/期权四张主表 `futures_contracts`、`option_contracts`、`futures_bars`、`option_bars`（`[futures]`，不进 `cne init`，见[产品边界](../architecture/overview.md)）。
+    - derived 数据由已入湖数据派生：`adj_factors`、`industry_index`、`futures_continuous`、`option_greeks`、`delisting_events`；`minute_bars_15m` / `30m` / `60m` 默认不计算，按需派生。
+    - **on-demand** 数据集不进 curated 主路径。`flash_news_wire` 是新闻兼容读取，`economic_calendar` 是停用源占位。
+    - 所以登记数既不是物理表数，也不是默认采集完成数。
 
 **图例**（下表）：语义 `by_date` / `snapshot`；水位 ✓ = 维护 `meta/state` 水位。
 
@@ -181,6 +185,10 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 | trading_calendar | trade_date | trade_date | by_date | ✓ | qmt_bridge | 启用本地 BigQMT 桥时优先；备源交易所 CSV；种子 2016–2027 |
 | trading_status | trade_date（按月） | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST 回填；派生停牌写月分区。`status`（normal/suspended/**delisted**）与 `risk_warning`（ST/*ST）是两列——旧版单列会让停牌冲掉 ST 标记；退市行由 `instruments` 判定并标 `derived_delisted`。旧湖读取自动兼容，物理迁移见 [schema](schema.md#trading_status) |
 
+北交所日常证券目录会尝试用巨潮当日 IPO 日历的明确上市事件补上市日期；申购、招股或预告日期不能代替上市日期。来源不可用时保留目录和未知日期，并记录警告；已有上市日期在合并时保留。
+
+证券目录每天只为湖里还没有上市日期的证券向 Baostock、东财和交易所查询；已有的日期（包括人工修复的）直接沿用。各来源都给不出日期的证券，7 天内不再重复查询，新上市证券仍每天查询直到有日期为止。
+
 ## L1 行情
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
@@ -210,12 +218,20 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`cne backfill` 默认自 2001 起（`--start`/`--end` 分块）；PIT 同时受 `announce_date` 与 `fetched_at` 截止；baostock 不用于 FSI |
+| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`cne backfill` 默认自 2001 起（`--start`/`--end` 分块）；日更保留实际公告版本并补明确标记的原始披露日重建版本；baostock 不用于 FSI |
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 回填：baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 | share_structure | change_date | symbol, change_date, announce_date | by_date PIT | — | eastmoney | 总股本/流通/限售/自由流通。**按变动日期扫，不是按报告期**：END_DATE 是股本变动日，不能只请求季末日期 |
 | shareholder_counts | count_date | symbol, count_date, announce_date | by_date PIT | — | eastmoney | 股东户数与户均持股，筹码集中度输入。**旬末/月末也披露**：不能只按季末日期筛选；EastMoney 关闭时可用 `qmt_bridge`（户均列为空） |
 | top_holders | record_date | symbol, record_date, holder_scope, holder_rank, holder_name, announce_date | by_date PIT | — | eastmoney | 一张表两个口径：`holder_scope=total`（前十大股东）/ `float`（前十大流通股东）。披露日期不一定落在季末 |
+
+财报 DMSK 的 `NOTICE_DATE` 可能是比较期数据的再公告日。原始披露日从 LICO 解析；缺少对应 LICO 记录时保留较晚日期，不猜测原始日期。日更保留再公告版本，并仅为缺少原始日期版本的科目追加 `source=eastmoney_backfill` 重建值。重建数值可能经过重述：默认 `load(..., as_of=...)` 的 `best_effort` 可读，但返回 `pit_is_exact=false`；`pit_mode="strict"` 排除重建值且要求实际观察时间不晚于查询日期。
+
+已有数据可先运行 `cne repair financial-announcements` 预览，再加 `--apply` 发布保留旧版本的修复。它只修复有原始公告日期证据的已有科目；缺少的历史科目仍需 `cne backfill financial_statement_items --start <date> --end <date>` 按报告期补采。来源、科目及报告期的覆盖分别检查，不能由某一个报表齐全推断所有明细齐全。
+
+估值源以零表示缺失的 PE、PB、PS 和总/流通市值统一写空值；负估值比率仍保留。旧数据用 `cne repair missing-values valuation_metrics` 预览，加 `--apply` 发布新版本。
+
+`cne repair financial-originals --symbols <股票代码> --start-year 2016 --end-year 2024 --refresh-sources` 从巨潮按证券和披露日期完整枚举公告，定位最早的原始年报，归档 PDF 并提取明确可识别的合并报表当期科目；默认预览，加 `--apply` 追加 `source=cninfo_original` 版本。`--max-reports` 限制批量大小，重复运行跳过已含原文科目的报告；解析器升级后可用 `--reparse` 离线重放旧归档，追加新识别科目，内容及披露时间未变的行保留首次观测时间。`--all-stocks` 可替代 `--symbols`，按湖中股票目录分批；用输出的 `next_cursor` 传入 `--after` 接续，避免失败报告阻塞后续股票。不带游标重试仍会检查未恢复的失败项。比较期、母公司报表、修订版、扫描件及无法确定列头或单位的数值不用于补行。`--quarter` 选择 Q1、Q2（半年报）、Q3 或默认 Q4（年报），分别定位和归档原始报告。利润及现金流只恢复年初至报告期末累计数；第三季四列表只在列序明确且四个单元格齐全时取累计列，不用单季数填累计数。在线采证不依赖标题关键词或公告分类来判断最早披露；分页以公告记录总数为准，必须包含尾页并核对唯一公告数。无法完整枚举的窗口保留失败项。合并与公司混排的年报四列表，还须确认“合并、合并、公司、公司”的角色顺序和两组当年/上年日期；只取当年合并列，费用符号约定尚不明确的科目继续留缺口。拆成资产/负债两段的主表及期末、重述期初、上年末三列，也必须按明确日期顺序读取。表头只写“元”时，只有原文同时明确本位币及外币报表统一折成人民币的呈列政策，才可确定人民币单位；不能仅凭本位币猜测。当前支持有限科目和明确布局，不等于全市场全部季度或明细科目已恢复。原文披露时间和真实采集时间分别保存，今天取得的历史原文不会成为历史严格 PIT 的已观察证据；同一原始公告日的原文数值优先于后采集的重建值。
 
 ## L4 资金面
 
@@ -254,7 +270,17 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 快照类仅积累「每日一份成员关系」，历史分位数需多日分区累积。
 
 历史回填（C2）：`cne backfill industry_members` = 申万 SwClass2021 月度（`classification_system=sw`，2020 起）；
-`cne backfill index_constituents` = 国证调样史（399001/399006，约 2021-12 起）。中证 000300/000905 仍仅日更 EM 快照。
+`cne backfill index_constituents` = 国证调样史（399001/399006，约 2021-12 起）。沪深 300、科创 50 等其他指数依赖采集后积累的 EM 快照及下面的官方带日期文件；更早历史仍可能缺失。当前名单不能回填到更早日期，否则会产生幸存者偏差；EM 适配器只接受当前已收盘交易日。历史读取只使用当时已存的快照，早于最早快照的成员关系未知。
+
+EM 和国证调样史都不提供成分权重，`weight=null`，不能把它当成真实零权重或自动推断为等权。`cne repair missing-values index_constituents` 列出每个指数、来源的快照起止与数量，并预览将旧占位零改为空值；`--apply` 发布新版本，不制造缺失的历史成分或权重。
+
+`cne repair index-snapshots --refresh-sources` 取得沪深 300、科创 50、深证成指、创业板指可公开下载的官方文件；默认预览，`--apply` 按文件实际日期替换该指数的完整快照并保留旧版本。权重文件的百分数转换为比例（总和约为 1），来源为 `exchange` 或 `cni_weights`。成分文件和权重文件可能日期不同，不跨日期填权重；更晚的无权重观察也不能抹去同日已验证权重。这条路径只能恢复官方当前仍提供的带日期文件及已归档快照，不提供任意历史日期的完整权重，也不会把最新样本倒推到历史。
+
+`cne repair index-history --refresh-sources` 补采已核验公告目录中尚未归档的官方附件；之后默认离线回放，`--apply` 更新所选指数的成分历史。默认深证成指（399001.SZ）覆盖 2015-05-20 至 2026-09-30；`--index-symbol 000688.SH` 选择科创50，覆盖正式发布日 2020-07-23 至 2026-09-30，不将回溯基日当成实时成分起点。科创50收盘后调样从下一个已知交易日生效，明确无变动公告也须核验。每次实际生效日写完整名单，替换区间内旧的无权重观察，避免旧月末快照继续遮住临时调整。固定日期的官方终点校验名单随包保存，并标明原始文件地址及摘要；它不是新抓取的来源响应。公告及日期证据绑定原字节摘要，附件缺失、内容变化、转换矛盾或与既有官方权重名单冲突时停止更新。历史权重未知时为空，同日已验证的完整官方权重保留。此目录不覆盖其他指数或区间之外的历史；不得将当前名单、当前权重或基金持仓倒推成历史。
+
+`load("index_constituents", as_of="YYYY-MM-DD")` 对每个指数返回截止该日最近的一整份已存快照；较早快照中已被剔除的成员不会逐证券沿用，最早快照之前返回空表。用 `start`/`end` 读取多日快照序列。
+
+EM 响应若已包含尚未生效的调样行，会拒绝整份快照：删除未来新增行无法恢复已经从当前名单中消失的旧成员。调样生效后重试采集。
 
 ## L6 宏观
 

@@ -58,7 +58,7 @@ AMOUNT_COMPLETENESS_MIN_ROWS = 20
 def _describe(ratio: float) -> str:
     """Name the likely mistake behind an off-band ratio."""
     if ratio >= 50.0:
-        return "volume looks like 手 (lots) — a factor of ~100 too small"
+        return "volume looks like 手 (lots) — a factor of ~100 too small"  # i18n-ignore: Chinese term in an English message
     if ratio <= 0.02:
         return "volume looks ~100× too large for the turnover on record"
     return "volume does not reconcile against amount / close"
@@ -123,7 +123,7 @@ def daily_bars_volume_unit_findings(
                 "message": (
                     f"source={row['source']}: median amount/close/volume = {ratio:.4f} "
                     f"over {rows} row(s) in {start.isoformat()}..{trade_date.isoformat()}; "
-                    f"expected ~1.0 because daily_bars.volume is 股 — {_describe(ratio)}"
+                    f"expected ~1.0 because daily_bars.volume is 股 — {_describe(ratio)}"  # i18n-ignore: Chinese term in an English message
                 ),
                 "source": row["source"],
                 "median_ratio": ratio,

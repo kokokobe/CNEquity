@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from cnequity.domain.rate_limit import _owner_is_alive, _read_json, _safe_source_name, _write_json
 from cnequity.file_lock import exclusive_lock
+from cnequity.i18n import N_, Message
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +77,16 @@ def check_source_cooldown(root: Path, source: str) -> None:
     until = _deadline(state.get("until"))
     if until > time.time():
         raise SourceCoolingDown(
-            f"{source_family(source)}: HTTP {state.get('status', 'refusal')}；"
-            f"共享冷却剩余 {math.ceil(until - time.time())} 秒，本次不发请求。"
-            "请等待后续跑；不要换 IP 或删除冷却状态反复探测。"
+            Message(
+                N_(
+                    "%s: HTTP %s; the shared cooldown has %d seconds left, so no request is sent "
+                    "this time. Wait for a later run; do not switch IPs or delete the cooldown "
+                    "state to probe repeatedly."
+                ),
+                source_family(source),
+                state.get("status", "refusal"),
+                math.ceil(until - time.time()),
+            )
         )
 
 
@@ -115,7 +123,13 @@ def source_probe_slot(root: Path, source: str) -> Iterator[None]:
                 owner = {"pid": state.get("probe_pid"), "thread_id": state.get("probe_thread")}
                 if state.get("probe_token") and _owner_is_alive(owner):
                     raise SourceCoolingDown(
-                        f"{source_family(source)}: 冷却后已有一个恢复探测在进行；本次不发请求。"
+                        Message(
+                            N_(
+                                "%s: a recovery probe after the cooldown is already running; "
+                                "no request is sent this time."
+                            ),
+                            source_family(source),
+                        )
                     )
                 token = uuid.uuid4().hex
                 state["probe_token"] = token
@@ -215,7 +229,12 @@ def record_http_response(
         body = getattr(response, "content", b"")[:4096].lower()
         if b"<html" in body and any(
             marker in body
-            for marker in (b"captcha", b"challenge", b"access denied", "验证码".encode())
+            for marker in (
+                b"captcha",
+                b"challenge",
+                b"access denied",
+                "验证码".encode(),  # i18n-ignore: text on a challenge page
+            )
         ):
             kind = "access_challenge"
     if kind is None:

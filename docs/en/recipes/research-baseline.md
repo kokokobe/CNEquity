@@ -1,4 +1,4 @@
-# Recipe: price adjustment research baseline
+# Price adjustment research baseline
 
 This recipe does a minimal check with a single stock: over the same window, returns from the unadjusted `close` and the hfq `adj_close` can differ; research code must choose its price basis explicitly and confirm that factor coverage is exact.
 

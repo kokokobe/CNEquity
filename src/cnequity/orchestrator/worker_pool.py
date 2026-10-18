@@ -15,6 +15,7 @@ from cnequity.adapters.tdx_protocol.client import fetch_daily_bars, normalize_wi
 from cnequity.config import Config, load_config
 from cnequity.domain.canonical import dedupe_by_primary_key
 from cnequity.domain.rate_limit import RateLimitSpec
+from cnequity.i18n import N_, Message
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.outcomes import SourcePayloadError, error_kind, step_outcome
 from cnequity.progress import hms as _hms
@@ -721,18 +722,18 @@ def fetch_daily_bars_parallel(
         if first_round_at is not None and done > lanes:
             per_batch = (now - first_round_at) / (done - lanes)
             if per_batch > 0:
-                eta = f" · ~{_hms(per_batch * (len(batches) - done))} left"
+                eta = Message(N_(" · ~%s left"), _hms(per_batch * (len(batches) - done)))
         if failed_symbols is None:
             note = ""
         elif batch_symbols:
             # The whole batch used to be reported as FAILED whatever the actual
             # scope was, so one symbol TDX had no rows for read as a hundred
             # lost names — on a sweep that then recovers most of them.
-            note = f" ({len(failed_symbols)}/{len(batch_symbols)} symbols failed)"
+            note = Message(N_(" (%d/%d symbols failed)"), len(failed_symbols), len(batch_symbols))
         else:
-            note = " (batch failed)"
+            note = Message(N_(" (batch failed)"))
         logger.info(
-            "%s %d/%d batches%s · %s rows · %s elapsed%s",
+            N_("%s %d/%d batches%s · %s rows · %s elapsed%s"),
             dataset,
             done,
             len(batches),
@@ -751,7 +752,7 @@ def fetch_daily_bars_parallel(
     window_start = min(batch[2] for batch in batches)
     window_end = max(batch[3] for batch in batches)
     logger.info(
-        "%s: %s symbol(s) over %s..%s → %d batch(es) of up to %d on %d lane(s)",
+        N_("%s: %s symbol(s) over %s..%s → %d batch(es) of up to %d on %d lane(s)"),
         dataset,
         f"{sum(len(batch[1]) for batch in batches):,}",
         window_start.isoformat(),
@@ -892,7 +893,7 @@ def fetch_daily_bars_parallel(
                             )
                             failed_symbols.extend(failed_scope)
                             _progress(batch[1] if batch else [], failed_scope)
-                            logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
+                            logger.warning(N_("%s batch %s failed: %s"), dataset, batch_id, exc)
                 except (KeyboardInterrupt, SystemExit):
                     for future in futures:
                         future.cancel()
@@ -907,7 +908,7 @@ def fetch_daily_bars_parallel(
             # work keeps a transient executor failure from losing a run.
             had_error = True
             logger.warning(
-                "%s: thread pool failed (%s); retrying %d batch(es) serially",
+                N_("%s: thread pool failed (%s); retrying %d batch(es) serially"),
                 dataset,
                 exc,
                 len(pending),
@@ -927,7 +928,7 @@ def fetch_daily_bars_parallel(
                     pending.pop(batch[0], None)
                     _progress(batch[1], failed_scope)
                     logger.warning(
-                        "%s batch %s failed on serial retry: %s",
+                        N_("%s batch %s failed on serial retry: %s"),
                         dataset,
                         batch[0],
                         retry_exc,
@@ -977,7 +978,7 @@ def fetch_daily_bars_parallel(
                         )
                         failed_symbols.extend(failed_scope)
                         _progress(batch[1] if batch else [], failed_scope)
-                        logger.warning("%s batch %s failed: %s", dataset, batch_id, exc)
+                        logger.warning(N_("%s batch %s failed: %s"), dataset, batch_id, exc)
             except (KeyboardInterrupt, SystemExit):
                 for future in futures:
                     future.cancel()
@@ -990,7 +991,7 @@ def fetch_daily_bars_parallel(
         # success via INSERT OR REPLACE. Trust the manifest when it already says
         # success and skip the re-fetch.
         logger.warning(
-            "%s: worker pool broke (likely OOM under load); retrying %d batch(es) serially",
+            N_("%s: worker pool broke (likely OOM under load); retrying %d batch(es) serially"),
             dataset,
             len(pending),
         )
@@ -1018,6 +1019,6 @@ def fetch_daily_bars_parallel(
             except Exception as exc:
                 had_error = True
                 failed_symbols.extend(_failed_symbols_for_error(exc, batch[1]))
-                logger.warning("%s batch %s failed on serial retry: %s", dataset, batch_id, exc)
+                logger.warning(N_("%s batch %s failed on serial retry: %s"), dataset, batch_id, exc)
 
     return _outcome(had_error)

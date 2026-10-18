@@ -24,6 +24,7 @@ def _no_tdx_client(monkeypatch):
         raise RuntimeError("simulated TDX outage")
 
     monkeypatch.setattr(tdx, "_quotes_client", _boom)
+    monkeypatch.setattr(tdx, "_CONNECT_RETRY_BACKOFF_SEC", 0)
 
 
 def test_instruments_raises_on_partial_market_failure(monkeypatch):
@@ -39,6 +40,28 @@ def test_instruments_raises_on_partial_market_failure(monkeypatch):
 
     with pytest.raises(tdx.TdxSourceError, match="market fetch failed"):
         tdx.fetch_instruments(allow_mock=False)
+
+
+def test_instruments_survives_one_dropped_market_page(monkeypatch):
+    """The first request of a `cne init`; one blip used to end the build."""
+    import pandas as pd
+
+    calls = {"SZ": 0}
+
+    class _FlakyClient:
+        def stocks(self, *, market: int):
+            if market == 0:
+                calls["SZ"] += 1
+                if calls["SZ"] == 1:
+                    raise RuntimeError("SZ timeout")
+                return pd.DataFrame({"code": ["000001"], "name": ["平安银行"]})
+            return pd.DataFrame({"code": ["600519"], "name": ["贵州茅台"]})
+
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: _FlakyClient())
+
+    df = tdx.fetch_instruments(allow_mock=False)
+    assert sorted(df["symbol"].to_list()) == ["000001.SZ", "600519.SH"]
+    assert calls["SZ"] == 2
 
 
 def test_instruments_raises_without_allow_mock():

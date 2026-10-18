@@ -1,4 +1,4 @@
-# 脚本说明
+# 仓库脚本
 
 路径：`scripts/`
 
@@ -34,7 +34,7 @@ backup_meta.sh
 cne run clean
 ```
 
-较晚窗口由独立的 `stale_pipeline.sh` 只补仍落后的 snapshot 数据集，与主日更共用调度锁。这把锁在 `{data.root}/locks`，和 `cne serve` 操作页是同一把；`CNE_SCHEDULER_LOCK_DIR` 或 `CNE_LOCK_DIR` 可改目录。主脚本保留旧的进程内等待开关供兼容，但默认关闭。详见 [runbook · 收尾补抓](runbook.md#收尾补抓)。
+较晚窗口由独立的 `stale_pipeline.sh` 只补仍落后的 snapshot 数据集，与主日更共用调度锁。这把锁在 `{data.root}/locks`，和 `cne serve` 操作页是同一把；`CNE_SCHEDULER_LOCK_DIR` 或 `CNE_LOCK_DIR` 可改目录。锁记录主机、PID 和进程启动身份，自动回收已确认退出的本机进程；只有 PID 的旧格式锁在该进程退出后也会回收，没有标记的锁目录超过 60 秒后回收。远程主机的锁须由维护者核验后移除。主脚本保留旧的进程内等待开关供兼容，但默认关闭。详见 [runbook · 收尾补抓](runbook.md#收尾补抓)。
 
 **环境变量**（`CNE_CONFIG` / `CNE_LOG_DIR` 同时被 `cne` 本身读取，其余仅本脚本读取）：`CNE_CONFIG`, `CNE_LOG_DIR`（长跑命令自己也往这里写一份日志）, `CNE_GROUPS`,
 `CNE_GATE_GROUPS`（默认 `core`，失败标为 gate；其余组标 soft）、
@@ -45,7 +45,8 @@ cne run clean
 `CNE_SOURCE_VANTAGE`（默认 `local`；应设为稳定且真实的出口标签，如 `cn` 或
 `overseas`）、
 `CNE_TRADE_DATE`、
-`CNE_BIN`（覆盖 `cne` 路径；供用 stub 跑通控制流的测试用）。
+`CNE_BIN`（覆盖 `cne` 路径；供用 stub 跑通控制流的测试用）、
+`CNE_PYTHON`（门控与调度锁使用的解释器；默认仓库 `.venv/bin/python`，没有 `.venv` 时用 PATH 上的 `python3`，须能导入 cnequity）。
 
 结束时打印分组摘要（`group: OK|FAILED [gate|soft]`）外加 `stale-retry: OK|FAILED|not needed|skipped`，便于区分「门禁挂了」与「东财挂了」。补抓失败算 soft。
 
@@ -73,7 +74,7 @@ cne run clean
 
 **与日更互斥**：和 `daily_pipeline.sh` 共用 `scheduler_lock.sh` 的同一把锁。launchd 可能在主 pipeline 还没跑完时触发它——这时它**直接跳过**（退出 0）而不是排队，因为下一个窗口还能再试，而重复的 run 绝不该堆在采集后面。
 
-环境变量：`CNE_BIN` / `CNE_CONFIG` / `CNE_LOG_DIR`，可选 `CNE_STALE_GROUPS`、`CNE_TRADE_DATE`。
+环境变量：`CNE_BIN` / `CNE_CONFIG` / `CNE_LOG_DIR`，可选 `CNE_STALE_GROUPS`、`CNE_TRADE_DATE`、`CNE_PYTHON`（同上）。
 
 ### scheduler_lock.sh
 
@@ -257,7 +258,19 @@ scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.tom
 
 ### dev/sync_docs.py
 
-从代码重新生成文档里由代码决定的部分，中英文两套都包括：字段表、衍生品能力表、CLI 参数表、命令副作用清单，以及 PyPI 用的 README。`--check` 只检查不写入，CI 会跑。CLI 帮助和副作用说明的英文在 `scripts/dev/i18n/cli_help.en.yml` 和 `cli_surface.en.yml`；新增或改动帮助文字而没有对应英文时，检查失败。
+从代码重新生成文档里由代码决定的部分，中英文两套都包括：字段表、衍生品能力表、CLI 参数表、命令副作用清单，以及 PyPI 用的 README。`--check` 只检查不写入，CI 会跑。CLI 帮助的中英文来自包内翻译目录（英文写在代码里，中文在 `src/cnequity/locale/zh_CN/LC_MESSAGES/cnequity.po`），缺中文时 `python scripts/dev/i18n_catalog.py` 检查失败；副作用说明的英文在 `scripts/dev/i18n/cli_surface.en.yml`，新增命令而没有对应英文时，检查失败。
+
+### dev/i18n_catalog.py
+
+维护 CLI、终端进度和控制台服务端文案的翻译目录。文案在代码里写英文，用 `cnequity.i18n` 的 `_()`（运行时翻译）或 `N_()`（只登记，显示时再翻译，如 Click 帮助和日志模板）标记；命令的 docstring 就是帮助，自动登记。中文在 `src/cnequity/locale/zh_CN/LC_MESSAGES/cnequity.po`，编译出的 `.mo` 一并提交，安装包不需要构建步骤：
+
+```bash
+python scripts/dev/i18n_catalog.py update    # 补新文案、删掉代码里已没有的
+python scripts/dev/i18n_catalog.py compile   # 由 .po 重新生成 .mo
+python scripts/dev/i18n_catalog.py           # 检查；有问题退出 1
+```
+
+检查覆盖：标记过的文案缺条目或缺中文、条目已不在代码里、模糊条目、占位符与英文不一致、首尾换行不一致、`.mo` 与 `.po` 不符。`tests/unit/test_i18n_catalog.py` 会跑它；`tests/unit/test_cli_untranslated.py` 另外拦下没走目录的中文字面量。Babel 只是开发依赖，安装后用标准库读取 `.mo`。
 
 ### dev/doc_translations.py
 

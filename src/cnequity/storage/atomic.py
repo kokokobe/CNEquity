@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sys
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
+
+from cnequity.i18n import N_, Message
 
 # Windows refuses ``os.replace`` while another handle (DuckDB, Explorer preview,
 # AV) holds the destination. A short backoff covers the common "query just
@@ -28,12 +31,53 @@ class RollbackIncompleteError(RuntimeError):
     """A swap failed and putting the original back failed too; data sits in a backup."""
 
 
+# Filesystems that cannot sync a directory say so with one of these.
+_DIR_SYNC_UNSUPPORTED = {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EBADF}
+
+
+def fsync_file(path: Path | str) -> None:
+    """Flush one file's data and metadata to stable storage.
+
+    Windows rejects fsync on a read-only descriptor, while a copy that
+    inherited a read-only mode cannot be reopened for writing on POSIX.
+    """
+    if IS_WINDOWS:
+        with open(path, "r+b") as handle:
+            os.fsync(handle.fileno())
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def fsync_dir(path: Path | str) -> None:
+    """Make the entries created or renamed in *path* durable.
+
+    Windows cannot open a directory for this and orders renames itself.
+    """
+    if IS_WINDOWS:
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in _DIR_SYNC_UNSUPPORTED:
+            raise
+    finally:
+        os.close(fd)
+
+
 def replace_with_retry(tmp: Path | str, path: Path | str) -> None:
-    """``os.replace`` that rides out transient Windows sharing denials."""
+    """``os.replace`` that rides out transient Windows sharing denials.
+
+    The parent directory is synced afterwards, so the rename survives a
+    crash rather than only the renamed file's contents.
+    """
     for attempt in range(_REPLACE_ATTEMPTS):
         try:
             os.replace(tmp, path)
-            return
         except PermissionError as exc:
             if attempt + 1 < _REPLACE_ATTEMPTS:
                 time.sleep(_REPLACE_BACKOFF_SEC * (2**attempt))
@@ -42,13 +86,23 @@ def replace_with_retry(tmp: Path | str, path: Path | str) -> None:
                 raise
             raise FileInUseError(
                 exc.errno,
-                f"{path} 正被其他程序占用，重试 {_REPLACE_ATTEMPTS} 次后仍无法替换。"
-                "常见原因：Jupyter/DuckDB/polars 正在读取这份数据、资源管理器打开了该目录，"
-                "或杀毒/同步软件正在扫描。关闭占用的程序后重跑即可",
+                Message(
+                    N_(
+                        "%s is in use by another program and still cannot be replaced after %d "
+                        "attempts. Common causes: Jupyter/DuckDB/polars is reading this data, "
+                        "File Explorer has the folder open, or antivirus/sync software is "
+                        "scanning it. Close the program holding it and run again"
+                    ),
+                    path,
+                    _REPLACE_ATTEMPTS,
+                ),
                 str(tmp),
                 None,
                 str(path),
             ) from exc
+        else:
+            fsync_dir(Path(path).parent)
+            return
 
 
 def swap_with_backup(staged: Path, target: Path, backup: Path) -> None:
@@ -66,8 +120,16 @@ def swap_with_backup(staged: Path, target: Path, backup: Path) -> None:
             replace_with_retry(backup, target)
         except OSError as restore_exc:
             raise RollbackIncompleteError(
-                f"替换 {target} 失败，且未能还原原数据；原数据完整保存在 {backup}。"
-                f"关闭占用的程序后，把它改名回 {target.name} 即可恢复"
+                Message(
+                    N_(
+                        "Replacing %s failed and the original could not be restored; it is kept "
+                        "intact at %s. Close the program holding it, then rename it back to %s "
+                        "to recover"
+                    ),
+                    target,
+                    backup,
+                    target.name,
+                )
             ) from restore_exc
         raise
 
@@ -89,10 +151,7 @@ def write_parquet_atomic(path: Path, df: pl.DataFrame, **kwargs) -> Path:
     tmp = Path(tmp_name)
     try:
         df.write_parquet(tmp, **kwargs)
-        # Windows rejects fsync on a read-only file descriptor with EBADF.
-        # Reopen read/write so the durability barrier works on every platform.
-        with tmp.open("r+b") as handle:
-            os.fsync(handle.fileno())
+        fsync_file(tmp)
         replace_with_retry(tmp, path)
         return path
     except Exception:

@@ -77,11 +77,7 @@ def test_recent_window_requests_a_small_tail(monkeypatch):
         return None
 
     monkeypatch.setattr(sina, "_request", request)
-    monkeypatch.setattr(
-        sina,
-        "date",
-        SimpleNamespace(today=lambda: date(2026, 9, 13), fromisoformat=date.fromisoformat),
-    )
+    monkeypatch.setattr(sina, "shanghai_today", lambda: date(2026, 9, 13))
 
     sina.fetch_daily_bars_sina(
         "600519.SH",

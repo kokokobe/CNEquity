@@ -1,4 +1,4 @@
-# How CNEquity differs from and works with AKShare and Tushare
+# Comparison with AKShare and Tushare
 
 The three are often compared, but they solve problems at different stages:
 

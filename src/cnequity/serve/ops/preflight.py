@@ -8,10 +8,12 @@ rejection is the one that counts.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from cnequity.domain.market_time import shanghai_now, shanghai_today
+from cnequity.i18n import N_, _
 from cnequity.orchestrator.run_lock import (
     DAILY_INGESTION_LOCK,
     EVENTS_INGESTION_LOCK,
@@ -26,19 +28,67 @@ from cnequity.orchestrator.run_window import (
     pending_session,
 )
 from cnequity.orchestrator.scheduler_lock import lock_directory, scheduler_lock_holder
-from cnequity.serve.labels_en import en
+from cnequity.serve.display import en, local
 from cnequity.serve.ops.catalog import OpSpec
 from cnequity.serve.ops.records import live_holder, slot_path
 
 ENGINE_TEXT = {
-    DAILY_INGESTION_LOCK: "有日更正在运行（各调度组共用一把采集锁）。",
-    EVENTS_INGESTION_LOCK: "有事件流正在运行。",
-    INIT_JOB_LOCK: "有初始化正在运行。",
+    DAILY_INGESTION_LOCK: N_(
+        "A daily update is running (all schedule groups share one ingest lock)."
+    ),
+    EVENTS_INGESTION_LOCK: N_("An event stream is running."),
+    INIT_JOB_LOCK: N_("An init is running."),
 }
 SCHEDULER_TEXT = {
-    "daily": "定时日更或收尾补抓正在运行。",
-    "events": "定时事件流正在运行。",
+    "daily": N_("A scheduled daily update or closing catch-up is running."),
+    "events": N_("A scheduled event stream is running."),
 }
+
+
+_TOML_AT = re.compile(r"\s*\(at line (\d+), column (\d+)\)\s*$")
+
+
+def config_drift(config) -> dict | None:
+    """Whether the config file has moved away from the lake *config* holds.
+
+    A running server keeps the lake it started on; changing ``data.root``
+    takes a restart. A job it launches, though, reads the file afresh, so the
+    file is re-read on each call. ``None`` when the two agree.
+    """
+    from cnequity.config.loader import configured_data_root
+
+    path = getattr(config, "config_path", None) if config is not None else None
+    if path is None:
+        return None
+    try:
+        configured = configured_data_root(path)
+    except FileNotFoundError:
+        return {"kind": "missing"}
+    except OSError as exc:
+        return {"kind": "unreadable", "detail": exc.strerror or type(exc).__name__}
+    except (ValueError, TypeError) as exc:
+        # tomllib.TOMLDecodeError is a ValueError; a non-string root is a TypeError.
+        text = str(exc)
+        at = _TOML_AT.search(text)
+        return {
+            "kind": "invalid",
+            "line": int(at.group(1)) if at else None,
+            "column": int(at.group(2)) if at else None,
+            "detail": _TOML_AT.sub("", text),
+        }
+    if configured == Path(config.data_root):
+        return None
+    return {"kind": "data_root", "configured_data_root": str(configured)}
+
+
+def drift_blocker(drift: dict) -> str:
+    if drift["kind"] == "data_root":
+        return _(
+            "The config file now points to another data directory {configured_data_root}, while the console still uses the lake it started with. Restart cne serve before starting tasks."
+        ).format(configured_data_root=drift["configured_data_root"])
+    return _(
+        "The config file cannot be read right now, so a task would fail after starting. Fix the config file, then start it."
+    )
 
 
 def engine_names(lock_class: str) -> tuple[str, ...]:
@@ -65,7 +115,7 @@ def engine_blockers(config, lock_class: str) -> list[str]:
     if config is None:
         return []
     return [
-        ENGINE_TEXT[name]
+        _(ENGINE_TEXT[name])
         for name in engine_names(lock_class)
         if is_run_locked(config.meta_root, name)
     ]
@@ -76,7 +126,7 @@ def scheduler_blockers(config, lock_class: str) -> list[str]:
         return []
     root = lock_directory(config)
     return [
-        SCHEDULER_TEXT[name]
+        _(SCHEDULER_TEXT[name])
         for name in scheduler_names(lock_class)
         if scheduler_lock_holder(root, name)
     ]
@@ -86,17 +136,22 @@ def blockers(config, spec: OpSpec, *, storage_busy: bool, lock_class: str) -> li
     found: list[str] = []
     from cnequity.file_lock import is_locked
 
+    # The job reads the config file itself; started now it would work on a
+    # lake other than the one every check below and the page are looking at.
+    drift = config_drift(config)
+    if drift:
+        found.append(drift_blocker(drift))
     if is_locked(slot_path(config)):
         holder = live_holder(config)
         if holder:
-            title = holder.get("title") or holder.get("op")
-            found.append(f"面板正在执行「{title}」。")
+            title = local(holder.get("title")) or holder.get("op")
+            found.append(_('The dashboard is running "{title}".').format(title=title))
         else:
-            found.append("面板正在执行另一个任务。")
+            found.append(_("The dashboard is already running another task."))
     found.extend(scheduler_blockers(config, lock_class))
     found.extend(engine_blockers(config, lock_class))
     if storage_busy and lock_class != "read":
-        found.append("存储维护正在执行，请等它结束后再启动。")
+        found.append(_("Storage maintenance is running; wait for it to finish before starting."))
     return found
 
 
@@ -110,34 +165,44 @@ def hints(config, spec: OpSpec, params: dict) -> list[str]:
         if target in (None, today) and shanghai_now().time() < parse_run_at(config.daily_run_at):
             if spec.id == "daily.full":
                 notes.append(
-                    f"还没到今天的日更时间 {config.daily_run_at}（北京时间），"
-                    "当天数据可能还没发布。这次不会记成定时任务已跑，到点后定时日更仍会运行。"
+                    _(
+                        "Today's daily update time {daily_run_at} (Beijing time) has not come yet, and today's data may not be published. This run will not count as the scheduled one, and the scheduled daily update still runs on time."
+                    ).format(daily_run_at=config.daily_run_at)
                 )
             else:
                 notes.append(
-                    f"还没到今天的日更时间 {config.daily_run_at}（北京时间），当天数据可能还没发布。"
+                    _(
+                        "Today's daily update time {daily_run_at} (Beijing time) has not come yet, and today's data may not be published."
+                    ).format(daily_run_at=config.daily_run_at)
                 )
     if getattr(config, "eastmoney_push2_paused", False):
-        notes.append("push2 已暂停（配置 push2_paused），相关数据集会降级或缺失。")
+        notes.append(
+            _("push2 is paused (config push2_paused); related datasets will degrade or be missing.")
+        )
     try:
         from cnequity.adapters.eastmoney.host_guard import status
 
         ledger = status(config)
     except (OSError, ValueError):
-        notes.append("没能读来源熔断状态。")
+        notes.append(_("Could not read the source circuit-breaker state."))
     else:
         for name, section in ledger.items():
             if isinstance(section, dict) and section.get("breaker"):
-                notes.append(f"{name} 熔断今天已经触发，相关请求会失败到明天。")
+                notes.append(
+                    _(
+                        "The {name} circuit breaker already tripped today; related requests will fail until tomorrow."
+                    ).format(name=name)
+                )
     if spec.id not in {"init.start", "init.resume", "diag.doctor"}:
         pending = incomplete_init(config)
         if pending and not pending["running"]:
             notes.append(
-                f"有一次初始化没跑完（{pending['run_id']}）。"
-                "从面板继续初始化会续跑它；这次操作仍可进行。"
+                _(
+                    "An init did not finish ({run_id}). Continuing init from the dashboard resumes it; this operation can still go ahead."
+                ).format(run_id=pending["run_id"])
             )
     if lock_class_waits_for_compact(spec) and is_run_locked(config.meta_root, "compact"):
-        notes.append("发布锁正被占用，发布阶段会排队等待。")
+        notes.append(_("The publish lock is held; the publish phase will queue and wait."))
     return notes
 
 
@@ -209,7 +274,7 @@ def occupancy(config, *, storage_busy: bool) -> dict:
         schedulers = [name for name in ("daily", "events") if scheduler_lock_holder(root, name)]
     notes: list[str] = []
     if config is not None and getattr(config, "eastmoney_push2_paused", False):
-        notes.append("push2 已暂停。")
+        notes.append(_("push2 is paused."))
     return {
         "slot": (
             {

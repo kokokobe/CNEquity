@@ -35,6 +35,8 @@ _SENSITIVE_KEY = re.compile(
 _SAFE_SOURCE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_DATASET = re.compile(r"[^A-Za-z0-9._-]+")
 _ARCHIVE_SCHEMA_VERSION = 1
+#: Payload formats that are already compressed internally.
+_STORED_UNCOMPRESSED_FORMATS = frozenset({"pdf"})
 
 # Receipt hand-off is deliberately in-memory and owner-scoped.  It is not a
 # second archive index: the adapter's ``archive`` call returns a concrete
@@ -618,13 +620,23 @@ class RawPayloadArchive:
                 f"{self.max_payload_bytes}"
             )
         digest = hashlib.sha256(raw).hexdigest()
-        compressed = gzip.compress(raw, mtime=0) if self.compression == "gzip" else raw
         source_part = _safe_component(source, "unknown")
         dataset_part = _safe_component(dataset, "dataset")
         stamp = (captured_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         day = stamp.date().isoformat()
         base = self.root / dataset_part / f"source={source_part}" / f"captured_date={day}"
-        suffix = ".gz" if self.compression == "gzip" else ".bin"
+        compression = self.compression
+        # gzip -9 shrank archived report PDFs by about 1% at real CPU cost.
+        # A copy already stored compressed keeps its form, so a replayed
+        # observation still matches its existing sidecar.
+        if (
+            compression == "gzip"
+            and fmt in _STORED_UNCOMPRESSED_FORMATS
+            and _lstat(base / f"{digest}.gz") is None
+        ):
+            compression = "none"
+        compressed = gzip.compress(raw, mtime=0) if compression == "gzip" else raw
+        suffix = ".gz" if compression == "gzip" else ".bin"
         payload_path = base / f"{digest}{suffix}"
         # The payload itself remains content addressed.  A caller that needs
         # to account for two observations of the same bytes (CNINFO page 1
@@ -649,7 +661,7 @@ class RawPayloadArchive:
             payload_path,
             compressed,
             digest=digest,
-            compression=self.compression,
+            compression=compression,
             payload_bytes=len(raw),
             compressed_bytes=len(compressed),
         )
@@ -662,7 +674,7 @@ class RawPayloadArchive:
             payload_sha256=digest,
             payload_bytes=len(raw),
             compressed_bytes=len(compressed),
-            compression=self.compression,
+            compression=compression,
             payload_format=fmt,
             payload_path=relative_payload,
             metadata_path=relative_metadata,
@@ -691,7 +703,7 @@ class RawPayloadArchive:
                 "source": str(source),
                 "payload_bytes": len(raw),
                 "compressed_bytes": len(compressed),
-                "compression": self.compression,
+                "compression": compression,
                 "payload_format": fmt,
                 "payload_path": relative_payload,
                 "metadata_path": relative_metadata,

@@ -132,3 +132,22 @@ def test_ingestion_audit_returns_a_real_integrity_failure_to_the_engine(tmp_path
     monkeypatch.setattr("cnequity.quality.audit.run_audit", audit)
     result = JobEngine(cfg).run_job("backfill", date(2026, 1, 5), steps=["audit"])
     assert result["status"] == "failed"
+
+
+def test_historical_factor_errors_are_advisory_but_invalid_factors_still_block(
+    tmp_path, monkeypatch, recorded
+):
+    cfg = Config(data_root=tmp_path / "data", audit_gate="block")
+    items = [{"dataset": "adj_factors", "check": "adj_factor_continuity", "severity": "error"}]
+
+    def audit(config, run_id, trade_date, context):
+        context["audit_by_severity"] = {"error": len(items)}
+        context["audit_error_findings"] = list(items)
+        return len(items)
+
+    monkeypatch.setattr("cnequity.quality.audit.run_audit", audit)
+    finalize.step_audit(cfg, date(2026, 1, 5), "semantic", {})
+    assert recorded[-1]["status"] != "failed"
+    items.append({"dataset": "adj_factors", "check": "invalid_values", "severity": "error"})
+    finalize.step_audit(cfg, date(2026, 1, 5), "structural", {})
+    assert recorded[-1]["status"] == "failed"

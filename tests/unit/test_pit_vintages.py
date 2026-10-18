@@ -9,7 +9,7 @@ import pytest
 
 from cnequity.config import Config
 from cnequity.domain.schemas import PRIMARY_KEYS
-from cnequity.query import load
+from cnequity.query import load, load_with_receipt
 from cnequity.query.reader import ReaderError
 from cnequity.storage.parquet import StagingWriter, compact_dataset
 
@@ -109,18 +109,24 @@ def test_as_of_after_restatement_returns_the_revised_value_once(tmp_path):
     assert df["item_value"][0] == 90.0
 
 
-def test_backfill_vintage_is_hidden_before_its_collection_date(tmp_path):
-    """Current restated values must not be paired with an earlier PIT cutoff."""
+@pytest.mark.parametrize("mode", [None, "best_effort"])
+def test_default_includes_backfilled_history_and_records_its_quality(tmp_path, mode):
+    """A later collection must not empty an exploratory historical read."""
     cfg = Config(data_root=tmp_path / "data")
     row = _row(_ORIGINAL, 90.0, "2026-08-22T09:00:00+00:00")
     row["source"] = "eastmoney_backfill"
     _write_curated(cfg, [row])
 
-    before_collection = load(_DATASET, as_of="2025-06-30", config=cfg)
-    after_collection = load(_DATASET, as_of="2026-08-22", config=cfg)
+    options = {} if mode is None else {"pit_mode": mode}
+    result = load_with_receipt(_DATASET, as_of="2025-06-30", config=cfg, **options)
+    explicit_none = load(_DATASET, as_of="2025-06-30", config=cfg, pit_mode=None)
 
-    assert before_collection.is_empty()
-    assert after_collection["item_value"].to_list() == [90.0]
+    assert result.frame["item_value"].to_list() == [90.0]
+    assert result.frame["pit_is_exact"].to_list() == [False]
+    assert result.frame["pit_quality"].to_list() == ["reconstructed"]
+    assert result.frame.equals(explicit_none)
+    assert result.receipt["pit"]["mode"] == "best_effort"
+    assert result.receipt["pit"]["exact_counts"] == {"False": 1}
 
 
 def test_explicit_strict_rejects_reconstructed_and_best_effort_marks_it(tmp_path):
@@ -148,7 +154,8 @@ def test_explicit_strict_rejects_reconstructed_and_best_effort_marks_it(tmp_path
     assert best_effort["pit_quality"].to_list() == ["reconstructed"]
 
 
-def test_known_source_times_are_bounds_in_both_modes(tmp_path):
+@pytest.mark.parametrize("mode", [None, "best_effort", "strict"])
+def test_known_source_times_are_bounds_in_all_modes(tmp_path, mode):
     cfg = Config(data_root=tmp_path / "data")
     row = _row(_ORIGINAL, 100.0, "2024-04-20T09:00:00+00:00")
     row.update(
@@ -163,7 +170,7 @@ def test_known_source_times_are_bounds_in_both_modes(tmp_path):
     before_available = load(
         _DATASET,
         as_of="2024-04-20",
-        pit_mode="best_effort",
+        pit_mode=mode,
         config=cfg,
     )
     after_available = load(
@@ -418,7 +425,7 @@ def test_same_announce_date_correction_preserves_original_and_first_observation(
         compact_dataset(
             cfg.staging_root, cfg.curated_root, _DATASET, run, partition_col="report_period"
         )
-    early = load(_DATASET, config=cfg, as_of="2024-04-30", items=["revenue"])
+    early = load(_DATASET, config=cfg, as_of="2024-04-30", items=["revenue"], pit_mode="strict")
     assert early["item_value"].to_list() == [100.0]
     later = load(_DATASET, config=cfg, as_of="2024-07-01", items=["revenue"])
     assert later["item_value"].to_list() == [90.0]

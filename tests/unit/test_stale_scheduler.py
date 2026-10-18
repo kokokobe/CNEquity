@@ -3,6 +3,7 @@
 from datetime import date
 
 import polars as pl
+import pytest
 
 import cnequity.steps  # noqa: F401
 from cnequity.cli.run_cmds import _repairable_gaps, stale_fetch_plan
@@ -138,6 +139,7 @@ def test_scheduled_gap_repair_filters_snapshot_only(monkeypatch):
     assert [gap.dataset for gap in selected] == ["valuation_metrics"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_stale_plan_cannot_escape_explicit_host_groups(monkeypatch, tmp_path):
     from cnequity.config import Config, ScheduleGroup
 

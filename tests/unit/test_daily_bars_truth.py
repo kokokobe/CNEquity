@@ -40,6 +40,7 @@ def test_daily_bar_ownership_accepts_all_false_status_as_expected_no_data():
             "symbol": ["600001.SH", "600001.SH"],
             "trade_date": sessions,
             "is_trading": [False, False],
+            "source": ["baostock", "baostock"],
         }
     )
 
@@ -262,19 +263,27 @@ def test_live_negative_cache_still_validates_identity(tmp_path, monkeypatch):
     assert load_negative_evidence(cfg, "daily_bars", now=now) == []
 
 
-def test_direct_status_edit_invalidates_identity_without_revision_change(tmp_path, monkeypatch):
+def test_direct_status_edit_invalidates_identity_without_revision_change(tmp_path):
+    import os
+
     from cnequity.steps.common import _instrument_identity
 
     cfg = Config(data_root=tmp_path)
     metadata = pl.DataFrame(
         {"symbol": ["920001.BJ"], "list_date": [date(2026, 1, 1)], "asset_type": ["stock"]}
     )
+    part = cfg.curated_root / "trading_status" / "trade_date=2026-09"
+    part.mkdir(parents=True)
+    path = part / "part-merged.parquet"
     status = pl.DataFrame(
         {"symbol": ["920001.BJ"], "trade_date": [date(2026, 9, 15)], "is_trading": [False]}
     )
-    monkeypatch.setattr("cnequity.steps.common.load_curated_trading_status", lambda cfg: status)
+    status.write_parquet(path)
     before = _instrument_identity(cfg, metadata)
-    status = status.with_columns(pl.lit(True).alias("is_trading"))
+    assert _instrument_identity(cfg, metadata) == before, "unchanged files keep the identity"
+
+    status.with_columns(pl.lit(True).alias("is_trading")).write_parquet(path)
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1_000_000))
     after = _instrument_identity(cfg, metadata)
     assert before["trading_status_revision"] == after["trading_status_revision"]
-    assert before["trading_status_fingerprint"] != after["trading_status_fingerprint"]
+    assert before["trading_status_files"] != after["trading_status_files"]

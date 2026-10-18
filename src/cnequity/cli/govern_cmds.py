@@ -21,6 +21,7 @@ from cnequity.cli._shared import (
     attach_log_file,
     config_option,
 )
+from cnequity.i18n import N_, _
 
 
 def _profile_list_payload(include_compatibility: bool) -> list[dict]:
@@ -49,7 +50,7 @@ def _profile_show_payload(name: str, symbols: tuple[str, ...]) -> dict:
 
 @cli.group("profile")
 def profile_grp():
-    """查看带版本的研究 universe profile。"""
+    """View versioned research universe profiles."""
 
 
 @profile_grp.command("list")
@@ -57,10 +58,10 @@ def profile_grp():
     "--include-compatibility/--official-only",
     default=True,
     show_default=True,
-    help="列表里包含历史遗留的 universe 别名。",
+    help=N_("Include legacy universe aliases in the list."),
 )
 def profile_list(include_compatibility: bool):
-    """列出 profile 注册表记录（机器可读）。"""
+    """List profile registry records (machine-readable)."""
 
     click.echo(
         json.dumps(_profile_list_payload(include_compatibility), ensure_ascii=False, indent=2)
@@ -73,17 +74,17 @@ def profile_list(include_compatibility: bool):
     "--symbol",
     "symbols",
     multiple=True,
-    help="把 profile 绑定到具体标的，并附带 concrete_scope_hash。",
+    help=N_("Bind the profile to concrete symbols and include concrete_scope_hash."),
 )
 def profile_show(name: str, symbols: tuple[str, ...]):
-    """展示某个带版本的 profile 及其稳定的 scope hash。"""
+    """Show one versioned profile and its stable scope hash."""
 
     click.echo(json.dumps(_profile_show_payload(name, symbols), ensure_ascii=False, indent=2))
 
 
 @cli.group("contract")
 def contract_grp():
-    """查看并校验已注册的数据集数据契约。"""
+    """View and validate registered dataset data contracts."""
 
 
 @contract_grp.command("show")
@@ -92,7 +93,7 @@ def contract_grp():
     "--dataset",
     "dataset_option",
     default=None,
-    help="数据集名（也可以直接作为参数传）。不给则输出完整契约。",
+    help=N_("Dataset name (can also be passed as an argument). Omit to print the full contract."),
 )
 @click.option(
     "--out",
@@ -101,15 +102,16 @@ def contract_grp():
     "output_path",
     default="-",
     show_default=True,
-    help="把 JSON 写到这个路径而不是标准输出；'-' 表示打印。",
+    help=N_("Write the JSON to this path instead of stdout; '-' means print."),
 )
-@click.option("--json", "as_json", is_flag=True, help="输出机器可读的 JSON（默认）。")
+@click.option("--json", "as_json", is_flag=True, help=N_("Output machine-readable JSON (default)."))
 def contract_show(dataset: str | None, dataset_option: str | None, output_path: str, as_json: bool):
-    """展示某一个数据集的契约，或整个注册表的契约。
+    """Show the contract of one dataset, or of the whole registry.
 
     \b
-    `--out PATH` 表示写文件而不是打印：那份文件就是随发布一起提交的契约快照，
-    也正是 `cne contract diff` 回读、用来判断后来的注册表是兼容还是破坏性变更的东西。
+    `--out PATH` writes a file instead of printing: that file is the contract snapshot committed with a release,
+    and exactly what `cne contract diff` reads back to judge whether a later registry is compatible or breaking.
+
     """
     from cnequity.domain.contracts import (
         build_contract,
@@ -138,21 +140,21 @@ def contract_show(dataset: str | None, dataset_option: str | None, output_path: 
         Path(output_path).write_text(contract_json(payload) + "\n", encoding="utf-8")
     else:
         export_contract(output_path)
-    click.echo(f"已写入 {output_path}")
+    click.echo(_("Written to {output_path}").format(output_path=output_path))
 
 
 @contract_grp.command("diff")
 @click.argument("old_contract", required=False)
 @click.argument("new_contract", required=False)
-@click.option("--old", "old_option", default=None, help="基线契约文件路径。")
-@click.option("--new", "new_option", default=None, help="候选契约文件路径。")
-@click.option("--from", "from_option", default=None, help="--old 的别名。")
-@click.option("--to", "to_option", default=None, help="--new 的别名。")
-@click.option("--json", "as_json", is_flag=True, help="输出机器可读的 JSON。")
+@click.option("--old", "old_option", default=None, help=N_("Path to the baseline contract file."))
+@click.option("--new", "new_option", default=None, help=N_("Path to the candidate contract file."))
+@click.option("--from", "from_option", default=None, help=N_("Alias for --old."))
+@click.option("--to", "to_option", default=None, help=N_("Alias for --new."))
+@click.option("--json", "as_json", is_flag=True, help=N_("Output machine-readable JSON."))
 @click.option(
     "--allow-breaking",
     is_flag=True,
-    help="即使发现破坏性变更也返回退出码 0。",
+    help=N_("Exit with code 0 even when breaking changes are found."),
 )
 def contract_diff(
     old_contract: str | None,
@@ -164,13 +166,13 @@ def contract_diff(
     as_json: bool,
     allow_breaking: bool,
 ):
-    """比较 OLD_CONTRACT 与 NEW_CONTRACT（默认用当前注册表）。"""
+    """Compare OLD_CONTRACT with NEW_CONTRACT (the current registry by default)."""
     from cnequity.domain.contracts import contract_json, diff_contracts, format_contract_diff
 
     old_path = old_option or from_option or old_contract
     new_path = new_option or to_option or new_contract
     if old_path is None:
-        raise click.UsageError("请给出 OLD_CONTRACT 或 --old/--from")
+        raise click.UsageError(_("Give OLD_CONTRACT or --old/--from"))
     try:
         diff = diff_contracts(old_path, new_path)
     except (OSError, TypeError, ValueError) as exc:
@@ -186,13 +188,18 @@ def contract_diff(
 @contract_grp.command("validate")
 @click.argument("contract_path", required=False)
 @click.option(
-    "--path", "path_option", default=None, help="契约 JSON 路径（也可以直接作为参数传）。"
+    "--path",
+    "path_option",
+    default=None,
+    help=N_("Path to the contract JSON (can also be passed as an argument)."),
 )
-@click.option("--json", "as_json", is_flag=True, help="输出机器可读的 JSON。")
+@click.option("--json", "as_json", is_flag=True, help=N_("Output machine-readable JSON."))
 @click.option(
     "--against-registry",
     is_flag=True,
-    help="要求文件里的契约与当前的 DATASETS / SCHEMAS / PRIMARY_KEYS 完全一致。",
+    help=N_(
+        "Require the contract in the file to match the current DATASETS / SCHEMAS / PRIMARY_KEYS exactly."
+    ),
 )
 def contract_validate(
     contract_path: str | None,
@@ -200,7 +207,7 @@ def contract_validate(
     as_json: bool,
     against_registry: bool,
 ):
-    """校验一份契约文件；不给则校验当前注册表。"""
+    """Validate a contract file; without one, validate the current registry."""
     from cnequity.domain.contracts import contract_json, validate_contract
 
     contract_path = path_option or contract_path
@@ -214,7 +221,7 @@ def contract_validate(
         for error in errors:
             click.echo(f"ERROR: {error}", err=True)
     else:
-        click.echo("契约检查通过")
+        click.echo(_("Contract check passed"))
     if errors:
         raise SystemExit(1)
 
@@ -237,7 +244,7 @@ def _snapshot_operator_errors() -> Iterator[None]:
 
 @cli.group("snapshot")
 def snapshot_grp():
-    """创建、校验并安全恢复可移植的湖快照。"""
+    """Create, verify and safely restore portable lake snapshots."""
 
 
 @snapshot_grp.command("create")
@@ -245,21 +252,25 @@ def snapshot_grp():
 @click.option(
     "--research",
     is_flag=True,
-    help="包含价格、因子、身份、状态、日历及研究覆盖证据；缺少依赖时报错。",
+    help=N_(
+        "Include prices, factors, identity, status, calendar and research coverage evidence; errors if dependencies are missing."
+    ),
 )
 @click.option(
     "--dataset",
     "datasets",
     multiple=True,
     required=True,
-    help="要包含的数据集（可重复）。快照永远是显式指定的，不会是整个湖。",
+    help=N_(
+        "Dataset to include (repeatable). Snapshots are always explicit, never the whole lake."
+    ),
 )
 @config_option
 @click.option(
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="快照放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the snapshot; defaults to meta/snapshots under the data root."),
 )
 def snapshot_create(
     name: str,
@@ -268,11 +279,12 @@ def snapshot_create(
     snapshot_root: Path | None,
     research: bool,
 ):
-    """把指定的数据集冻结成一份新的、不可变的快照。
+    """Freeze the given datasets into a new, immutable snapshot.
 
     \b
-    manifest 会记下每个 Parquet 文件的大小和 SHA-256，连同数据集状态、契约指纹和 run 血缘 ——
-    足够让后来的人证明某个已发布的结果用的正是这些字节。命令会打印 manifest 路径。
+    The manifest records each Parquet file's size and SHA-256, together with dataset state, contract fingerprint and run lineage:
+    enough for someone later to prove that a published result used exactly these bytes. The command prints the manifest path.
+
     """
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-create")
@@ -290,15 +302,16 @@ def snapshot_create(
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="快照放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the snapshot; defaults to meta/snapshots under the data root."),
 )
 def snapshot_verify(name: str, config_path: str, snapshot_root: Path | None):
-    """把快照里每个文件重新哈希，与 manifest 对账。
+    """Re-hash every file in a snapshot and reconcile it with the manifest.
 
     \b
-    一旦发现大小或摘要不符就退出 1，所以它可以直接当定时任务里的门禁。
-    在信任一份不是你刚刚创建的快照之前先跑它 ——
-    位腐烂和被截断的拷贝，在哈希对不上之前长得一模一样。
+    Exits 1 as soon as a size or digest mismatches, so it can serve directly as a gate in a scheduled job.
+    Run it before trusting a snapshot you did not just create:
+    bit rot and a truncated copy look identical until the hashes disagree.
+
     """
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-verify")
@@ -321,16 +334,17 @@ def snapshot_verify(name: str, config_path: str, snapshot_root: Path | None):
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="快照放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the snapshot; defaults to meta/snapshots under the data root."),
 )
 def snapshot_restore(name: str, target: Path, config_path: str, snapshot_root: Path | None):
-    """把快照恢复到 TARGET，TARGET 必须是新建的或空目录。
+    """Restore a snapshot into TARGET, which must be new or an empty directory.
 
     \b
-    活跃的湖根目录会被拒绝，已存在的文件永远不会被覆盖：
-    恢复是为了把旧版本摆在当前版本旁边看，不是把线上的湖回滚。
-    在把任何东西指向它之前，先创建指向 TARGET 的独立配置，再用
-    `cne status --datasets --config PATH` 检查恢复结果。
+    The active lake root is refused, and existing files are never overwritten:
+    restoring is for looking at an old version beside the current one, not for rolling back the live lake.
+    Before pointing anything at it, create a separate config pointing at TARGET, then check the result with
+    `cne status --datasets --config PATH`.
+
     """
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-restore")
@@ -349,14 +363,14 @@ def snapshot_restore(name: str, target: Path, config_path: str, snapshot_root: P
     type=click.Choice(["auto", "zstd", "gzip", "none"]),
     default="auto",
     show_default=True,
-    help="归档编码；auto 优先 tar.zst，不行则退回 tar.gz。",
+    help=N_("Archive encoding; auto prefers tar.zst and falls back to tar.gz."),
 )
 @config_option
 @click.option(
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="快照放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the snapshot; defaults to meta/snapshots under the data root."),
 )
 def snapshot_export(
     name: str,
@@ -365,7 +379,7 @@ def snapshot_export(
     config_path: str,
     snapshot_root: Path | None,
 ):
-    """把快照 NAME 流式打包成一个可移植的 tar 归档。"""
+    """Stream snapshot NAME into one portable tar archive."""
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-export")
     from cnequity.storage.snapshots import SnapshotStore
@@ -386,18 +400,24 @@ def snapshot_export(
 
 @snapshot_grp.command("import")
 @click.argument("archive", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--name", default=None, help="导入后的快照名；默认取归档文件名。")
+@click.option(
+    "--name",
+    default=None,
+    help=N_("Name of the imported snapshot; defaults to the archive file name."),
+)
 @click.option(
     "--overwrite",
     is_flag=True,
-    help="仅在归档校验通过之后，才替换已存在的同名快照。",
+    help=N_(
+        "Replace an existing snapshot with the same name only after the archive passes verification."
+    ),
 )
 @config_option
 @click.option(
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="快照放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the snapshot; defaults to meta/snapshots under the data root."),
 )
 def snapshot_import(
     archive: Path,
@@ -406,7 +426,7 @@ def snapshot_import(
     config_path: str,
     snapshot_root: Path | None,
 ):
-    """校验 ARCHIVE 并原子地导入快照库。"""
+    """Verify ARCHIVE and import it into the snapshot store atomically."""
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-import")
     from cnequity.storage.snapshots import SnapshotStore
@@ -424,7 +444,7 @@ def snapshot_import(
 
 @snapshot_grp.group("delta")
 def snapshot_delta_grp():
-    """创建、校验并应用可移植的增量包。"""
+    """Create, verify and apply portable delta packages."""
 
 
 def _snapshot_delta_create(
@@ -447,7 +467,7 @@ def _snapshot_delta_create(
             from_revision = int(raw)
             baseline = None
     if from_revision is None and baseline is None:
-        raise click.UsageError("请给出 --from BASELINE 或 --from-revision REVISION")
+        raise click.UsageError(_("Give --from BASELINE or --from-revision REVISION"))
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-delta-create")
     with _snapshot_operator_errors():
@@ -475,33 +495,35 @@ def _snapshot_delta_create(
     "baseline",
     type=click.Path(path_type=Path),
     default=None,
-    help="基线湖根目录。目标根目录会与它逐字节比对。",
+    help=N_("Baseline lake root. The target root is compared against it byte for byte."),
 )
 @click.option(
     "--to",
     "target",
     type=click.Path(path_type=Path),
     default=None,
-    help="目标湖根目录；默认取配置里当前生效的根目录。",
+    help=N_("Target lake root; defaults to the currently active root in the config."),
 )
 @click.option(
     "--from-revision",
     type=int,
     default=None,
-    help="用目标里已提交的 revision 作为基线前置条件。",
+    help=N_("Use the revision committed in the target as the baseline precondition."),
 )
 @click.option(
     "--dataset",
     "datasets",
     multiple=True,
-    help="要包含的数据集（可重复）。不给则自动发现两个根目录里都有的数据集。",
+    help=N_(
+        "Dataset to include (repeatable). If omitted, auto-discover datasets present in both roots."
+    ),
 )
 @config_option
 @click.option(
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="增量包放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the delta package; defaults to meta/snapshots under the data root."),
 )
 def snapshot_delta_create(
     name: str,
@@ -512,7 +534,7 @@ def snapshot_delta_create(
     config_path: str,
     snapshot_root: Path | None,
 ):
-    """把 NAME 创建成一个不可变的 增加/替换/删除 包。"""
+    """Create NAME as an immutable add/replace/delete package."""
 
     _snapshot_delta_create(
         name, baseline, target, from_revision, datasets, config_path, snapshot_root
@@ -526,10 +548,10 @@ def snapshot_delta_create(
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="增量包放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the delta package; defaults to meta/snapshots under the data root."),
 )
 def snapshot_delta_verify(name: str, config_path: str, snapshot_root: Path | None):
-    """校验全部 增加/替换 载荷的哈希与变更语义。"""
+    """Verify the hashes and change semantics of every add/replace payload."""
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-delta-verify")
 
@@ -547,13 +569,15 @@ def snapshot_delta_verify(name: str, config_path: str, snapshot_root: Path | Non
 @snapshot_delta_grp.command("apply")
 @click.argument("name")
 @click.argument("target", type=click.Path(path_type=Path))
-@click.option("--dry-run", is_flag=True, help="只校验前置条件，不改动 TARGET。")
+@click.option(
+    "--dry-run", is_flag=True, help=N_("Only validate preconditions; do not modify TARGET.")
+)
 @config_option
 @click.option(
     "--snapshot-root",
     type=click.Path(path_type=Path),
     default=None,
-    help="增量包放在哪；默认是数据根目录下的 meta/snapshots。",
+    help=N_("Where to put the delta package; defaults to meta/snapshots under the data root."),
 )
 def snapshot_delta_apply(
     name: str,
@@ -562,7 +586,7 @@ def snapshot_delta_apply(
     config_path: str,
     snapshot_root: Path | None,
 ):
-    """把 NAME 安全地应用到非空的 TARGET 湖根目录上。"""
+    """Apply NAME safely onto the non-empty TARGET lake root."""
     cfg = _cfg(config_path)
     attach_log_file(cfg, "snapshot-delta-apply")
 

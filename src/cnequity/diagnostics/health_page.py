@@ -32,15 +32,22 @@ from cnequity.diagnostics.source_health import (
     HealthReport,
     ProbeStatus,
 )
+from cnequity.i18n import N_, _, current_language, localize
 
 # Vantage keys are free-form (the CLI takes whatever you pass), so this is a
 # display hint rather than a whitelist: an unknown key still renders, under its
 # own name.
 VANTAGE_LABELS: dict[str, str] = {
-    "cn": "大陆出口",
-    "overseas": "海外出口",
-    "local": "本机",
+    "cn": N_("mainland egress"),
+    "overseas": N_("overseas egress"),
+    "local": N_("this machine"),
 }
+
+DESCRIPTION = N_(
+    "Daily availability probes of public A-share data sources: EastMoney, TDX, Sina, "
+    "CNINFO, THS, baostock and the exchanges' official APIs, from mainland and "
+    "overseas egress."
+)
 
 _STATUS_ORDER = (
     ProbeStatus.OK,
@@ -138,11 +145,11 @@ def _status(value: str) -> ProbeStatus:
 
 
 def _vantage_label(key: str) -> str:
-    return VANTAGE_LABELS.get(key, key)
+    return _(VANTAGE_LABELS[key]) if key in VANTAGE_LABELS else key
 
 
 def _chip(status: ProbeStatus) -> str:
-    return f'<span class="chip {status.value}">{_e(STATUS_LABELS[status])}</span>'
+    return f'<span class="chip {status.value}">{_e(_(STATUS_LABELS[status]))}</span>'
 
 
 def _summary(report: HealthReport) -> str:
@@ -150,7 +157,7 @@ def _summary(report: HealthReport) -> str:
     for result in report.results:
         status = _status(result.status)
         counts[status] = counts.get(status, 0) + 1
-    parts = [f"{_e(STATUS_LABELS[s])} {counts[s]}" for s in _STATUS_ORDER if counts.get(s)]
+    parts = [f"{_e(_(STATUS_LABELS[s]))} {counts[s]}" for s in _STATUS_ORDER if counts.get(s)]
     return " · ".join(parts)
 
 
@@ -170,10 +177,14 @@ def render_page(reports: list[HealthReport]) -> str:
 
     head = [
         "<main>",
-        "<h1>A 股公开数据源健康度</h1>",
-        '<p class="sub">这些源是 AkShare、各类取数 skill、以及你自己的爬虫共同依赖的那十几个端点。'
-        "本页读的是 <code>cne sources probe</code> 最近一次写进湖里的报告——不是实时探测，"
-        "刷新页面不会重新请求任何人。</p>",
+        "<h1>" + _e(_("A-share public data source health")) + "</h1>",
+        '<p class="sub">'
+        + _(
+            "These are the dozen or so endpoints that AkShare, data-fetching skills and your own "
+            "scrapers all depend on. This page reads the report <code>cne sources probe</code> "
+            "last wrote into the lake — not a live probe; refreshing the page contacts no one."
+        )
+        + "</p>",
         '<div class="vantages">',
     ]
     for report in reports:
@@ -184,10 +195,10 @@ def render_page(reports: list[HealthReport]) -> str:
 
     rows = [
         '<div class="scroll"><table><thead><tr>',
-        '<th class="src">数据源</th>',
+        '<th class="src">' + _e(_("Data source")) + "</th>",
     ]
     rows += [f"<th>{_e(_vantage_label(v))}</th>" for v in vantages]
-    rows.append("<th>影响的数据集</th></tr></thead><tbody>")
+    rows.append("<th>" + _e(_("Affected datasets")) + "</th></tr></thead><tbody>")
 
     shared = Counter(probe.blast_radius for probe in PROBES)
     last_radius = None
@@ -197,23 +208,27 @@ def render_page(reports: list[HealthReport]) -> str:
             if shared[probe.blast_radius] > 1:
                 rows.append(
                     f'<tr class="group"><td colspan="{len(vantages) + 2}">'
-                    f"共用风控面：{_e(probe.blast_radius)}"
-                    f"（下面 {shared[probe.blast_radius]} 个端点会一起挂）"
-                    "</td></tr>"
+                    + _e(
+                        _(
+                            "Shared risk-control surface: {radius} "
+                            "(the {count} endpoints below go down together)"
+                        ).format(radius=probe.blast_radius, count=shared[probe.blast_radius])
+                    )
+                    + "</td></tr>"
                 )
         # The header alone is positional, and a reader takes "these 3 fail
         # together" to cover every row under it until the next heading. The
         # member rows carry the marker themselves so the group has a visible end.
         rows.append(f'<tr class="{"grouped" if shared[probe.blast_radius] > 1 else ""}">')
-        note = f"<small>{_e(probe.note)}</small>" if probe.note else ""
+        note = f"<small>{_e(_(probe.note))}</small>" if probe.note else ""
         rows.append(
-            f'<td class="src"><b>{_e(probe.label)}</b>'
+            f'<td class="src"><b>{_e(_(probe.label))}</b>'
             f"<small><code>{_e(probe.host)}</code></small>{note}</td>"
         )
         for vantage in vantages:
             result = by_vantage.get(vantage, {}).get(probe.key)
             if result is None:
-                rows.append('<td><span class="chip skipped">未探测</span></td>')
+                rows.append(f'<td><span class="chip skipped">{_e(_("not probed"))}</span></td>')
                 continue
             status = _status(result.status)
             latency = (
@@ -221,37 +236,58 @@ def render_page(reports: list[HealthReport]) -> str:
                 if result.latency_ms is not None
                 else ""
             )
-            detail = f'<span class="detail">{_e(result.detail)}</span>' if result.detail else ""
+            detail = (
+                f'<span class="detail">{_e(localize(result.detail))}</span>'
+                if result.detail
+                else ""
+            )
             rows.append(f"<td>{_chip(status)}{latency}{detail}</td>")
-        rows.append(f'<td class="powers">{_e("、".join(probe.powers))}</td>')
+        rows.append(f'<td class="powers">{_e(_(", ").join(probe.powers))}</td>')
         rows.append("</tr>")
     rows.append("</tbody></table></div>")
 
-    legend = ["<h2>状态的含义</h2>", '<ul class="legend">']
+    legend = ["<h2>" + _e(_("What the states mean")) + "</h2>", '<ul class="legend">']
     for status in _STATUS_ORDER:
-        legend.append(f"<li>{_chip(status)}<span>{_e(STATUS_MEANING[status])}</span></li>")
+        legend.append(f"<li>{_chip(status)}<span>{_e(_(STATUS_MEANING[status]))}</span></li>")
     legend.append("</ul>")
 
     caveats = [
-        "<h2>怎么读这张表</h2>",
+        "<h2>" + _e(_("How to read this table")) + "</h2>",
         '<div class="caveats">',
-        "<p><b>一次探测不是 SLA。</b>每个源每次只发一个请求。绿色说明那一个请求成功了，"
-        "不代表接下来一千个也会成功——对这里几个有频率风控的源来说，那是完全不同的问题。</p>",
-        "<p><b>「被拒」不等于「挂了」。</b>好几个源在 WAF 层拒绝非大陆出口。"
-        "同一个主机、同一秒，大陆列可以是绿的而海外列是红的，两个都是真的。"
-        "所以两个视角并排放，不合并成一个结论。</p>",
-        "<p><b>HTTP 200 不等于可用。</b>东财会用 200 返回风控页，新浪会用 200 返回空数组，"
-        "同花顺限流时也是 200 加空响应。所以每个探测都断言<b>响应体</b>而不是状态行；"
-        "「空响应」这一档单独拎出来，因为它看起来比失败健康，实际更危险——回填会静默截断。</p>",
-        "<p><b>探测走的是适配器自己的代码。</b>URL 常量、东财的鉴权头、同花顺的限速、"
-        "TDX 的二进制协议，用的都是日更流水线在用的那套；适配器改了，探测跟着改。</p>",
+        _(
+            "<p><b>One probe is not an SLA.</b> Each source gets one request per probe. Green "
+            "means that one request succeeded, not that the next thousand will — for the few "
+            "rate-limited sources here, that is a different question entirely.</p>"
+        ),
+        _(
+            '<p><b>"Refused" is not "down".</b> Several sources refuse non-mainland egress at '
+            "the WAF. For the same host in the same second, the mainland column can be green "
+            "and the overseas column red, and both are true. So the two vantages sit side by "
+            "side instead of being merged into one verdict.</p>"
+        ),
+        _(
+            '<p><b>HTTP 200 is not "available".</b> EastMoney answers with a risk-control '
+            "page under 200, Sina with an empty array under 200, and THS with 200 and an "
+            "empty body when rate-limiting. So every probe asserts on the <b>response "
+            'body</b>, not the status line; "empty" is its own state because it looks '
+            "healthier than a failure and is actually more dangerous — a backfill silently "
+            "truncates.</p>"
+        ),
+        _(
+            "<p><b>Probes run the adapters' own code.</b> URL constants, EastMoney's auth "
+            "headers, THS's pacing, the TDX binary protocol — all the same ones the daily "
+            "pipeline uses; when an adapter changes, its probe changes with it.</p>"
+        ),
         "</div>",
     ]
 
     footer = [
         "<footer>",
-        f"页面生成于 {_e(generated)} · 数据由 <code>cne sources probe</code> 写入 "
-        "<code>meta/source_health/</code> · 重新探测：<code>cne sources probe --vantage cn</code>",
+        _(
+            "Page generated at {generated} · data written to <code>meta/source_health/</code> "
+            "by <code>cne sources probe</code> · probe again: <code>cne sources probe "
+            "--vantage cn</code>"
+        ).format(generated=_e(generated)),
         "</footer>",
         "</main>",
     ]
@@ -259,10 +295,9 @@ def render_page(reports: list[HealthReport]) -> str:
     body = "\n".join(head + rows + legend + caveats + footer)
     return (
         "<!doctype html>\n"
-        '<html lang="zh-CN"><head><meta charset="utf-8">'
+        f'<html lang="{"en" if current_language() == "en" else "zh-CN"}"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>A 股公开数据源健康度 · cnequity</title>"
-        '<meta name="description" content="A 股公开数据源每日可用性探测：东财、通达信、新浪、'
-        '巨潮、同花顺、baostock、交易所官方接口，分大陆 / 海外两个出口视角。">'
+        "<title>" + _e(_("A-share public data source health")) + " · cnequity</title>"
+        f'<meta name="description" content="{_e(_(DESCRIPTION))}">'
         f"<style>{_CSS}</style></head><body>\n{body}\n</body></html>\n"
     )

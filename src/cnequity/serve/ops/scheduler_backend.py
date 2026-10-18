@@ -16,6 +16,7 @@ from pathlib import Path
 from xml.parsers.expat import ExpatError
 
 from cnequity.file_lock import LockUnavailable, exclusive_lock
+from cnequity.i18n import _
 from cnequity.serve.ops.catalog import OpsError
 from cnequity.serve.ops.environment import command_environment
 
@@ -28,10 +29,16 @@ def run_command(argv: list[str], *, input: bytes | None = None) -> bytes:
     try:
         result = subprocess.run(argv, input=input, capture_output=True, env=env, timeout=15)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise OpsError(f"无法调用系统调度器（{type(exc).__name__}）。") from exc
+        raise OpsError(
+            _("Cannot call the system scheduler ({name}).").format(name=type(exc).__name__)
+        ) from exc
     if result.returncode:
         # OS diagnostics can contain credentials/paths from unrelated jobs.
-        raise OpsError(f"系统调度器拒绝请求（{Path(argv[0]).name}，退出码 {result.returncode}）。")
+        raise OpsError(
+            _("The system scheduler refused the request ({name}, exit code {returncode}).").format(
+                name=Path(argv[0]).name, returncode=result.returncode
+            )
+        )
     return result.stdout
 
 
@@ -68,8 +75,8 @@ class SchedulerBackend:
 
     @property
     def kind(self) -> str:
-        return {"darwin": "launchd", "win32": "Windows 任务计划程序"}.get(
-            self.platform, "cron" if self.platform.startswith("linux") else "不支持"
+        return {"darwin": "launchd", "win32": _("Windows Task Scheduler")}.get(
+            self.platform, "cron" if self.platform.startswith("linux") else _("unsupported")
         )
 
     def available(self) -> bool:
@@ -115,7 +122,7 @@ class SchedulerBackend:
             sid = run_command(["whoami", "/user", "/fo", "csv", "/nh"]).decode("utf-8", "replace")
             match = re.search(r"S-1-\d+(?:-\d+)+", sid)
             if match is None:
-                raise OpsError("无法确认当前 Windows 用户。")
+                raise OpsError(_("Cannot determine the current Windows user."))
             child(principal, "UserId", match.group())
             child(principal, "LogonType", "InteractiveToken")
             child(principal, "RunLevel", "LeastPrivilege")
@@ -139,7 +146,9 @@ class SchedulerBackend:
             "\n" in value or "\r" in value or "\\" in value
             for value in [*self.argv, self.working_directory]
         ):
-            raise OpsError("cron 的路径不能包含换行或反斜杠，请换用普通路径。")
+            raise OpsError(
+                _("cron paths cannot contain newlines or backslashes; use an ordinary path.")
+            )
         command = (
             f"cd {shlex.quote(self.working_directory)} && exec " + shlex.join(self.argv)
         ).replace("%", r"\%")
@@ -151,11 +160,15 @@ class SchedulerBackend:
         try:
             result = subprocess.run(["crontab", "-l"], capture_output=True, env=env, timeout=15)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise OpsError("无法读取当前用户的 crontab。") from exc
+            raise OpsError(_("Cannot read the current user's crontab.")) from exc
         if result.returncode:
             if result.returncode == 1 and b"no crontab for" in result.stderr.lower():
                 return ""
-            raise OpsError("无法读取当前用户的 crontab，请检查权限和 cron 安装。")
+            raise OpsError(
+                _(
+                    "Cannot read the current user's crontab; check permissions and the cron installation."
+                )
+            )
         return result.stdout.decode("utf-8")
 
     def _windows_xml(self) -> str:
@@ -180,7 +193,7 @@ class SchedulerBackend:
                 "active": False,
                 "matches": False,
                 "fingerprint": None,
-                "error": "当前用户无法使用系统调度器。",
+                "error": _("The current user cannot use the system scheduler."),
             }
         try:
             if self.platform == "darwin":
@@ -275,14 +288,22 @@ class SchedulerBackend:
             with exclusive_lock(self.control_lock, blocking=False):
                 self._apply(enabled, artifact)
         except LockUnavailable as exc:
-            raise OpsError("当前用户的其他数据湖正在修改系统调度器，请稍后重试。") from exc
+            raise OpsError(
+                _(
+                    "Another lake of the current user is changing the system scheduler; try again shortly."
+                )
+            ) from exc
 
     def _apply(self, enabled: bool, artifact: str) -> None:
         observed = self.observe()
         if observed["error"]:
             raise OpsError(observed["error"])
         if observed["installed"] and not observed.get("owned", observed["matches"]):
-            raise OpsError("同名系统任务的程序与当前安装不符，请先在系统调度器中核对。")
+            raise OpsError(
+                _(
+                    "The program of the same-named system task does not match the current install; check it in the system scheduler first."
+                )
+            )
         if self.platform == "darwin":
             service = f"gui/{os.getuid()}/{self.name}"
             if observed["active"]:

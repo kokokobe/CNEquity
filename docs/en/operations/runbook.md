@@ -1,4 +1,4 @@
-# Operations runbook
+# Runbook
 
 For users who already have a production lake: scheduling, health gates, backup and restore, and backfill acceptance. For building a lake for the first time, see the [initialization guide](../getting-started/initialization.md).
 
@@ -255,6 +255,7 @@ all fail; an isolated degradation of the research/advisory layer counts as a pas
 | `CNE_DATA_ROOT` | the repository's `data/cnequity` | Default lake directory for `backup_meta.sh`; with a custom `data.root`, set it explicitly or pass the first argument |
 | `CNE_LOG_DIR` | `{data.root}/logs` | Logs; long-running `cne` commands also leave a copy here |
 | `CNE_GROUPS` | Enabled groups selected from the configuration | Overrides the pipeline group list; the public configuration runs 6 regular groups by default, and optional groups join as their switches are enabled |
+| `CNE_PYTHON` | the repository's `.venv/bin/python`, else the `python3` on PATH | Interpreter the scheduler scripts use for the gate and the scheduler lock; it must be able to import cnequity |
 | `CNE_NOTIFY` | `1` | `0` turns notifications off |
 | `CNE_BACKUP_DIR` | backups inside the lake | Backup directory |
 | `CNE_BACKUP_RETENTION_DAYS` | 14 | Days to keep |

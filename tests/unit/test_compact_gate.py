@@ -35,7 +35,7 @@ def test_cross_source_correction_retains_parent_and_records_changed_keys(tmp_pat
     assert load("daily_bars", config=cfg)["close"].to_list() == [1810.0]
     receipt = store.latest("daily_bars")
     assert receipt.metadata["base_revision_id"]
-    assert receipt.metadata["canonical_policy"] == "observation_recency_v1"
+    assert receipt.metadata["canonical_policy"] == "positive_turnover_quantity_v1"
     changes = receipt.metadata["changes"]
     assert changes[0]["updated_keys"] == 1
     assert changes[0]["source_changes"] == [{"from": "tdx_protocol", "to": "eastmoney", "keys": 1}]

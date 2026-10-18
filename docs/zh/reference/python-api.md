@@ -1,4 +1,4 @@
-# Python API 参考
+# Python API
 
 模块：`cnequity.query`。先看[查询指南](../datasets/query-guide.md)理解口径；本页用于查参数、返回值和版本边界。
 
@@ -25,6 +25,7 @@ def load(
     strict_universe: bool = False,
     all_vintages: bool = False,
     pit_mode: Literal["strict", "best_effort"] | None = None,
+    include_otc: bool = False,
     config: Config | None = None,
     data_root: str | Path | None = None,
     revision: RevisionSelection | None = None,
@@ -46,7 +47,8 @@ def load(
 | `strict_adj` | True 时缺复权因子抛 `ReaderError` |
 | `strict_universe` | True 时支持的 universe 缺少 instruments、逐日 trading_status 覆盖或版本化历史 ST 证据收据会抛错；适合研究读取 |
 | `all_vintages` | True 时返回 `as_of` 前的**全部**版本（研究财报修订用）；截面选股勿开，会重复计同一事实 |
-| `pit_mode` | PIT 证据模式：`strict` 排除 reconstructed 回填；`best_effort` 保留但返回 `pit_is_exact=False`。省略值为 0.x 兼容模式，仍按 `fetched_at` 截止，不代表严格 PIT |
+| `pit_mode` | PIT 证据模式：省略或传 `None` 默认为 `best_effort`，保留在 `as_of` 之后采集的历史回填，并返回 `pit_is_exact=False`；公告及已知可用/发布时间仍受截止日约束。`strict` 排除 reconstructed 回填，只返回湖在截止日已有的证据 |
+| `include_otc` | 默认 False：`daily_bars`、`adj_factors` 排除北交所证券进入交易所市场之前的场外报价；设为 True 保留这些报价。交易所起点取上市日和 2020-07-27 中的较晚者 |
 | `config` / `data_root` | 湖位置；默认读 `configs/cnequity.toml` |
 | `profile` / `universe_profile` | 版本化股票池策略，二者为别名；官方研究画像自动启用严格证据校验 |
 | `revision` | revision 数字或 ID 固定主数据集；也支持按数据集映射。单个数字不固定因子或股票池依赖 |
@@ -106,6 +108,8 @@ PIT 模式/质量、请求窗口与实际行的日期边界。`receipt_id` 是�
 - `adjust` 非空：附加 `adj_open`, `adj_high`, `adj_low`, `adj_close`, `adj_is_exact`
 
 ### 异常
+
+`strict_adj` 和 `adj_is_exact` 仅描述因子覆盖，不能证明历史因子正确。`load_with_receipt()` 的 `adjustment` 摘要提供所读版本的来源与非阻断历史诊断；无诊断时标为未评估。
 
 `ReaderError`（`ValueError` 子类）：未知数据集、无数据、strict_adj 失败等。
 

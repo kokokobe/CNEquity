@@ -18,6 +18,7 @@ from cnequity.diagnostics.packages import (
     PackageStatus,
     probe_packages,
 )
+from cnequity.i18n import N_, Message
 
 
 class Severity(str, Enum):
@@ -76,10 +77,21 @@ def _check_packages(statuses: list[PackageStatus], findings: list[Finding]) -> N
     findings.append(
         Finding(
             severity=Severity.ERROR,
-            title=f"{len(missing)} 个必需依赖无法导入",
-            detail="\n".join(f"  {s.package.module} — {s.package.purpose}" for s in missing)
-            + "\n  这些都是硬依赖，缺失说明环境不完整（多为卸载残留或安装中断）。"
-            + "\n  适配器在函数内惰性 import，所以只在真正取数时才失败，日更会静默变薄。",
+            title=Message(N_("%d required dependencies cannot be imported"), len(missing)),
+            # One "  module — purpose" line per package, then the explanation;
+            # each purpose is its own catalog message.
+            detail=Message(
+                "\n".join("  %s — %s" for _status in missing) + "%s",
+                *(arg for s in missing for arg in (s.package.module, Message(s.package.purpose))),
+                Message(
+                    N_(
+                        "\n  These are all hard dependencies; a missing one means the environment "
+                        "is incomplete (usually left over from an uninstall or an interrupted "
+                        "install).\n  Adapters import them lazily inside functions, so they fail "
+                        "only when data is actually fetched, and the daily update silently thins out."
+                    )
+                ),
+            ),
             fix="pip install --force-reinstall cnequity",
         )
     )
@@ -101,12 +113,16 @@ def _check_data_root(data_root: Path, findings: list[Finding]) -> None:
         findings.append(
             Finding(
                 severity=Severity.ERROR,
-                title=f"data.root 是相对路径: {data_root}",
-                detail=(
-                    "相对路径按进程 CWD 解析。调度器（launchd/cron）的 CWD 与你手跑时不同，"
-                    "会在别处静默建出第二个空湖，可能几天后才发现。"
+                title=Message(N_("data.root is a relative path: %s"), data_root),
+                detail=N_(
+                    "A relative path resolves against the process CWD. A scheduler's "
+                    "(launchd/cron) CWD differs from the one you run by hand, so it silently "
+                    "builds a second, empty lake elsewhere, which may go unnoticed for days."
                 ),
-                fix=f"把配置里的 data.root 改成绝对路径，例如 {data_root.resolve()}",
+                fix=Message(
+                    N_("Change data.root in the config to an absolute path, e.g. %s"),
+                    data_root.resolve(),
+                ),
             )
         )
         return
@@ -115,9 +131,9 @@ def _check_data_root(data_root: Path, findings: list[Finding]) -> None:
         findings.append(
             Finding(
                 severity=Severity.WARN,
-                title=f"data.root 尚不存在: {data_root}",
-                detail="首次 `cne init` 会创建它。",
-                fix="cne init --config <配置路径>",
+                title=Message(N_("data.root does not exist yet: %s"), data_root),
+                detail=N_("The first `cne init` creates it."),
+                fix=N_("cne init --config <config path>"),
             )
         )
         return
@@ -126,15 +142,18 @@ def _check_data_root(data_root: Path, findings: list[Finding]) -> None:
     # and ``chmod`` is the wrong remediation there.
     if not _data_root_writable(data_root):
         fix = (
-            f"在资源管理器中为当前用户授予「修改」权限: {data_root}"
+            Message(
+                N_('In File Explorer, grant the current user the "Modify" permission on: %s'),
+                data_root,
+            )
             if sys.platform == "win32"
             else f"chmod u+w {data_root}"
         )
         findings.append(
             Finding(
                 severity=Severity.ERROR,
-                title=f"data.root 不可写: {data_root}",
-                detail="编排会在首次写入时失败。",
+                title=Message(N_("data.root is not writable: %s"), data_root),
+                detail=N_("Orchestration will fail on its first write."),
                 fix=fix,
             )
         )
@@ -151,8 +170,8 @@ def build_report(config=None, config_path: Path | None = None) -> Report:
         findings.append(
             Finding(
                 severity=Severity.WARN,
-                title="未加载配置——只做了环境体检",
-                detail="没有配置就无法检查 data.root 是否可用。",
+                title=N_("No config loaded — only the environment was checked"),
+                detail=N_("Without a config, data.root cannot be checked."),
                 fix="cne config create",
             )
         )

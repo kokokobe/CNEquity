@@ -25,6 +25,7 @@ else:  # pragma: no cover - Python 3.10
     import tomli as tomllib  # type: ignore
 
 from cnequity.config.bootstrap import example_toml_text
+from cnequity.i18n import _
 
 # Local by construction: reporting these as drift would be noise on every run.
 _LOCAL_ONLY_KEYS = frozenset(
@@ -143,11 +144,15 @@ def config_drift(config_path: Path | str) -> ConfigDrift:
 def render_drift(drift: ConfigDrift, config_path: Path | str) -> list[str]:
     """Human-readable report lines, most consequential first."""
     if drift.clean:
-        return [f"{config_path} 与打包的示例配置一致。"]
+        return [_("{path} matches the packaged example config.").format(path=config_path)]
 
     lines: list[str] = []
     if drift.unscheduled_steps:
-        lines.append(f"未被调度的 step（{len(drift.unscheduled_steps)}）—— 装了但从来不会跑：")
+        lines.append(
+            _("Unscheduled steps ({count}) — installed but never run:").format(
+                count=len(drift.unscheduled_steps)
+            )
+        )
         lines.extend(f"  {step}" for step in drift.unscheduled_steps)
         lines.append("")
     in_groups = {
@@ -156,15 +161,28 @@ def render_drift(drift: ConfigDrift, config_path: Path | str) -> list[str]:
     }
     in_groups = {table: steps for table, steps in in_groups.items() if steps}
     if in_groups:
-        lines.append("调度组缺少的 step —— 不带参数的 `cne run daily` 不会跑：")
+        lines.append(
+            _(
+                "Steps missing from schedule groups — `cne run daily` without arguments "
+                "will not run them:"
+            )
+        )
         lines.extend(f"  [{table}] {', '.join(steps)}" for table, steps in in_groups.items())
         lines.append("")
     if drift.missing_sections:
-        lines.append(f"缺少的配置段（{len(drift.missing_sections)}）—— 当前使用内置默认值：")
+        lines.append(
+            _("Missing config sections ({count}) — built-in defaults are in use:").format(
+                count=len(drift.missing_sections)
+            )
+        )
         lines.extend(f"  [{section}]" for section in drift.missing_sections)
         lines.append("")
     if drift.missing_keys:
-        lines.append(f"缺少的配置项（{len(drift.missing_keys)}）—— 当前使用内置默认值：")
+        lines.append(
+            _("Missing config keys ({count}) — built-in defaults are in use:").format(
+                count=len(drift.missing_keys)
+            )
+        )
         lines.extend(f"  {key}" for key in drift.missing_keys)
         lines.append("")
     if (
@@ -175,8 +193,19 @@ def render_drift(drift: ConfigDrift, config_path: Path | str) -> list[str]:
             for section in drift.missing_sections
         )
     ):
-        lines.append("→ 运行 `cne config upgrade` 自动补上缺少的 step 和调度组（会先备份原配置）。")
+        lines.append(
+            _(
+                "→ Run `cne config upgrade` to add the missing steps and schedule groups "
+                "(it backs up the config first)."
+            )
+        )
     if drift.missing_keys or drift.missing_sections:
-        lines.append("缺少的配置项使用内置默认值，无需手动补。")
-    lines.append(f"对照：{Path(__file__).parent / 'templates' / 'cnequity.example.toml'}")
+        lines.append(
+            _("Missing config keys use built-in defaults; there is no need to add them by hand.")
+        )
+    lines.append(
+        _("Compared with: {path}").format(
+            path=Path(__file__).parent / "templates" / "cnequity.example.toml"
+        )
+    )
     return lines

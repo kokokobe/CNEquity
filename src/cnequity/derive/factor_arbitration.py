@@ -62,12 +62,25 @@ _FETCH_START = date(1990, 1, 1)
 
 def source_overrides(config: Config) -> dict[str, dict]:
     """Securities switched to baostock factors, keyed by symbol."""
-    payload = StateStore(config.meta_root).get_payload("adj_factors")
+    from cnequity.storage.revisions import RevisionStore
+
+    store = RevisionStore(config.meta_root, config.curated_root, config.derived_root, create=False)
+    receipt = store.latest("adj_factors")
+    if receipt is not None and "factor_source_overrides" in receipt.metadata:
+        return receipt.metadata["factor_source_overrides"]
+    path = config.meta_root / "state" / "adj_factors.json"
+    payload = json.loads(path.read_text()) if path.exists() else {}
     overrides = payload.get(SOURCE_OVERRIDES_FIELD) or {}
     return overrides if isinstance(overrides, dict) else {}
 
 
-def _baostock_stock(symbol: str) -> bool:
+def baostock_factor_symbol(symbol: str) -> bool:
+    """Whether Baostock's adjust-factor table can replace this security's series.
+
+    The table is Shanghai main board and STAR, plus Shenzhen main board and
+    ChiNext. Funds, Beijing and anything else stay on Sina: there is no series
+    here to switch them to.
+    """
     code, _, exchange = symbol.partition(".")
     if exchange == "SH":
         return code.startswith(("60", "688"))
@@ -86,7 +99,9 @@ def _level_steps(column: str) -> pl.Expr:
 def _lake_factors(config: Config, symbols: list[str]) -> pl.DataFrame:
     return (
         dedupe_lazy_by_primary_key(
-            scan_parquet_root(config.derived_root / "adj_factors", partition_col="trade_date"),
+            scan_parquet_root(
+                config.derived_root / "adj_factors", partition_col="trade_date", symbols=symbols
+            ),
             "adj_factors",
         )
         .filter((pl.col("adjust_type") == "hfq") & pl.col("symbol").is_in(symbols))
@@ -199,16 +214,21 @@ def _baostock_factors(
 
 
 def _price_gaps(config: Config, symbols: list[str]) -> pl.DataFrame:
-    """Raw close gap into each session: the factor step the price itself implies."""
+    """Keep market returns as hints; only native pre_close can prove a step."""
+    scanned = dedupe_lazy_by_primary_key(
+        scan_parquet_root(
+            config.curated_root / "daily_bars",
+            partition_col="trade_date",
+            traded_only=True,
+            symbols=symbols,
+        ),
+        "daily_bars",
+    )
+    if "pre_close" not in scanned.collect_schema().names():
+        scanned = scanned.with_columns(pl.lit(None, dtype=pl.Float64).alias("pre_close"))
     frame = (
-        dedupe_lazy_by_primary_key(
-            scan_parquet_root(
-                config.curated_root / "daily_bars", partition_col="trade_date", traded_only=True
-            ),
-            "daily_bars",
-        )
-        .filter(pl.col("symbol").is_in(symbols))
-        .select("symbol", "trade_date", "close")
+        scanned.filter(pl.col("symbol").is_in(symbols))
+        .select("symbol", "trade_date", "close", "pre_close")
         .collect()
         .sort("symbol", "trade_date")
     )
@@ -217,6 +237,8 @@ def _price_gaps(config: Config, symbols: list[str]) -> pl.DataFrame:
         "trade_date",
         pl.col("trade_date").shift(1).over("symbol").alias("prev_date"),
         (pl.col("close").shift(1).over("symbol") / pl.col("close") - 1).alias("price_gap"),
+        (pl.col("close").shift(1).over("symbol") / pl.col("pre_close") - 1).alias("reference_step"),
+        (0.002 + 0.005 / pl.col("pre_close")).alias("reference_tolerance"),
     )
 
 
@@ -225,6 +247,9 @@ def arbitrate_factor_sources(
     *,
     symbols: list[str] | None = None,
     fetch=None,
+    refresh_sources: bool = True,
+    save_evidence: bool = True,
+    max_symbols: int | None = None,
 ) -> dict:
     """Verdicts per contradiction and the securities that should switch source."""
     from cnequity.quality.cross_checks import factor_action_contradictions
@@ -234,9 +259,9 @@ def arbitrate_factor_sources(
             fetch_adjust_factor_events_baostock_many as fetch,
         )
 
-    contradictions, _ = factor_action_contradictions(config)
+    contradictions, _ = factor_action_contradictions(config, symbols=symbols)
     contradictions = contradictions.filter(
-        pl.col("symbol").map_elements(_baostock_stock, return_dtype=pl.Boolean)
+        pl.col("symbol").map_elements(baostock_factor_symbol, return_dtype=pl.Boolean)
     )
     if symbols:
         contradictions = contradictions.filter(pl.col("symbol").is_in(symbols))
@@ -244,8 +269,22 @@ def arbitrate_factor_sources(
     if contradictions.is_empty():
         return report
     names = sorted(contradictions.get_column("symbol").unique().to_list())
+    if max_symbols is not None:
+        names = names[:max_symbols]
     lake = _lake_factors(config, names)
-    baostock, failed = _baostock_factors(config, names, lake.get_column("trade_date").max(), fetch)
+    through = lake.get_column("trade_date").max()
+    if refresh_sources:
+        baostock, failed = _baostock_factors(config, names, through, fetch)
+    else:
+        frames, answered = _cached_batches(config, through)
+        baostock = (
+            pl.concat(frames).filter(pl.col("symbol").is_in(names))
+            if frames
+            else pl.DataFrame(
+                schema={"symbol": pl.Utf8, "trade_date": pl.Date, "factor": pl.Float64}
+            )
+        )
+        failed = sorted(set(names) - answered)
     report.update(symbols=len(names), baostock_unserved=len(failed))
 
     # Baostock's factor holds from each row's date until the next, so carry it
@@ -305,17 +344,20 @@ def arbitrate_factor_sources(
         )
         .with_columns(
             pl.col("verdict").is_in(["sina_missed_step", "sina_spurious_step"]).alias("sina_wrong"),
-            # Baostock's view is proof only where the raw price backs it: a
-            # session close enough to be one event, outside the share reform,
-            # vendors materially apart, and a gap nearer Baostock's step.
+            # Actual closes include the day's market return. Only a native
+            # ex-reference price, outside exceptional periods, proves a step.
             (
                 ((pl.col("ex_date") - pl.col("prev_date")).dt.total_days() <= _MAX_PRICE_GAP_DAYS)
                 & ~pl.col("ex_date").is_between(*_SHARE_REFORM)
                 # Vendors a hair apart differ on timing, not on the event.
                 & ((pl.col("sina_step") - pl.col("bao_step")).abs() > 3 * _MIN_STEP)
                 & (
-                    (pl.col("price_gap") - pl.col("bao_step")).abs()
-                    < (pl.col("price_gap") - pl.col("sina_step")).abs()
+                    (pl.col("reference_step") - pl.col("bao_step")).abs()
+                    <= pl.col("reference_tolerance")
+                )
+                & (
+                    (pl.col("reference_step") - pl.col("sina_step")).abs()
+                    > pl.col("reference_tolerance")
                 )
             )
             .fill_null(False)
@@ -329,7 +371,12 @@ def arbitrate_factor_sources(
         joined.filter(pl.col("_sina_daily") > 1e-6)
         .join(contra_keys, on=["symbol", "trade_date"], how="anti")
         .filter((pl.col("sina_step").abs() > 3 * _MIN_STEP) & pl.col("bao_step").is_not_null())
-        .with_columns((~(pl.col("bao_step").abs() > _BAO_MIN_STEP)).alias("bao_missed"))
+        .with_columns(
+            (
+                (~(pl.col("bao_step").abs() > _BAO_MIN_STEP))
+                | ((pl.col("bao_step") - pl.col("sina_step")).abs() > 0.002)
+            ).alias("bao_missed")
+        )
     )
     per_symbol = (
         judged.group_by("symbol")
@@ -359,11 +406,21 @@ def arbitrate_factor_sources(
         & (pl.col("disputed") == 0)
         & (pl.col("bao_missed_agreed") == 0)
     ).sort("symbol")
+    covered = (
+        joined.group_by("symbol")
+        .len()
+        .join(lake.group_by("symbol").len().rename({"len": "expected"}), on="symbol")
+        .filter(pl.col("len") == pl.col("expected"))["symbol"]
+        .to_list()
+    )
+    switch = switch.filter(pl.col("symbol").is_in(covered))
     unproven = per_symbol.filter(pl.col("sina_proven") < pl.col("sina_wrong"))
     verdicts = dict(judged.group_by("verdict").len().iter_rows())
     report.update(
         judged=judged.height,
         verdicts=verdicts,
+        unanswered=failed,
+        asked=names,
         switch=switch.get_column("symbol").to_list(),
         sina_wrong_unproven=unproven.height,
         switch_detail={
@@ -381,6 +438,23 @@ def arbitrate_factor_sources(
             .iter_rows(named=True)
         ],
     )
+    report["verdict_rows"] = [
+        {**row, "ex_date": row["ex_date"].isoformat()}
+        for row in judged.select(
+            "symbol",
+            "ex_date",
+            "kind",
+            "verdict",
+            "sina_step",
+            "bao_step",
+            "price_gap",
+            "reference_step",
+            pl.col("prev_date").cast(pl.Utf8),
+            "price_confirms",
+        ).iter_rows(named=True)
+    ]
+    if not save_evidence:
+        return report
     folder = config.meta_root / "quality" / "evidence"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = folder / f"adj_factor_source_arbitration-{stamp}.json"
@@ -388,20 +462,6 @@ def arbitrate_factor_sources(
         path,
         {
             **report,
-            "verdict_rows": [
-                {**row, "ex_date": row["ex_date"].isoformat()}
-                for row in judged.select(
-                    "symbol",
-                    "ex_date",
-                    "kind",
-                    "verdict",
-                    "sina_step",
-                    "bao_step",
-                    "price_gap",
-                    pl.col("prev_date").cast(pl.Utf8),
-                    "price_confirms",
-                ).iter_rows(named=True)
-            ],
         },
         indent=2,
     )
@@ -425,4 +485,69 @@ def record_source_overrides(config: Config, report: dict) -> list[str]:
                 **report["switch_detail"].get(symbol, {}),
             }
         state[SOURCE_OVERRIDES_FIELD] = json.loads(json.dumps(overrides, default=str))
+    return switched
+
+
+def latest_factor_arbitration(config: Config) -> dict:
+    """The newest arbitration evidence file, or an empty dict when there is none."""
+    folder = config.meta_root / "quality" / "evidence"
+    if not folder.is_dir():
+        return {}
+    found = sorted(folder.glob("adj_factor_source_arbitration-*.json"))
+    if not found:
+        return {}
+    try:
+        payload = json.loads(found[-1].read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def settle_recent_unstepped_factors(
+    config: Config,
+    trade_date: date,
+    *,
+    fetch=None,
+) -> list[str]:
+    """Switch recent unstepped stocks onto Baostock when the proof allows it.
+
+    Called from the daily factor derive, before the audit gate. A vendor
+    failure is logged and leaves the series on Sina: arbitration is how a
+    proven miss gets repaired, and it must not fail a day on its own.
+    Symbols Baostock's factor table does not cover are left untouched.
+    """
+    if fetch is None and not config.sources.get("baostock", False):
+        return []
+    try:
+        from cnequity.quality.cross_checks import recent_unstepped_actions
+
+        silent = recent_unstepped_actions(config, trade_date)
+        if silent.is_empty():
+            return []
+        names = sorted(
+            {
+                symbol
+                for symbol in silent.get_column("symbol").to_list()
+                if baostock_factor_symbol(symbol)
+            }
+        )
+        if not names:
+            return []
+        from cnequity.storage.repairs.adj_factors import repair_adj_factors
+
+        report = repair_adj_factors(
+            config, symbols=names[:100], refresh_sources=True, apply=True, fetch=fetch
+        )
+        switched = report.get("changed_symbols", []) if report.get("applied") else []
+    except Exception:
+        logger.warning(
+            "factor arbitration: could not settle recent unstepped factors", exc_info=True
+        )
+        return []
+    if switched:
+        logger.info(
+            "factor repair: corrected %d recent unstepped symbol(s): %s",
+            len(switched),
+            ", ".join(switched[:_SAMPLE]),
+        )
     return switched

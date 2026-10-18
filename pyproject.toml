@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cnequity"
-version = "0.16.0"
+version = "0.17.1"
 description = "Open, self-hosted financial data infrastructure for China markets, starting with A-shares"
 # Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
 readme = "README.pypi.md"
@@ -61,7 +61,8 @@ dependencies = [
   # CNINFO issuer notices are the primary source for exact historical cash
   # payment dates.  pypdf extracts the text whose symbol, ex-date, pretax cash
   # amount and payment date are all cross-checked before a repair is accepted.
-  "pypdf>=5.0",
+  # Public issuer reports may use AES even with an empty document password.
+  "pypdf[crypto]>=5.0",
   "PyYAML>=6.0",
   # No AkShare. Its two call sites wrapped endpoints already queried directly —
   # the ST board (push2 clist) and the PMI / 货币供应量 datacenter reports — so it
@@ -108,6 +109,9 @@ dev = [
   # `pre-commit install` once per clone; see .pre-commit-config.yaml.
   "pre-commit>=3.5",
   "pytest-randomly>=5.0.0",
+  # Extracts and compiles the translation catalog (scripts/dev/i18n_catalog.py);
+  # the installed package reads the compiled .mo with the standard library.
+  "babel>=2.14",
 ]
 
 [project.urls]
@@ -132,12 +136,14 @@ where = ["src"]
 # Versioned dataset contracts are release governance artifacts, not runtime
 # Python modules.  Ship the contract alongside the installed policy so an
 # offline consumer can retain the exact contract used by a release.
-"share/cnequity/contracts" = ["contracts/v0.10.0.json", "contracts/v0.11.0.json", "contracts/v0.11.1.json", "contracts/v0.12.0.json", "contracts/v0.13.0.json", "contracts/v0.14.0.json", "contracts/v0.14.1.json", "contracts/v0.15.0.json", "contracts/v0.16.0.json"]
+"share/cnequity/contracts" = ["contracts/v0.10.0.json", "contracts/v0.11.0.json", "contracts/v0.11.1.json", "contracts/v0.12.0.json", "contracts/v0.13.0.json", "contracts/v0.14.0.json", "contracts/v0.14.1.json", "contracts/v0.15.0.json", "contracts/v0.16.0.json", "contracts/v0.17.0.json", "contracts/v0.17.1.json"]
 
 [tool.setuptools.package-data]
 cnequity = [
     "py.typed",
     "adapters/calendar/seeds/*.csv",
+    "adapters/cni/seeds/*.json",
+    "adapters/exchange/seeds/*.json",
     # Required by BSE symbol migration and full-lake audits on installed wheels.
     "adapters/eastmoney/seeds/*.json",
     "adapters/ths/seeds/*.json",
@@ -149,6 +155,10 @@ cnequity = [
     # install — see adapters/sw/industry_history.py.
     "adapters/sw/*.pem",
     "config/templates/*.toml",
+    # Compiled translations, read with the standard library's gettext. The
+    # .po source travels too so an installed copy can be inspected or fixed.
+    "locale/*/LC_MESSAGES/*.mo",
+    "locale/*/LC_MESSAGES/*.po",
     # The dashboard page. Self-contained on purpose (no CDN, no build step): a
     # lake often runs on an offline box or behind a proxy that would turn an
     # external asset into a page that does not load.

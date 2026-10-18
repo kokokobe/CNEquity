@@ -14,23 +14,26 @@ and the low-frequency governance surface underneath.
 from __future__ import annotations
 
 import logging
+from functools import cache
 
 import click
+
+from cnequity.i18n import N_, _, translate_help
 
 # Section title -> commands, in the order a lake is used rather than in the
 # order the commands were written. `SECTIONS` is the whole contract: a command
 # missing from it shows up under "Other" in `--help`, and a test fails.
 # Where a command that no sections list would land. Named so the test that
 # forbids leftovers and the formatter cannot drift apart.
-LEFTOVER_SECTION = "其它"
+LEFTOVER_SECTION = N_("Other")
 
 SECTIONS: list[tuple[str, tuple[str, ...]]] = [
-    ("从这里开始", ("config", "doctor", "init")),
-    ("跑 pipeline", ("run", "backfill", "derive", "repair")),
-    ("检查数据湖", ("check", "status", "verify", "audit", "decision-data")),
-    ("使用数据湖", ("query", "serve", "mcp")),
+    (N_("Start here"), ("config", "doctor", "init")),
+    (N_("Run the pipeline"), ("run", "backfill", "derive", "repair")),
+    (N_("Check the lake"), ("check", "status", "verify", "audit", "decision-data")),
+    (N_("Use the lake"), ("query", "serve", "mcp")),
     (
-        "治理与检视",
+        N_("Governance and inspection"),
         (
             "snapshot",
             "storage",
@@ -67,7 +70,11 @@ def moved_hints(mapping: dict[str, str], base: type[click.Group] = click.Group) 
         def resolve_command(self, ctx: click.Context, args: list[str]):
             name = args[0] if args else ""
             if name in mapping and self.get_command(ctx, name) is None:
-                ctx.fail(f"`{ctx.command_path} {name}` 已改名，请改用 `{mapping[name]}`。")
+                ctx.fail(
+                    _("`{command_path} {name}` has been renamed; use `{value}` instead.").format(
+                        command_path=ctx.command_path, name=name, value=mapping[name]
+                    )
+                )
             return super().resolve_command(ctx, args)
 
     return _Moved
@@ -193,7 +200,7 @@ class _LoggedFailures(click.Group):
             raise
         except click.Abort:
             if not self._already_logged(ctx):
-                logger.warning("%s: aborted", self._failed_command(ctx))
+                logger.warning(N_("%s: aborted"), self._failed_command(ctx))
             raise
         except click.exceptions.Exit:
             # `--help` and `--version` leave this way, and Click's `Exit`
@@ -204,38 +211,113 @@ class _LoggedFailures(click.Group):
             raise
         except Exception:
             if not self._already_logged(ctx):
-                logger.exception("%s: unhandled error", self._failed_command(ctx))
+                logger.exception(N_("%s: unhandled error"), self._failed_command(ctx))
             raise
 
 
-class ZhHelpOption:
-    """Give `-h/--help` a Chinese description, on every command and group.
+class _TranslatedText:
+    """An attribute that stores help text as written and reads it translated.
 
-    Click builds that option itself, with its own English text, so the one
-    English line left in an otherwise Chinese `--help` was the line describing
-    `--help`. Overriding the factory is the only place it can be said once
-    rather than on fifty-one commands. Click's own chrome — `Usage:`,
-    `Options:`, `Error:` — is gettext-driven inside Click and is left alone.
+    Click assigns `help`, `short_help` and `epilog` in its constructors and
+    reads them while rendering. Holding the written text (the msgid) and
+    translating on every read means the language is the one in force when help
+    is shown, not when the module was imported, and anything that inspects the
+    attribute — the docs generator, `to_info_dict` — sees what a person would.
+    The written text lives in the instance `__dict__` under the same name, so
+    an object built before its class was swapped (see `_translated_param`)
+    keeps working.
+    """
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self.name = name
+
+    def __get__(self, obj: object, objtype: type | None = None):
+        if obj is None:
+            return self
+        return translate_help(obj.__dict__.get(self.name))
+
+    def __set__(self, obj: object, value: str | None) -> None:
+        obj.__dict__[self.name] = value
+
+
+@cache
+def _translated_param_class(cls: type[click.Parameter]) -> type[click.Parameter]:
+    return type(cls.__name__, (cls,), {"help": _TranslatedText(), "__module__": cls.__module__})
+
+
+def _translated_param(param: click.Parameter) -> click.Parameter:
+    """Make an option's help translate when read, whatever class built it.
+
+    `@click.option` builds a plain `click.Option` unless every call site passes
+    `cls=`, so options are converted here, where the command hands them to the
+    help formatter. That also reaches the help option, which Click creates on
+    demand.
+    """
+    if "help" in param.__dict__ and not isinstance(
+        type(param).__dict__.get("help"), _TranslatedText
+    ):
+        param.__class__ = _translated_param_class(type(param))
+    return param
+
+
+class TranslatedHelp:
+    """Render command help, option help and Click's help chrome translated.
+
+    The written text stays the msgid, and an untranslated one is shown as
+    written, so a command nobody has migrated yet renders exactly as before.
+    """
+
+    help = _TranslatedText()
+    short_help = _TranslatedText()
+    epilog = _TranslatedText()
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        return [_translated_param(param) for param in super().get_params(ctx)]  # type: ignore[misc]
+
+    def format_usage(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        pieces = self.collect_usage_pieces(ctx)  # type: ignore[attr-defined]
+        formatter.write_usage(ctx.command_path, " ".join(pieces), prefix=_("Usage: "))
+
+    def format_options(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        records = [
+            record for param in self.get_params(ctx) if (record := param.get_help_record(ctx))
+        ]
+        if records:
+            with formatter.section(_("Options")):
+                formatter.write_dl(records)
+        if isinstance(self, click.Group):
+            self.format_commands(ctx, formatter)
+
+
+class LocalizedHelpOption:
+    """Give `-h/--help` a translatable description, on every command and group.
+
+    Click builds that option itself, with its own English text, so the one line
+    the catalog could not reach in `--help` was the line describing `--help`.
+    Overriding the factory is the only place it can be said once rather than
+    on fifty-one commands. `TranslatedHelp` below renders it, and the `Usage:`
+    and `Options` chrome; the rest of Click's own wording — `Error:`,
+    `[default: …]` — still comes from Click.
     """
 
     def get_help_option(self, ctx: click.Context):
         option = super().get_help_option(ctx)  # type: ignore[misc]
         if option is not None:
-            option.help = "显示帮助并退出。"
+            option.help = N_("Show this message and exit.")
         return option
 
 
-class ZhCommand(ZhHelpOption, click.Command):
+class CneCommand(LocalizedHelpOption, TranslatedHelp, click.Command):
     """The class every leaf command is built with (see `SectionedGroup`)."""
 
 
-class SectionedGroup(ZhHelpOption, moved_hints(MOVED, base=_LoggedFailures)):  # type: ignore[misc]
+class SectionedGroup(LocalizedHelpOption, TranslatedHelp, moved_hints(MOVED, base=_LoggedFailures)):  # type: ignore[misc]
     """A `click.Group` that prints its commands in sections, and names moves."""
 
     # Both are inherited by every group and command hung off this one, so a
     # command declared with a plain `@cli.command()` still gets the Chinese
     # help option and the failure logging above.
-    command_class = ZhCommand
+    command_class = CneCommand
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
         listed = self.list_commands(ctx)
@@ -270,7 +352,7 @@ class SectionedGroup(ZhHelpOption, moved_hints(MOVED, base=_LoggedFailures)):  #
             sections.append((LEFTOVER_SECTION, leftovers))
 
         for title, rows in sections:
-            with formatter.section(title):
+            with formatter.section(_(title)):
                 formatter.write_dl(rows)
 
 
@@ -283,18 +365,19 @@ CONTEXT_SETTINGS = {"token_normalize_func": str.lower, "help_option_names": ["-h
 
 
 @click.group(cls=SectionedGroup, context_settings=CONTEXT_SETTINGS)
-@click.version_option(package_name="cnequity", help="显示版本并退出。")
+@click.version_option(package_name="cnequity", help=N_("Show the version and exit."))
 def cli():
-    """cnequity —— A 股数据采集 CLI。"""
+    """cnequity: a CLI for collecting China A-share data."""
 
 
 @cli.group()
 def run():
-    """跑 pipeline，以及修复没跑完的 run。
+    """Run the pipeline, and repair runs that did not finish.
 
     \b
-    调度器要跑的是 `daily` 和 `events`。另外三条是失败之后手动回到正轨的路：
-    `retry` 重跑，`compact` 把崩溃的 run 留在 staging 的数据发布出去，
-    `clean` 清掉已经 compact 过的 staging。每个调度组自带 `compact` 步骤，
-    所以正常的一天不会用到这三条。
+    Schedulers run `daily` and `events`. The other three get things back on track by hand after a failure:
+    `retry` re-runs, `compact` publishes the data a crashed run left in staging,
+    and `clean` clears staging that has already been compacted. Every schedule group
+    has its own `compact` step, so a normal day needs none of the three.
+
     """

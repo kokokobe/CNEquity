@@ -151,3 +151,40 @@ def test_an_empty_board_yields_no_instruments(tmp_path, payload):
 
     assert out.is_empty()
     assert out.columns[:3] == ["symbol", "name", "exchange"]
+
+
+def test_new_listings_get_only_confirmed_same_session_dates(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    cfg.sources["cninfo"] = True
+    day = date(2026, 9, 15)
+    calls = []
+
+    def calendar(config, requested):
+        calls.append(requested)
+        return {"920038.BJ": day, "600519.SH": day}
+
+    monkeypatch.setattr("cnequity.adapters.bse.instruments.fetch_listing_calendar", calendar)
+    client = _Client({0: _jsonp([_row("920038", "new"), _row("920023", "old")], total=2)})
+    out = fetch_bse_instruments(day, client=client, config=cfg)
+    assert calls == [day]
+    assert dict(out.select("symbol", "list_date").iter_rows()) == {
+        "920023.BJ": None,
+        "920038.BJ": day,
+    }
+
+
+def test_unavailable_calendar_preserves_board_without_inventing_dates(tmp_path, monkeypatch):
+    cfg = _config(tmp_path)
+    cfg.sources["cninfo"] = True
+
+    def unavailable(*args):
+        raise ValueError("calendar has no confirmed listed group")
+
+    monkeypatch.setattr("cnequity.adapters.bse.instruments.fetch_listing_calendar", unavailable)
+    out = fetch_bse_instruments(
+        date(2026, 9, 15),
+        client=_Client({0: _jsonp([_row("920038", "new")], total=1)}),
+        config=cfg,
+    )
+    assert out["symbol"].to_list() == ["920038.BJ"]
+    assert out["list_date"][0] is None

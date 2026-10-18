@@ -1,4 +1,4 @@
-# 运维 Runbook
+# 运行手册
 
 面向已建立正式湖的使用者：调度、健康门禁、备份恢复与回填验收。首次建湖见[初始化指南](../getting-started/initialization.md)。
 
@@ -255,6 +255,7 @@ cne status --datasets --gate --config configs/cnequity.restore.toml
 | `CNE_DATA_ROOT` | 仓库的 `data/cnequity` | `backup_meta.sh` 的默认湖目录；自定义 `data.root` 时需显式设置或传第一个参数 |
 | `CNE_LOG_DIR` | `{data.root}/logs` | 日志；长跑的 `cne` 命令也会在这里留一份 |
 | `CNE_GROUPS` | 按配置选择已启用组 | 覆盖 pipeline 组列表；公共配置默认运行 6 个常规组，可选组随开关加入 |
+| `CNE_PYTHON` | 仓库 `.venv/bin/python`，没有时用 PATH 上的 `python3` | 调度脚本的门控与调度锁使用的解释器，须能导入 cnequity |
 | `CNE_NOTIFY` | `1` | `0` 关闭通知 |
 | `CNE_BACKUP_DIR` | 湖内 backups | 备份目录 |
 | `CNE_BACKUP_RETENTION_DAYS` | 14 | 保留天数 |

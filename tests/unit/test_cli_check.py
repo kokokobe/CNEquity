@@ -52,6 +52,7 @@ def _findings(lake: str, findings: list[dict]):
     )
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_healthy_lake_passes_in_one_command(lake, monkeypatch):
     _status_exits(monkeypatch, 0)
     _findings(lake, [{"severity": "warning", "dataset": "daily_bars", "message": "w"}])
@@ -66,6 +67,7 @@ def test_a_healthy_lake_passes_in_one_command(lake, monkeypatch):
     assert "✓ 湖可用" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_audit_errors_fail_the_check(lake, monkeypatch):
     _status_exits(monkeypatch, 0)
     _findings(lake, [{"severity": "error", "dataset": "adj_factors", "message": "step"}])
@@ -77,6 +79,67 @@ def test_audit_errors_fail_the_check(lake, monkeypatch):
     assert "最近一次审计有 1 条 error" in result.output
 
 
+def _health(lake: str, payload: dict):
+    root = load_config(lake).meta_root / "quality"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "health-latest.json").write_text(
+        json.dumps({"trade_date": "2026-09-30", **payload}), encoding="utf-8"
+    )
+
+
+@pytest.mark.usefixtures("chinese_output")
+def test_errors_in_the_whole_lake_snapshot_fail_the_check(lake, monkeypatch):
+    """A clean latest run does not vouch for history the snapshot found broken."""
+    _status_exits(monkeypatch, 0)
+    _findings(lake, [])
+    _health(
+        lake,
+        {
+            "findings_by_severity": {"error": 1},
+            "error_findings": [
+                {"severity": "error", "dataset": "corporate_actions", "message": "gap"}
+            ],
+        },
+    )
+
+    result = CliRunner().invoke(cli, ["check", "--config", lake])
+
+    assert result.exit_code == 1
+    assert "[error] corporate_actions" in result.output
+    assert "全湖审计快照有 1 条 error" in result.output
+
+
+@pytest.mark.usefixtures("chinese_output")
+def test_a_count_only_snapshot_still_fails_on_errors(lake, monkeypatch):
+    _status_exits(monkeypatch, 0)
+    _findings(lake, [])
+    _health(lake, {"findings_by_severity": {"error": 2}})
+
+    result = CliRunner().invoke(cli, ["check", "--config", lake])
+
+    assert result.exit_code == 1
+    assert "全湖审计快照有 2 条 error" in result.output
+
+
+@pytest.mark.usefixtures("chinese_output")
+def test_full_audit_errors_fail_the_check(lake, monkeypatch):
+    _status_exits(monkeypatch, 0)
+    _findings(lake, [])
+    monkeypatch.setattr(
+        "cnequity.quality.audit.lake_health",
+        lambda cfg, day: {
+            "findings_by_severity": {"error": 1},
+            "error_findings": [{"severity": "error", "dataset": "daily_bars", "message": "x"}],
+        },
+    )
+
+    result = CliRunner().invoke(cli, ["check", "--full", "--config", lake])
+
+    assert result.exit_code == 1
+    assert "全湖审计有 1 条 error" in result.output
+
+
+@pytest.mark.usefixtures("chinese_output")
 def test_stale_data_fails_even_when_quality_is_clean(lake, monkeypatch):
     _status_exits(monkeypatch, 1)
     _findings(lake, [])
@@ -96,6 +159,7 @@ def test_no_audit_evidence_cannot_prove_quality(lake, monkeypatch):
     assert "--full" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_full_reruns_the_whole_lake_audit(lake, monkeypatch):
     _status_exits(monkeypatch, 0)
     calls = []
@@ -111,3 +175,26 @@ def test_full_reruns_the_whole_lake_audit(lake, monkeypatch):
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert "全湖审计（刚刚）：0 error" in result.output
+
+
+@pytest.mark.usefixtures("chinese_output")
+def test_hide_empty_folds_datasets_without_data(lake):
+    import polars as pl
+
+    root = load_config(lake).curated_root / "daily_bars" / "trade_date=2026-09-30"
+    root.mkdir(parents=True)
+    pl.DataFrame(
+        {"symbol": ["600519.SH"], "close": [1.0], "volume": [1], "source": ["tdx_protocol"]}
+    ).write_parquet(root / "part-0.parquet")
+
+    full = CliRunner().invoke(cli, ["status", "--datasets", "--no-scope", "--config", lake])
+    folded = CliRunner().invoke(
+        cli, ["status", "--datasets", "--no-scope", "--hide-empty", "--config", lake]
+    )
+
+    assert full.exit_code == 0, full.output
+    assert folded.exit_code == 0, folded.output
+    assert "valuation_metrics" in full.output
+    assert "valuation_metrics" not in folded.output
+    assert "daily_bars" in folded.output
+    assert "个数据集还没有数据" in folded.output

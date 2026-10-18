@@ -159,3 +159,14 @@ def test_a_second_connection_does_not_login(tmp_path, monkeypatch):
     finally:
         release.set()
         thread.join(5)
+
+
+def test_session_calls_keep_the_sdk_banner_off_stdout(capsys):
+    from cnequity.adapters.baostock._session import _session_call
+
+    def login():
+        print("login success!")
+        return "ok"
+
+    assert _session_call(login, config=None, label="login", deadline=5.0) == "ok"
+    assert "login success" not in capsys.readouterr().out

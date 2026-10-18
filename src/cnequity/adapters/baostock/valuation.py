@@ -44,7 +44,11 @@ from cnequity.adapters.baostock._session import (
 from cnequity.adapters.baostock.wide_history import query_history
 from cnequity.domain.http_policy import SourceCoolingDown
 from cnequity.domain.rate_limit import source_request
-from cnequity.domain.valuation import FLOAT_MV_TURN_IMPLIED, TOTAL_MV_YEAR_END_ESTIMATE
+from cnequity.domain.valuation import (
+    FLOAT_MV_TURN_IMPLIED,
+    TOTAL_MV_YEAR_END_ESTIMATE,
+    null_missing_valuations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -305,4 +309,4 @@ def fetch_valuation_history(
     df = pl.DataFrame(rows, schema=_OUTPUT_SCHEMA) if rows else pl.DataFrame(schema=_OUTPUT_SCHEMA)
     if not df.is_empty():
         df = df.unique(subset=["symbol", "trade_date"], keep="last").sort(["trade_date", "symbol"])
-    return df, failed
+    return null_missing_valuations(df), failed

@@ -43,6 +43,7 @@ from cnequity.diagnostics.source_resilience import (
     source_failure_domains,
 )
 from cnequity.domain.datasets import DATASETS
+from cnequity.i18n import _
 
 #: A probe in this state answered, so its source can carry a dataset.
 USABLE = frozenset({ProbeStatus.OK.value})
@@ -240,33 +241,44 @@ def _independent(verdict: SourceVerdict, down: set[str]) -> bool:
 def render_substitutions(entries: list[DatasetSubstitution]) -> list[str]:
     """Human-readable lines; a reassuring one when nothing is failing."""
     if not entries:
-        return ["每个被探测的端点都可用，没有需要替换的源。"]
+        return [_("Every probed endpoint is available; no source needs replacing.")]
     lines: list[str] = []
     for entry in entries:
         if entry.stranded:
-            verdict_text = "无可用替代"
+            verdict_text = _("no substitute available")
         elif not entry.cover_is_independent:
-            verdict_text = "有替代，但与故障源同属一个风控面"
+            verdict_text = _("has substitutes, but on the failed source's risk-control surface")
         elif not entry.failing:
-            verdict_text = "源仍可用，但部分端点不可达"
+            verdict_text = _("source still available, but some endpoints are unreachable")
         else:
-            verdict_text = "有独立替代"
+            verdict_text = _("has an independent substitute")
         lines.append(f"{entry.dataset}  [{entry.tier}]  —  {verdict_text}")
         down = {domain for verdict in entry.failing for domain in verdict.failure_domains}
         for verdict in entry.failing:
             lines.append(
-                f"    失败：{verdict.source} ({verdict.role})  "
-                f"端点 {', '.join(verdict.endpoints_down)}"
+                _("    failed: {source} ({role})  endpoints {endpoints}").format(
+                    source=verdict.source,
+                    role=verdict.role,
+                    endpoints=", ".join(verdict.endpoints_down),
+                )
             )
         for verdict in entry.healthy:
             latency = f"{verdict.latency_ms}ms" if verdict.latency_ms is not None else "—"
-            mark = "独立" if _independent(verdict, down) else "同域"
-            impaired = "（部分端点不可达）" if verdict.impaired else ""
+            mark = _("independent") if _independent(verdict, down) else _("same domain")
+            impaired = _(" (some endpoints unreachable)") if verdict.impaired else ""
             lines.append(
-                f"    可用：{verdict.source:<16}{latency:>8}  {mark}  {verdict.role}{impaired}"
+                _("    available: {source}{latency}  {mark}  {role}{impaired}").format(
+                    source=f"{verdict.source:<16}",
+                    latency=f"{latency:>8}",
+                    mark=mark,
+                    role=verdict.role,
+                    impaired=impaired,
+                )
             )
         if entry.unprobed:
-            lines.append(f"    未探测：{', '.join(sorted(entry.unprobed))}")
+            lines.append(
+                _("    not probed: {sources}").format(sources=", ".join(sorted(entry.unprobed)))
+            )
     return lines
 
 

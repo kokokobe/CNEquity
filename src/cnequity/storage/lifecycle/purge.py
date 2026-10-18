@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cnequity.file_lock import lake_mutation_lock
+from cnequity.i18n import _
 from cnequity.storage.atomic import replace_with_retry, write_json_atomic
 from cnequity.storage.lifecycle import GRACE_DAYS, LifecycleError, _read, _tree_signature, digest
 from cnequity.storage.revisions import _reject_symlink_path, sha256_file
@@ -55,7 +56,7 @@ def check_idle(manifest: Path) -> None:
 
 def unfinished(store) -> list[Path]:
     found = []
-    for name in ("purges", "experiment-purges"):
+    for name in ("purges", "experiment-purges", "staging-purges"):
         events = store.root / name
         _reject_symlink_path(events)
         found.extend(
@@ -135,13 +136,18 @@ def prepare_selected(store, report: dict, object_ids: list[str]) -> dict:
     if unfinished(store):
         raise LifecycleError("An unfinished purge must be resumed before creating another plan")
     if not object_ids or len(object_ids) != len(set(object_ids)):
-        raise LifecycleError("请选择不重复的历史版本。")
+        raise LifecycleError(_("Choose historical versions without duplicates."))
     by_id = {o["object_id"]: o for o in report["objects"]}
     selected = []
     for oid in object_ids:
         obj = by_id.get(oid)
         if obj is None or not explicit_deletable(obj):
-            raise LifecycleError(f"不能删除 {oid}：它是当前版本，或仍被引用、保留、缺少收据。")
+            raise LifecycleError(
+                _(
+                    "Cannot delete {oid}: it is the current version, or is still referenced or "
+                    "retained, or has no receipt."
+                ).format(oid=oid)
+            )
         verify_content(store, obj, store.meta / obj["path"])
         selected.append(obj)
     report["purge_ids"] = [o["object_id"] for o in selected]
@@ -257,7 +263,11 @@ def execute(store, plan_id: str, *, maintenance: bool, manifest: Path | None = N
         for obj in selected:
             if explicit:
                 if not explicit_deletable(obj):
-                    raise LifecycleError(f"不能删除 {obj['object_id']}：保护条件已变化。")
+                    raise LifecycleError(
+                        _("Cannot delete {oid}: its protection has changed.").format(
+                            oid=obj["object_id"]
+                        )
+                    )
             elif not eligible(obj, now):
                 raise LifecycleError("Observation period is incomplete or content changed")
             if obj["object_id"] not in removed_from_source:

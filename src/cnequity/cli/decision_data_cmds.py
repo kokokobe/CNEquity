@@ -10,6 +10,7 @@ import click
 
 from cnequity.cli._root import cli
 from cnequity.cli._shared import _cfg, config_option
+from cnequity.i18n import N_
 from cnequity.quality.cash_rights import reviewed_rights_inventory, save_reviewed_rights
 from cnequity.quality.decision_gaps import (
     check_research_window,
@@ -25,7 +26,9 @@ _END = click.option(
     "--end",
     type=click.DateTime(formats=["%Y-%m-%d"]),
     default=None,
-    help="默认今天；配置了 [research] holdout_start 时默认其前一天。",
+    help=N_(
+        "Defaults to today; when [research] holdout_start is configured, defaults to the day before it."
+    ),
 )
 _OUTPUT = click.option("--output-dir", type=click.Path(path_type=Path), default=None)
 

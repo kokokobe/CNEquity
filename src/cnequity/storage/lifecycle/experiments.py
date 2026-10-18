@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cnequity.file_lock import lake_mutation_lock
+from cnequity.i18n import _
 from cnequity.storage.atomic import replace_with_retry, write_json_atomic
 from cnequity.storage.lifecycle import (
     GRACE_DAYS,
@@ -28,7 +29,10 @@ class ExperimentRetirement:
         self.artifacts = ArtifactStore(store)
 
     def _references(self, registry: dict) -> None:
-        if reference_fingerprint(registry["reference_roots"]) != registry["reference_fingerprint"]:
+        if (
+            reference_fingerprint(registry["reference_roots"], meta_root=self.store.meta)
+            != registry["reference_fingerprint"]
+        ):
             raise LifecycleError("References changed; refresh the lifecycle import")
 
     def _unfinished(self) -> list[Path]:
@@ -98,7 +102,9 @@ class ExperimentRetirement:
         if selected_ids is not None and (
             phase != "purge" or len(selected_ids) != len(set(selected_ids))
         ):
-            raise LifecycleError("手动选择只能用于删除，且不能重复。")
+            raise LifecycleError(
+                _("A manual selection can only be used for deletion, without duplicates.")
+            )
         with lake_mutation_lock(self.store.meta, timeout=30):
             if self._unfinished():
                 raise LifecycleError("Resume unfinished experiment purge first")
@@ -113,7 +119,10 @@ class ExperimentRetirement:
                     obj = by_id.get(oid)
                     if obj is None:
                         raise LifecycleError(
-                            f"不能删除试验 {oid}：仍在使用、被引用、被保留，或还没有可核对的归档。"
+                            _(
+                                "Cannot delete experiment {oid}: it is still in use, referenced "
+                                "or retained, or has no verifiable archive yet."
+                            ).format(oid=oid)
                         )
                     picked.append(obj)
                 objects = picked

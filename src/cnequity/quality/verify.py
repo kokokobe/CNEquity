@@ -196,11 +196,7 @@ def _covered_days(config: Config, spec: DatasetSpec) -> list[date]:
     if spec.partition_col not in lf.collect_schema().names():
         return []
     return sorted(
-        lf.select(spec.partition_col)
-        .drop_nulls()
-        .unique()
-        .collect(engine="streaming")[spec.partition_col]
-        .to_list()
+        lf.select(spec.partition_col).drop_nulls().unique().collect()[spec.partition_col].to_list()
     )
 
 

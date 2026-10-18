@@ -358,6 +358,19 @@ class Manifest:
             )
         return run_id
 
+    def resume_run(self, run_id: str) -> None:
+        """Reopen a locked run while keeping its identity and published totals."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE ingestion_runs
+                SET status = 'running', execution_status = 'running',
+                    finished_at = NULL, error_message = NULL
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+
     def finish_run(
         self,
         run_id: str,
@@ -832,6 +845,15 @@ class Manifest:
                 (run_id,),
             )
             return {row["dataset"]: row["cnt"] for row in cur.fetchall()}
+
+    def successful_batches_for_task(self, task_id: str) -> list[sqlite3.Row]:
+        """Successful batches of *task_id* across every run, oldest first."""
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT run_id, batch_id, symbols_json FROM ingestion_batches "
+                "WHERE task_id = ? AND status = 'success' ORDER BY started_at",
+                (task_id,),
+            ).fetchall()
 
     def incomplete_batch_count(self, run_id: str) -> int:
         with self._connect() as conn:

@@ -98,6 +98,7 @@ def test_ths_official_capture_does_not_collide_with_the_lake_snapshot():
     assert "snapshot" not in names
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_moved_config_action_is_answered_like_a_moved_command():
     """`_root.MOVED` answers a moved command; an argument is not a command, and
     `cne config init` is the first thing a new lake ever runs — Click's own
@@ -207,6 +208,7 @@ def test_the_config_action_accepts_any_case(tmp_path):
     assert "cne config create" in moved.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_resilience_refuses_a_config_path_that_does_not_exist():
     """It reads the registry, not the lake — but a typo must not pass silently."""
     result = CliRunner().invoke(cli, ["sources", "resilience", "--config", "/nope/missing.toml"])
@@ -217,6 +219,7 @@ def test_resilience_refuses_a_config_path_that_does_not_exist():
     assert bare.exit_code == 0, bare.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_backfill_refuses_a_reversed_date_range(tmp_path):
     """A transposed range used to cost a full sweep and still report success.
 
@@ -242,6 +245,7 @@ def test_backfill_refuses_a_reversed_date_range(tmp_path):
     assert "--start 必须早于或等于 --end" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_verify_refuses_a_dataset_name_it_does_not_know(tmp_path):
     """A misspelt `--dataset` reported 覆盖完整 and exited 0."""
     cfg = tmp_path / "cnequity.toml"

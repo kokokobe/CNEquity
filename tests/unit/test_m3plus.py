@@ -13,6 +13,14 @@ from cnequity.domain.schemas import validate_dataframe
 from cnequity.query import load
 
 
+@pytest.fixture(autouse=True)
+def current_index_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.index_constituents.last_closed_session",
+        lambda: date(2024, 6, 28),
+    )
+
+
 class FakeDatacenterClient:
     def __init__(self, batches: dict[str, list[dict]]):
         self.batches = batches
@@ -144,6 +152,31 @@ def test_index_constituents_fetch():
     assert df.height == 1
     assert df["index_symbol"][0] == "000300.SH"
     assert df["symbol"][0] == "600519.SH"
+    assert df["weight"].dtype == pl.Float64
+    assert df["weight"][0] is None
+
+
+def test_index_snapshot_cannot_be_backdated():
+    from cnequity.orchestrator.outcomes import SourceUnavailableError
+
+    with pytest.raises(SourceUnavailableError, match="survivorship bias"):
+        fetch_index_constituents(date(2024, 6, 27), client=FakeDatacenterClient({}))
+
+
+def test_index_adapter_can_be_imported_without_initializing_steps(tmp_path):
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from cnequity.adapters.eastmoney.index_constituents import fetch_index_constituents; assert fetch_index_constituents",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -201,7 +234,7 @@ def test_index_constituents_carries_forward_member_effective_dates():
     assert df["as_of_date"].to_list() == [date(2024, 6, 28)]
 
 
-def test_index_constituents_ignores_future_and_invalid_effective_dates():
+def test_index_constituents_rejects_preannounced_future_membership():
     client = FakeDatacenterClient(
         {
             "RPT_INDEX_CONSTITUENT": [
@@ -224,13 +257,14 @@ def test_index_constituents_ignores_future_and_invalid_effective_dates():
         }
     )
 
-    df = fetch_index_constituents(
-        date(2024, 6, 28),
-        indices=["000300.SH"],
-        client=client,  # type: ignore[arg-type]
-    )
+    from cnequity.orchestrator.outcomes import SourceUnavailableError
 
-    assert df["symbol"].to_list() == ["600519.SH"]
+    with pytest.raises(SourceUnavailableError, match="future adjustment"):
+        fetch_index_constituents(
+            date(2024, 6, 28),
+            indices=["000300.SH"],
+            client=client,
+        )
 
 
 def test_index_constituents_rejects_an_empty_requested_index():

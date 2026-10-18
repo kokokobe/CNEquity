@@ -43,6 +43,19 @@ notify() {
 } >>"$LOG"
 
 problems=()
+audit_args=()
+for audit_run_id in ${CNE_AUDIT_RUN_IDS:-}; do
+  audit_args+=(--run-id "$audit_run_id")
+done
+
+# Audit this pipeline's run evidence even on the weekly full-lake day.
+# The whole-lake snapshot has no run context and cannot replace this check.
+if [[ ${#audit_args[@]} -gt 0 ]]; then
+  if ! run_audit_out="$("$CNE" audit "${audit_args[@]}" --config "$CONFIG" 2>&1)"; then
+    problems+=("error finding(s) in scheduled runs")
+  fi
+  echo "$run_audit_out" >>"$LOG"
+fi
 
 FULL_AUDIT_DOW="${CNE_FULL_AUDIT_DOW:-6}"
 today_dow="$(date +%u)"
@@ -59,12 +72,14 @@ if [[ "$audit_mode" == "full" ]]; then
   if ! health_out="$("$CNE" audit --full --quality-only --config "$CONFIG" 2>&1)"; then
     problems+=("lake health UNHEALTHY")
   fi
-else
+elif [[ ${#audit_args[@]} -eq 0 ]]; then
   # 1b. Per-run audit: active partitions only, and it gates on its own error
   # findings exactly as --full gates on UNHEALTHY.
   if ! health_out="$("$CNE" audit --config "$CONFIG" 2>&1)"; then
     problems+=("error finding(s) in the latest run")
   fi
+else
+  health_out="$run_audit_out"
 fi
 echo "$health_out" >>"$LOG"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from cnequity.config.bootstrap import path_for_toml
 from cnequity.orchestrator.scheduler_lock import (
     SchedulerLockError,
     _proc_state,
+    host_identity,
     lock_directory,
     pid_alive,
     scheduler_lock,
@@ -48,10 +50,74 @@ def test_a_dead_owner_is_reclaimed_and_a_live_one_blocks(tmp_path):
     root = tmp_path / "locks"
     stale = root / "daily.lock"
     stale.mkdir(parents=True)
-    (stale / "pid").write_text(f"{2**31 - 1}\n", encoding="utf-8")
+    (stale / "pid").write_text(
+        json.dumps({"pid": 2**31 - 1, "host": host_identity(), "start": "old"}), encoding="utf-8"
+    )
     with scheduler_lock(root, "daily"):
         assert scheduler_lock_holder(root, "daily") == os.getpid()
     assert scheduler_lock_holder(root, "daily") is None
+
+
+def test_a_remote_owner_is_not_reclaimed(tmp_path):
+    marker = '{"pid":99999999,"host":"other-host","start":"old"}'
+    directory = tmp_path / "daily.lock"
+    directory.mkdir()
+    (directory / "pid").write_text(marker)
+    assert scheduler_lock_holder(tmp_path, "daily") == 99999999
+    with pytest.raises(SchedulerLockError) as caught:
+        with scheduler_lock(tmp_path, "daily"):
+            pass
+    assert caught.value.code == 1
+    assert (directory / "pid").read_text() == marker
+
+
+def test_a_legacy_pid_marker_is_reclaimed_once_its_process_is_gone(tmp_path):
+    directory = tmp_path / "daily.lock"
+    directory.mkdir()
+    (directory / "pid").write_text("99999999\n")
+    assert scheduler_lock_holder(tmp_path, "daily") is None
+    with scheduler_lock(tmp_path, "daily"):
+        assert scheduler_lock_holder(tmp_path, "daily") == os.getpid()
+    assert not directory.exists()
+
+
+def test_a_legacy_pid_marker_of_a_live_process_blocks(tmp_path):
+    directory = tmp_path / "daily.lock"
+    directory.mkdir()
+    (directory / "pid").write_text(f"{os.getpid()}\n")
+    assert scheduler_lock_holder(tmp_path, "daily") == os.getpid()
+    with pytest.raises(SchedulerLockError):
+        with scheduler_lock(tmp_path, "daily"):
+            pass
+    assert directory.exists()
+
+
+def test_an_ownerless_directory_is_reclaimed_only_after_the_grace(tmp_path):
+    directory = tmp_path / "daily.lock"
+    directory.mkdir()
+    (directory / ".pid.abc.tmp").write_text("{")
+    assert scheduler_lock_holder(tmp_path, "daily") == -1
+    with pytest.raises(SchedulerLockError):
+        with scheduler_lock(tmp_path, "daily"):
+            pass
+    old = directory.stat().st_mtime - 3600
+    os.utime(directory, (old, old))
+    assert scheduler_lock_holder(tmp_path, "daily") is None
+    with scheduler_lock(tmp_path, "daily"):
+        assert sorted(p.name for p in directory.iterdir()) == ["pid"]
+    assert not directory.exists()
+
+
+def test_reused_local_pid_does_not_keep_a_dead_owners_lock(tmp_path, monkeypatch):
+    directory = tmp_path / "daily.lock"
+    directory.mkdir()
+    (directory / "pid").write_text(
+        json.dumps({"pid": os.getpid(), "host": host_identity(), "start": "old"})
+    )
+    monkeypatch.setattr("cnequity.orchestrator.scheduler_lock.process_start", lambda pid: "new")
+    with scheduler_lock(tmp_path, "daily"):
+        assert json.loads((directory / "pid").read_text())["start"] == "new"
+    assert not directory.exists()
 
 
 def test_another_process_blocks_until_it_exits(tmp_path):
@@ -110,3 +176,14 @@ scheduler_lock_release
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip() == str((data / "locks" / "daily.lock").resolve())
     assert not (data / "locks" / "daily.lock").exists()
+
+
+def test_a_mac_keeps_its_identity_when_the_hostname_changes(monkeypatch):
+    from cnequity.orchestrator import scheduler_lock as module
+
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module, "_platform_uuid", lambda: "1228759C-BF6E-562C-9599-26651563D05C")
+    monkeypatch.setattr(module.socket, "gethostname", lambda: "laptop.home")
+    before = host_identity()
+    monkeypatch.setattr(module.socket, "gethostname", lambda: "laptop.office")
+    assert host_identity() == before == "mac:1228759C-BF6E-562C-9599-26651563D05C"

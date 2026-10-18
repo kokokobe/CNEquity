@@ -24,3 +24,15 @@ test("the language switch changes dataset titles and page text", () => {
   assert.equal(tr("数据集", "Datasets"), "Datasets");
   setLang("zh");
 });
+
+test("with no stored choice the page follows the browser's language", async () => {
+  const { browserLang } = await import("../src/i18n.js");
+  assert.equal(browserLang(["zh-CN", "en"]), "zh");
+  assert.equal(browserLang(["zh-Hans"]), "zh");
+  assert.equal(browserLang(["zh"]), "zh");
+  assert.equal(browserLang(["en-US", "zh-CN"]), "en");
+  assert.equal(browserLang(["zh-TW"]), "en");
+  assert.equal(browserLang(["fr"]), "en");
+  assert.equal(browserLang([]), "en");
+  assert.equal(browserLang(null), "en");
+});

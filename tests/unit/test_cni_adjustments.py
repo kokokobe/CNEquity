@@ -65,6 +65,22 @@ def test_fetch_cni_unsupported_index_returns_typed_empty_without_fetching():
     assert "index_symbol" in empty.schema
 
 
+def test_publisher_missing_history_is_not_a_successful_empty_book():
+    for code in ("399001", "399006"):
+
+        class Resp:
+            content = f"{code}的样本历史调样文件不存在！".encode()
+
+            def raise_for_status(self):
+                return None
+
+        client = SimpleNamespace(get=lambda *a, **k: Resp(), close=lambda: None)
+        with pytest.raises(
+            cni.CniAdjustmentPayloadError, match="historical coverage is unresolved"
+        ):
+            cni.fetch_cni_index_adjustments(f"{code}.SZ", client=client)
+
+
 def test_fetch_cni_parses_xlsx_rows(monkeypatch):
     import pandas as pd
 

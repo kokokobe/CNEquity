@@ -208,10 +208,22 @@ def _solve(group: pl.DataFrame, model: str) -> pl.DataFrame:
     )  # fmt: skip
 
 
-def _curated(config, dataset: str, **filters) -> pl.DataFrame | None:
+#: The inputs a derive reads, pinned once so its receipts name exactly the
+#: generations the Greeks were computed from.
+_INPUTS = ("option_bars", "futures_bars", "option_contracts", "macro_indicators")
+_TERM_COLUMNS = ("expiry_date", "exercise_style", "expiry_month", "dates_basis")
+
+
+def _pin_inputs(config):
+    from cnequity.storage.read_context import ReadContext
+
+    return ReadContext.capture(config, _INPUTS, {})
+
+
+def _curated(config, dataset: str, context=None, **filters) -> pl.DataFrame | None:
     from cnequity.storage.read_context import read_root
 
-    root = read_root(config, dataset)
+    root = read_root(config, dataset, context)
     files = list(root.glob("**/*.parquet")) if root.exists() else []
     if not files:
         return None
@@ -237,17 +249,69 @@ def _partition_day(directory) -> date | None:
 
 
 def _dependency_identity(config) -> dict:
+    """The code every session's Greeks come from."""
     from pathlib import Path
 
     from cnequity.domain import option_pricing
     from cnequity.storage.derivative_evidence import fingerprint
-    from cnequity.storage.read_context import read_root
 
     return {
-        "contracts": fingerprint(read_root(config, "option_contracts")),
-        "rates": fingerprint(read_root(config, "macro_indicators")),
         "model": fingerprint(Path(option_pricing.__file__)),
         "derivation": fingerprint(Path(__file__)),
+    }
+
+
+def _session_dependencies(config, context) -> dict[date, dict]:
+    """Per session: the contract terms it trades and the rate it applies.
+
+    Fingerprinting the whole contract and rate tables made every session
+    stale whenever a contract was listed or a rate observed — every day — so
+    the full history (12.8M rows, ~50 min) was recomputed daily. A session's
+    Greeks read only its own contracts' terms and the last rate on or before
+    it, so those are what its receipt records.
+    """
+    from cnequity.query.parquet_scan import scan_parquet_files
+    from cnequity.storage.read_context import read_root
+
+    options_root = read_root(config, "option_bars", context)
+    files = list(options_root.glob("**/*.parquet")) if options_root.exists() else []
+    if not files:
+        return {}
+    traded = scan_parquet_files(files).select("symbol", "trade_date").unique().collect()
+    contracts = _curated(config, "option_contracts", context)
+    columns = [c for c in _TERM_COLUMNS if contracts is not None and c in contracts.columns]
+    if contracts is not None and columns:
+        traded = traded.join(
+            contracts.select("symbol", *columns).unique(subset=["symbol"], keep="last"),
+            on="symbol",
+            how="left",
+        )
+    term_hash = pl.struct("symbol", *columns).hash(seed=0) % 1_000_000_007
+    terms = traded.group_by("trade_date").agg(term_hash.sum().alias("terms"), pl.len().alias("n"))
+    rates = _curated(config, "macro_indicators", context)
+    if rates is not None and not rates.is_empty() and "indicator_id" in rates.columns:
+        observed = (
+            rates.filter(pl.col("indicator_id") == RATE_INDICATOR)
+            .select(pl.col("obs_date").alias("trade_date"), "value")
+            .with_columns(pl.col("trade_date").alias("rate_date"))
+            .sort("trade_date")
+        )
+        terms = terms.sort("trade_date").join_asof(observed, on="trade_date", strategy="backward")
+    else:
+        terms = terms.with_columns(
+            pl.lit(None, dtype=pl.Date).alias("rate_date"),
+            pl.lit(None, dtype=pl.Float64).alias("value"),
+        )
+    shared = _dependency_identity(config)
+    return {
+        row["trade_date"]: {
+            **shared,
+            "terms": [int(row["terms"]), int(row["n"])],
+            "rate": None
+            if row["rate_date"] is None
+            else [row["rate_date"].isoformat(), float(row["value"])],
+        }
+        for row in terms.iter_rows(named=True)
     }
 
 
@@ -255,7 +319,7 @@ def _receipt(config, day):
     return config.meta_root / "derivatives" / "greeks_dependencies" / f"{day}.json"
 
 
-def stale_sessions(config) -> list[date]:
+def stale_sessions(config, context=None) -> list[date]:
     """Sessions whose Greeks are missing or older than the bars they come from.
 
     An option session reads its own ``option_bars`` partition and the month's
@@ -266,14 +330,15 @@ def stale_sessions(config) -> list[date]:
     """
     from cnequity.storage.read_context import read_root
 
-    options_root = read_root(config, "option_bars")
-    futures_root = read_root(config, "futures_bars")
+    context = context or _pin_inputs(config)
+    options_root = read_root(config, "option_bars", context)
+    futures_root = read_root(config, "futures_bars", context)
     greeks_root = read_root(config, "option_greeks")
     if not options_root.is_dir():
         return []
     from cnequity.storage.derivative_evidence import fingerprint, read_json
 
-    dependencies = _dependency_identity(config)
+    dependencies = _session_dependencies(config, context)
     month_identity: dict[str, str] = {}
     month_mtime: dict[str, float | None] = {}
     stale: list[date] = []
@@ -291,7 +356,7 @@ def stale_sessions(config) -> list[date]:
             month_identity[month] = fingerprint(futures_root / f"trade_date={month}")
         receipt = read_json(_receipt(config, day))
         matches = (
-            receipt.get("dependencies") == dependencies
+            receipt.get("dependencies") == dependencies.get(day)
             and receipt.get("options") == fingerprint(directory)
             and receipt.get("futures") == month_identity[month]
             and receipt.get("output") == fingerprint(greeks_root / f"trade_date={day}")
@@ -304,10 +369,10 @@ def stale_sessions(config) -> list[date]:
 def derive_option_greeks(
     config, *, start: date | None = None, end: date | None = None, full: bool = False
 ) -> dict:
-    from cnequity.file_lock import lake_mutation_lock
-
-    with lake_mutation_lock(config.meta_root, blocking=True):
-        return _derive_option_greeks(config, start=start, end=end, full=full)
+    # Not under the lake lock: the inputs are pinned generations, and only the
+    # write section mutates the lake. Holding the lock for the whole compute
+    # stalled every other job's compact for ~50 minutes a day.
+    return _derive_option_greeks(config, start=start, end=end, full=full)
 
 
 def _derive_option_greeks(
@@ -327,9 +392,10 @@ def _derive_option_greeks(
     from cnequity.storage.state import StateStore
 
     state = StateStore(config.meta_root)
+    context = _pin_inputs(config)
     sessions: list[date] | None = None
     if start is None and not full:
-        sessions = [d for d in stale_sessions(config) if end is None or d <= end]
+        sessions = [d for d in stale_sessions(config, context) if end is None or d <= end]
         if not sessions:
             return {
                 "rows": 0,
@@ -340,17 +406,17 @@ def _derive_option_greeks(
     end = end or shanghai_today()
     if start > end:
         return {"rows": 0, "note": f"empty window {start}..{end}"}
-    options = _curated(config, "option_bars", trade_date=(start, end))
+    options = _curated(config, "option_bars", context, trade_date=(start, end))
     if options is not None and sessions is not None:
         options = options.filter(pl.col("trade_date").is_in(sessions))
-    contracts = _curated(config, "option_contracts")
+    contracts = _curated(config, "option_contracts", context)
     if options is None or options.is_empty() or contracts is None:
         return {"rows": 0, "note": f"no option_bars/option_contracts in {start}..{end}"}
-    futures = _curated(config, "futures_bars", trade_date=(start, end))
-    rates = _curated(config, "macro_indicators")
+    futures = _curated(config, "futures_bars", context, trade_date=(start, end))
+    rates = _curated(config, "macro_indicators", context)
     if rates is not None:
         rates = rates.filter(pl.col("indicator_id") == RATE_INDICATOR)
-    dependencies = _dependency_identity(config)
+    dependencies = _session_dependencies(config, context)
     frame = compute_option_greeks(
         options,
         contracts=contracts,
@@ -375,10 +441,12 @@ def _derive_option_greeks(
             write_json_atomic(
                 _receipt(config, day),
                 {
-                    "dependencies": dependencies,
-                    "options": fingerprint(read_root(config, "option_bars") / f"trade_date={day}"),
+                    "dependencies": dependencies.get(day),
+                    "options": fingerprint(
+                        read_root(config, "option_bars", context) / f"trade_date={day}"
+                    ),
                     "futures": fingerprint(
-                        read_root(config, "futures_bars") / f"trade_date={day:%Y-%m}"
+                        read_root(config, "futures_bars", context) / f"trade_date={day:%Y-%m}"
                     ),
                     "output": fingerprint(
                         config.derived_root / "option_greeks" / f"trade_date={day}"

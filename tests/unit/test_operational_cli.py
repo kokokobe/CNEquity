@@ -4,6 +4,7 @@ import json
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 from click.testing import CliRunner
 
 from cnequity.cli.main import cli
@@ -241,6 +242,7 @@ def test_source_policy_listing_reports_without_gating():
     assert "eastmoney" in payload and "tdx_protocol" in payload
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_source_policy_rejects_an_unknown_source_distinguishably():
     """A denial and a typo must not look alike: a denial prints a JSON assessment,
     an unknown name prints an error and no payload."""

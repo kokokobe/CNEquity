@@ -43,6 +43,7 @@ from cnequity.domain.datasets import (
 )
 from cnequity.domain.market_time import is_session_final, shanghai_today
 from cnequity.domain.partitions import parse_partition
+from cnequity.i18n import _, current_language
 from cnequity.storage.stats import (
     load_partition_stats,
     load_provenance_stats,
@@ -179,6 +180,8 @@ class LakeView:
     # --- caching -----------------------------------------------------------
 
     def _cached(self, key: str, build):
+        # Cached payloads carry display text, so one per language.
+        key = f"{key}@{current_language()}"
         now = time.monotonic()
         with self._lock:
             hit = self._cache.get(key)
@@ -275,7 +278,7 @@ class LakeView:
 
             today = shanghai_today()
             day = today if is_session_final(today) else today - timedelta(days=1)
-            for _ in range(15):
+            for _day in range(15):
                 if is_trading_day(self.config, day):
                     return day
                 day -= timedelta(days=1)
@@ -347,7 +350,7 @@ class LakeView:
                 {
                     **row,
                     "tier": spec.tier,
-                    "tier_label": TIER_LABELS[spec.tier],
+                    "tier_label": _(TIER_LABELS[spec.tier]),
                     "required": spec.required,
                     "intraday": spec.intraday_frequency,
                     # What one row covers. Carried separately from `intraday`
@@ -436,7 +439,7 @@ class LakeView:
             out.append(
                 {
                     "tier": tier,
-                    "label": TIER_LABELS[tier],
+                    "label": _(TIER_LABELS[tier]),
                     "datasets": len(members),
                     "fresh": sum(1 for r in members if r["freshness"] == "fresh"),
                     "stale": sum(1 for r in members if r["freshness"] == "stale"),
@@ -548,14 +551,16 @@ class LakeView:
         name = spec.name
         out: list[dict] = []
         if spec.layer == "derived":
-            why = "由 curated 重算"
+            why = _("recomputed from curated")
             if name in RESAMPLED_MINUTE_DATASETS:
-                why = "默认不计算；从 1m / 5m 重采样后入湖"
+                why = _("not computed by default; resampled from 1m / 5m into the lake")
                 if resample and resample["derived"]:
                     why = (
-                        f"输入有 {resample['pending']} 个交易日尚未重算"
+                        _("{pending} sessions of input have not been recomputed yet").format(
+                            pending=resample["pending"]
+                        )
                         if resample["pending"]
-                        else "已与 1m / 5m 一致"
+                        else _("consistent with 1m / 5m")
                     )
             command = {"cmd": f"cne derive {name}", "why": why}
             if name in DERIVE_NAMES:
@@ -564,7 +569,11 @@ class LakeView:
             out.append(command)
         elif spec.backfill_source or spec.fetch_semantics == "by_date":
             why = (
-                f"专用历史源：{spec.backfill_source}" if spec.backfill_source else "按日期回补缺口"
+                _("dedicated history source: {backfill_source}").format(
+                    backfill_source=spec.backfill_source
+                )
+                if spec.backfill_source
+                else _("fill gaps by date")
             )
             command = {"cmd": f"cne backfill {name}", "why": why}
             if name in backfill_datasets(self.config):
@@ -580,12 +589,14 @@ class LakeView:
             out.append(
                 {
                     "cmd": "cne run daily --stale-only",
-                    "why": "重抓仍然落后的数据集",
+                    "why": _("re-fetch datasets that still lag"),
                     "op": "daily.stale",
                     "params": {},
                 }
             )
-        out.append({"cmd": f"cne stats show --dataset {name}", "why": "逐分区行数与体积"})
+        out.append(
+            {"cmd": f"cne stats show --dataset {name}", "why": _("rows and size per partition")}
+        )
         return out
 
     # --- quality ------------------------------------------------------------
@@ -1178,7 +1189,9 @@ class LakeView:
                 "granularity": None,
                 "values": [],
                 "total": 0,
-                "note": "单文件 merge：只有当前状态，没有按日期取数的概念。",
+                "note": _(
+                    "Single-file merge: only the current state, with no notion of fetching by date."
+                ),
             }
 
         values = [p["partition"] for p in reversed(parts) if p["partition"] is not None]
@@ -1193,12 +1206,13 @@ class LakeView:
 
         note = None
         if history_mode_for(spec) == "snapshot_only":
-            note = (
-                "snapshot_only：每个 run 落一份当日快照。没跑的那天没有快照，"
-                "而且补不出来——重放会伪造行。列表里只有真实存在的日期。"
+            note = _(
+                "snapshot_only: each run lands one snapshot of that day. A day that did not run has no snapshot and cannot be made up; replaying would fabricate rows. The list only has dates that really exist."
             )
         elif spec.partition_granularity != "day":
-            note = f"按 {spec.partition_granularity} 分区：选一个周期取回它整段的行。"
+            note = _(
+                "Partitioned by {partition_granularity}: pick a period to get back all its rows."
+            ).format(partition_granularity=spec.partition_granularity)
 
         return {
             "kind": kind,
@@ -1216,6 +1230,7 @@ class LakeView:
         period: str | None = None,
         symbol: str | None = None,
         as_of: date | None = None,
+        pit_mode: str | None = None,
         adjust: str | None = None,
         limit: int = 200,
         offset: int = 0,
@@ -1249,11 +1264,20 @@ class LakeView:
             kwargs["symbols"] = [symbol]
         if as_of:
             kwargs["as_of"] = as_of
+            kwargs["pit_mode"] = pit_mode or "best_effort"
         if adjust:
             kwargs["adjust"] = adjust
 
         try:
-            frame = load(dataset, **kwargs)
+            adjustment = None
+            if adjust:
+                from cnequity.query import load_with_receipt
+
+                result = load_with_receipt(dataset, **kwargs)
+                frame = result.frame
+                adjustment = result.receipt.get("adjustment")
+            else:
+                frame = load(dataset, **kwargs)
         except ReaderError as exc:
             raise ValueError(str(exc)) from exc
 
@@ -1270,6 +1294,7 @@ class LakeView:
             "total": total,
             "offset": offset,
             "limit": limit,
+            "adjustment": adjustment,
         }
 
     def heatmap(self, *, days: int = 90) -> dict:

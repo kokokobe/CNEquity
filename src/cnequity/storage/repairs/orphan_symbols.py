@@ -106,7 +106,7 @@ def _publish(
     reason: str,
     metadata: dict,
 ) -> dict:
-    """Rewrite the partitions ``keep`` shrinks and publish one gated revision."""
+    """Rewrite the partitions ``keep`` changes and publish one gated revision."""
     from cnequity.domain.contracts import contract_fingerprint, dataset_contract
     from cnequity.quality.publication import check_repair_publication
 
@@ -121,7 +121,7 @@ def _publish(
             continue
         frame = pl.concat([pl.read_parquet(p) for p in files], how="diagonal_relaxed")
         kept = keep(frame)
-        if kept.height == frame.height:
+        if kept is frame or (kept.height == frame.height and kept.equals(frame)):
             continue
         value = directory.name.partition("=")[2]
         if kept.is_empty():

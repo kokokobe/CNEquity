@@ -219,7 +219,8 @@ def plan_upgrade(config_path: Path | str) -> UpgradePlan:
         sections = "\n".join(_example_section(example, table) for table in plan.added_groups)
         plan.text = (
             plan.text.rstrip("\n")
-            + "\n\n# 以下调度组由 `cne config upgrade` 从随包示例配置补入。\n"
+            + "\n\n# Schedule groups below were added by `cne config upgrade`"
+            + " from the packaged example config.\n"
             + sections
         )
 

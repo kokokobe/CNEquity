@@ -639,7 +639,7 @@ def test_delta_rollback_keeps_backups_when_a_restore_is_denied(tmp_path, monkeyp
 
     monkeypatch.setattr(snapshot_module, "_index_digest", fail_post_fingerprint)
     monkeypatch.setattr(snapshot_module, "replace_with_retry", deny_rollback)
-    with pytest.raises(RollbackIncompleteError, match="原文件备份保留在") as caught:
+    with pytest.raises(RollbackIncompleteError, match="original backups are kept at") as caught:
         store.apply_delta("rewrite", restored)
 
     assert isinstance(caught.value.__cause__, ValueError)

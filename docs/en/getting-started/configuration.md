@@ -100,7 +100,9 @@ Main sources and request channels in the template:
 | `backfill` (ths_official) | **Off** by default. It changes the lake's contents, so it must be turned on explicitly. Holding credentials, enabling the source and allowing it to modify data are three separate decisions |
 | `api_key` (ths_official) | Prefer the environment variable `HITHINK_FINANCE_API_KEY` over writing it into the config |
 
-The fetch settings in `cne serve` only change `enabled` for TDX, the local QMT bridge, EastMoney, Sina daily bars, Baostock, the BSE website, THS pages and CNINFO, plus EastMoney's `push2_paused`. The minute-bar, trade-tick and futures switches and `[universe] ingest` / `ingest_eligible_etfs` are on that page too. Before confirming, it lists the differences, and it backs up before writing; intervals, budgets, breakers and credentials are left untouched. The environment variable `CNE_PUSH2_PAUSED=1` still takes precedence over the pause switch in the config.
+The fetch settings in `cne serve` only change `enabled` for TDX, the local QMT bridge, EastMoney, Sina daily bars, Baostock, the BSE website, THS pages and CNINFO, plus EastMoney's `push2_paused`. The minute-bar, trade-tick and futures switches and `[universe] ingest` / `ingest_listed_funds` / `ingest_eligible_etfs` are on that page too. Before confirming, it lists the differences, and it backs up before writing; intervals, budgets, breakers and credentials are left untouched. The environment variable `CNE_PUSH2_PAUSED=1` still takes precedence over the pause switch in the config.
+
+`cne serve` keeps using the lake it started with. If you edit the config file and change `data.root`, restart serve to switch; until then, every console page shows the new directory from the file next to the one still in use, with the restart command. If the config file cannot be read, the notice gives the line and column of the error. In both cases you can keep browsing the original lake, but the console will not start jobs or change fetch settings or schedules, because a job would read the file and work on the other lake.
 
 Template request intervals (conservative client-side settings, not a guarantee of a safe quota on the source side):
 
@@ -196,10 +198,9 @@ Default config: `daily_bars` (TDX primary / EM fallback), `corporate_actions` (E
 
 ST, suspended, CDR and delisted names are kept under every value — dropping them is exactly the survivorship bias this lake exists to avoid.
 
-`instruments` returns every code TDX lists, of which about a quarter are ETF/LOF/fund quote codes:
-no research definition ever selects them, and no configured source provides them reliably. Putting them into the daily update
-would take up a quarter of the fetch volume, trip the EastMoney and Sina breakers with codes nobody needs, and leave unfillable
-`symbol×session` keys for the coverage gate — which then refuses to write that day to disk.
+Explicitly enabling `[universe].ingest_listed_funds = true` adds listed ETF/LOF from the security master to daily fetching; research eligibility only filters research selections. Known prelisting and post-delisting sessions are excluded. Unknown listing dates are still requested and listed separately in per-security coverage; they cannot certify completeness. An unreadable catalog fails explicitly, and empty source responses remain gaps. This switch takes precedence over the legacy `ingest_eligible_etfs`. The legacy switch still fetches only research-eligible ETFs, but a failed, missing or more than 14-day-old eligibility catalog now raises an error.
+
+With fund ingestion off, the full corporate-actions sweep skips ETF/LOF. If either switch is turned on later, the daily corporate-actions step sweeps the xdxr history of funds never swept before, at most 500 per run (about 2,200 market-wide, so it takes a few days); newly listed funds are swept once as well. Until the sweep finishes, each run warns `fund_history_unswept` and lists some of the codes; meanwhile those funds' adjustment factors lack their older unit splits.
 
 ## `[job.daily.waves]`
 
@@ -343,7 +344,7 @@ Only `error` triggers the gate; `warning` and `info` do not. See [product bounda
 | Key | Default | Description |
 |----|------|------|
 | `negative_evidence_ttl_days` | `7` | Validity period of negative evidence such as "the source is empty here"; set `0` to retry missing keys every time. A revision of the instrument catalog still invalidates evidence within the validity period |
-| `deep_reconciliation_dow` | `6` | Day of the week for the weekly deep reconciliation (0=Monday). Currently only `announcement_index` declares it |
+| `deep_reconciliation_dow` | `6` | Day of the week for the weekly deep reconciliation, 1=Monday … 7=Sunday; `0` turns tiering off so every run reconciles deep. `announcement_index` looks back 7 days on ordinary runs and 30 on the deep day; `daily_bars` fetches only new sessions on ordinary runs (exchange whole-board quotes and TDX batch quotes) and re-checks the last 5 sessions symbol by symbol on the first session on or after that weekday |
 
 Announcements may be indexed late. The weekly deep reconciliation rechecks older windows and reduces routine repeated requests, but it may also delay discovering late announcements. Strict PIT also checks the in-lake observation time; an announcement collected late cannot pass as known at an earlier `as_of`.
 
@@ -391,15 +392,15 @@ Default:
 ```toml
 names = [
   "phase1_reference",
-  "phase2a_corporate_actions",
   "phase2c_daily_bars_backfill",
+  "phase2a_corporate_actions",
   "phase3_index_and_status",
   "phase4_finalize",
   "phase5_derive_and_publish",
 ]
 ```
 
-For the phase → step mapping, see `orchestrator/init_phases.py`.
+For the phase → step mapping, see `orchestrator/init_phases.py`. Since 0.17.0 the daily-bar phase runs before corporate actions; a config that still carries the old default order verbatim (corporate actions first) runs in the new order, an edited list runs as written, and an init already started resumes in the order it recorded.
 
 ## `[on_demand]`
 
@@ -454,6 +455,6 @@ cnequity.toml
 
 `[quality].publication_gate` supports `off` (default), `shadow` and `block`. Before an ordinary compact publish, it runs an offline full audit of the whole candidate batch and compares it against the committed baseline; block mode rejects new or worsened errors, and also rejects on audit exceptions. Issues are identified by "check + dataset + scope (partition, field, source, date, etc.)"; only an increase in a measure such as row count or key count counts as worsening; changes in wording or samples, and fewer issues, do not count as new. The report's `issue_changes` lists new, worsened, improved, unchanged and resolved issues separately. Structural checks read only the changed partitions of candidate datasets; cross-dataset checks run only when their inputs include a candidate dataset, and other check results are identical before and after, so they are not recomputed. Derived publishes use the same gate.
 
-`cne repair` subcommands with `--apply` always run a blocking candidate audit; corporate action or factor repairs also compare factor/corporate-action contradictions for each affected security. When publication is rejected, the old version is kept and the candidate is moved to `_quarantine`.
+`cne repair` subcommands with `--apply` always run a blocking structural audit. Historical factor/action contradictions are reported separately as advisory diagnostics and never reject publication. Invalid factor values, corrupt files and primary-key errors can still block. Rejected candidates go to `_quarantine`, preserving the old version.
 
 `[quality].audit_gate` still determines post-publication run status; neither replaces the other. A full-history scan has I/O cost, so you can start with shadow and then move to block. See [product boundaries](../architecture/overview.md).

@@ -151,7 +151,7 @@ def test_audit_failure_cannot_publish_in_block_mode(tmp_path, monkeypatch):
     assert report["new_errors"][0]["check"] == "candidate_audit_failed"
 
 
-def test_repair_refuses_a_new_factor_action_contradiction_even_with_gate_off(tmp_path, monkeypatch):
+def test_repair_reports_a_new_factor_action_contradiction_without_blocking(tmp_path, monkeypatch):
     cfg = Config(data_root=tmp_path / "lake")
     before, step = date(2024, 6, 27), date(2024, 6, 28)
     for day, factor in ((before, 1.0), (step, 2.0)):
@@ -193,14 +193,16 @@ def test_repair_refuses_a_new_factor_action_contradiction_even_with_gate_off(tmp
     original.with_columns(pl.lit(before).alias("ex_date")).write_parquet(action)
     monkeypatch.setattr("cnequity.quality.publication._errors", lambda *args: [])
 
-    with pytest.raises(RuntimeError, match="repair publication gate blocked"):
-        check_repair_publication(
-            cfg, "corporate_actions", "bad-repair", [action], symbols=frozenset({"600000.SH"})
-        )
+    report = check_repair_publication(
+        cfg, "corporate_actions", "repair", [action], symbols=frozenset({"600000.SH"})
+    )
+    assert not report["blocked"]
+    assert report["factor_diagnostics"]["candidate"][0]["severity"] == "warning"
+    assert report["factor_diagnostics"]["gate_impact"] == "none"
 
     assert revisions.latest("corporate_actions").revision_id == old_id
-    assert pl.read_parquet(action)["ex_date"].to_list() == [step]
-    assert list((cfg.data_root / "_quarantine").glob("corporate_actions-bad-repair-*"))
+    assert pl.read_parquet(action)["ex_date"].to_list() == [before]
+    assert not list((cfg.data_root / "_quarantine").glob("corporate_actions-*"))
 
     # An empty action candidate still exposes the factor step it would orphan.
     from cnequity.quality.cross_checks import factor_action_contradictions

@@ -49,16 +49,19 @@ def test_parse_row_returns_none_when_no_action_type():
     assert _parse_row(row) is None
 
 
-def test_parse_row_uses_equity_record_date_fallback():
+def test_parse_row_does_not_date_an_event_by_its_record_date():
+    """The record date is the session before the ex-date, not a stand-in for it."""
     row = {
         "SECURITY_CODE": "000001",
         "EQUITY_RECORD_DATE": "2024-06-27 00:00:00",
         "IMPL_PLAN_PROFILE": "10送3",
         "BONUS_RATIO": "3",
     }
-    parsed = _parse_row(row)
+    assert _parse_row(row) is None
+
+    parsed = _parse_row({**row, "EX_DIVIDEND_DATE": "2024-06-28 00:00:00"})
     assert parsed is not None
-    assert parsed["ex_date"] == date(2024, 6, 27)
+    assert parsed["ex_date"] == date(2024, 6, 28)
     assert parsed["symbol"] == "000001.SZ"
     assert parsed["bonus_ratio"] == 0.3
 

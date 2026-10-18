@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
@@ -195,17 +196,45 @@ def _load_daily_bar_dates(
         # rows still need the carried-forward factor for adjusted queries. But
         # a symbol represented only by zero-volume placeholders is not a real
         # factor task and must not trigger a Sina request.
-        traded = collect_parquet_root(
-            bars_path,
-            partition_col="trade_date",
-            start=start,
-            symbols=symbols,
-            traded_only=True,
+        # The same canonicalisation and print filter ``traded_only`` applies
+        # to a scan, applied to the rows already in hand: reading the bar
+        # history a second time cost ~6s per call, three calls per derive.
+        from cnequity.query.canonical import dedupe_lazy_by_primary_key
+
+        traded = (
+            dedupe_lazy_by_primary_key(bars.lazy(), "daily_bars")
+            .filter((pl.col("volume") > 0) | pl.col("volume").is_null())
+            .collect()
         )
         traded_symbols = set(traded.get_column("symbol").unique().to_list())
         bars = bars.filter(pl.col("symbol").is_in(traded_symbols))
         if bars.is_empty():
             return _EMPTY_BAR_DATES.clone()
+    # Historical prices keep retired securities in full derives. Their later
+    # zero-volume placeholders must not create factors after the catalogue's
+    # retirement window. A traded quote beyond that date contradicts the
+    # catalogue, so retain that symbol for investigation instead of clipping it.
+    from cnequity.storage.instrument_catalog import load_curated_instruments
+
+    instruments = load_curated_instruments(config)
+    if instruments is not None and "delist_date" in instruments.columns:
+        bounds = instruments.filter(pl.col("delist_date").is_not_null()).select(
+            "symbol", pl.col("delist_date").alias("_delist")
+        )
+        if "volume" in bars.columns:
+            contradicted = (
+                bars.filter(pl.col("volume").fill_null(0) > 0)
+                .join(bounds, on="symbol")
+                .filter(pl.col("trade_date") > pl.col("_delist"))
+                .select("symbol")
+                .unique()
+            )
+            bounds = bounds.join(contradicted, on="symbol", how="anti")
+        bars = (
+            bars.join(bounds, on="symbol", how="left")
+            .filter(pl.col("_delist").is_null() | (pl.col("trade_date") <= pl.col("_delist")))
+            .drop("_delist")
+        )
     return bars.select(["symbol", "trade_date"]).unique().sort(["symbol", "trade_date"])
 
 
@@ -315,9 +344,10 @@ def _overridden_symbols(config: Config) -> frozenset[str]:
     from cnequity.derive.factor_arbitration import source_overrides
 
     path = config.meta_root / "state" / "adj_factors.json"
+    pointer = config.meta_root / "revisions" / "adj_factors" / "current.json"
     try:
-        stamp = path.stat().st_mtime
-    except FileNotFoundError:
+        stamp = max(p.stat().st_mtime for p in (path, pointer) if p.exists())
+    except ValueError:
         return frozenset()
     memo = _OVERRIDE_MEMO.get(path)
     if memo is None or memo[0] != stamp:
@@ -474,7 +504,9 @@ def _uncovered_symbols(config: Config) -> set[str]:
         ).collect()
         if "asset_type" in instruments.columns:
             priced = set(
-                instruments.filter(pl.col("asset_type").is_in(["stock", "etf"]))["symbol"].to_list()
+                instruments.filter(pl.col("asset_type").is_in(["stock", "etf", "lof"]))[
+                    "symbol"
+                ].to_list()
             )
             # An explicit asset_type column is authoritative even when the
             # current catalog contains no priced assets (for example an ETF-only
@@ -663,6 +695,129 @@ def _resolve_factors(
         raise AdjFactorsFetchError(
             f"No cached adj factors for {symbol} ({adjust_type}): {exc}"
         ) from exc
+
+
+#: Lanes for the init prefetch. Sina's pacing (``min_interval_seconds``) is
+#: what bounds the rate; two lanes keep it saturated while leaving the family's
+#: other slots to the daily-bar fallback that runs beside it.
+PREFETCH_WORKERS = 2
+
+
+def prefetch_factor_caches(
+    config: Config, symbols: list[str], *, stop: threading.Event | None = None
+) -> dict:
+    """Warm the Sina factor cache for *symbols* without touching the lake.
+
+    A first build used to make one paced Sina request per security only at
+    the end, after every bar was in: ~5,600 stocks at 0.3 s each is a 30-minute
+    tail. Fetched while the daily bars download, the derive later reads the
+    cache instead (measured: 1839 s down to 24 s on the same lake). Anything
+    that fails here is simply fetched again by the derive, so this never raises
+    for a source problem.
+    """
+    stats = {"requested": 0, "cached": 0, "skipped": 0, "failed": 0, "left": 0}
+    if config.adj_factors_source != "sina" or not config.sources.get("sina", True):
+        stats["skipped"] = len(symbols)
+        return stats
+    overridden = _overridden_symbols(config)
+    todo = []
+    for symbol in dict.fromkeys(symbols):
+        cached = _load_cache(config, symbol, STORED_ADJUST_TYPE)
+        if _is_cdr(symbol) or symbol in overridden or not _needs_refresh(cached, False):
+            stats["skipped"] += 1
+        else:
+            todo.append(symbol)
+    if not todo:
+        return stats
+    report = sweep_progress(logger, "adj_factors prefetch", len(todo))
+    done = itertools.count(1)
+    report_lock = threading.Lock()
+
+    def fetch(symbol: str, client: httpx.Client) -> bool:
+        try:
+            with source_request(config, config.adj_factors_source):
+                factors = fetch_adj_factor_series(symbol, STORED_ADJUST_TYPE, client=client)
+        except Exception as exc:  # noqa: BLE001 — the derive retries this symbol
+            logger.debug("adj_factors prefetch: %s not cached: %s", symbol, exc)
+            return False
+        _save_cache(config, symbol, STORED_ADJUST_TYPE, factors)
+        return not factors.is_empty()
+
+    def lane(names: list[str]) -> list[bool]:
+        outcomes = []
+        with httpx.Client(timeout=20.0) as client:
+            for name in names:
+                if stop is not None and stop.is_set():
+                    break
+                outcomes.append(fetch(name, client))
+                with report_lock:
+                    report(next(done))
+        return outcomes
+
+    workers = max(1, min(PREFETCH_WORKERS, config.adj_factor_worker_count()))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="factor-prefetch") as pool:
+        for outcomes in pool.map(lane, [todo[i::workers] for i in range(workers)]):
+            for ok in outcomes:
+                stats["cached" if ok else "failed"] += 1
+    stats["requested"] = stats["cached"] + stats["failed"]
+    # Stopped before the end: these are what the derive asks Sina for itself.
+    stats["left"] = len(todo) - stats["requested"]
+    return stats
+
+
+def init_prefetch_symbols(config: Config, trade_date: date) -> list[str]:
+    """What a first build's derive will ask Sina about: ingested stocks and funds."""
+    from cnequity.domain.symbols import filter_ingest_universe
+    from cnequity.steps.common import load_symbols
+
+    symbols = filter_ingest_universe(load_symbols(config), config.ingest_universe)
+    if config.ingest_listed_funds or config.ingest_eligible_etfs:
+        from cnequity.steps.bars import _daily_fund_bar_symbols
+
+        symbols += _daily_fund_bar_symbols(config, trade_date) or []
+    return symbols
+
+
+class BackgroundFactorPrefetch:
+    """Warm the factor cache on a thread that outlives single init phases.
+
+    Started when the bars and corporate-action phases begin and stopped when
+    the finalize phase starts: Sina's pacing makes the prefetch longer than
+    the bars alone (measured 1960 s against 974 s), so tying it to one phase
+    held that phase back. Whatever is left when it stops, the derive fetches
+    itself at the same pace, so stopping early never costs a second request.
+    """
+
+    def __init__(self, config: Config, trade_date: date):
+        self._config = config
+        self._trade_date = trade_date
+        self._stop = threading.Event()
+        self.stats: dict | None = None
+        self._thread = threading.Thread(target=self._run, name="factor-prefetch", daemon=True)
+
+    def start(self) -> BackgroundFactorPrefetch:
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        try:
+            symbols = init_prefetch_symbols(self._config, self._trade_date)
+            self.stats = prefetch_factor_caches(self._config, symbols, stop=self._stop)
+        except Exception as exc:  # noqa: BLE001 — an optimisation, never a gate
+            logger.warning("adj_factors prefetch skipped: %s", exc)
+            return
+        logger.info(
+            "adj_factors prefetch: %d cached, %d failed, %d already cached, %d left to the derive",
+            self.stats["cached"],
+            self.stats["failed"],
+            self.stats["skipped"],
+            self.stats.get("left", 0),
+        )
+
+    def stop(self, timeout: float = 60.0) -> None:
+        """Ask the lanes to finish their current request, then wait for them."""
+        self._stop.set()
+        self._thread.join(timeout)
 
 
 def _resolve_factors_via_backup(
@@ -896,7 +1051,9 @@ def _unit_split_terms(actions: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def _action_terms(config: Config, symbols: list[str], start: date, end: date) -> pl.DataFrame:
+def _action_terms(
+    config: Config, symbols: list[str], start: date, end: date, *, read_context=None
+) -> pl.DataFrame:
     """Per (symbol, ex_date) corporate-action terms over the compared window.
 
     ``action_type`` is part of the primary key, so one ex-date can carry a
@@ -919,12 +1076,15 @@ def _action_terms(config: Config, symbols: list[str], start: date, end: date) ->
     files no cash row, which is the divergence this was meant to silence.
     """
     from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+    from cnequity.storage.read_context import read_root
 
-    root = config.curated_root / "corporate_actions"
-    if not dataset_has_parquet(root):
+    root = read_root(config, "corporate_actions", read_context)
+    if not dataset_has_parquet(root, committed=False):
         return _EMPTY_ACTION_TERMS.clone()
     actions = dedupe_lazy_by_primary_key(
-        scan_parquet_root(root, partition_col="ex_date", start=start, end=end, symbols=symbols),
+        scan_parquet_root(
+            root, partition_col="ex_date", start=start, end=end, symbols=symbols, committed=False
+        ),
         "corporate_actions",
     ).collect()
     if actions.is_empty() or not {"symbol", "ex_date"}.issubset(actions.columns):
@@ -990,8 +1150,16 @@ def _action_terms(config: Config, symbols: list[str], start: date, end: date) ->
     cash = per_source.group_by(["symbol", "ex_date"]).agg(
         pl.col("_dividend").max().alias("_dividend")
     )
-    return dilution.join(cash, on=["symbol", "ex_date"], how="left").join(
-        split_terms, on=["symbol", "ex_date"], how="left"
+    return (
+        dilution.join(cash, on=["symbol", "ex_date"], how="left")
+        .join(split_terms, on=["symbol", "ex_date"], how="left")
+        .join(
+            actions.group_by("symbol", "ex_date").agg(
+                pl.col("source").drop_nulls().unique().alias("_term_sources")
+            ),
+            on=["symbol", "ex_date"],
+            how="left",
+        )
     )
 
 
@@ -1629,6 +1797,18 @@ def _apply_computed_factors(config: Config, out: pl.DataFrame) -> tuple[pl.DataF
     return replaced, findings
 
 
+def _rows_not_already_stored(incoming: pl.DataFrame, existing: pl.DataFrame) -> pl.DataFrame:
+    """Incoming rows that differ from a stored row in anything but `fetched_at`."""
+    columns = [c for c in incoming.columns if c != "fetched_at"]
+    if not set(columns) <= set(existing.columns):
+        return incoming
+    try:
+        stored = existing.select(columns).cast(incoming.select(columns).schema)
+    except pl.exceptions.PolarsError:
+        return incoming
+    return incoming.join(stored.unique(), on=columns, how="anti", nulls_equal=True)
+
+
 def _write_adj_partitions(
     config: Config,
     out: pl.DataFrame,
@@ -1656,9 +1836,21 @@ def _write_adj_partitions(
                     [pl.read_parquet(path) for path in existing_files],
                     how="diagonal_relaxed",
                 )
-                merged = pl.concat([existing, group], how="diagonal_relaxed")
-            else:
-                merged = group
+                fresh = _rows_not_already_stored(group, existing)
+                total += group.height
+                if fresh.is_empty():
+                    # Every row is already there with the same value and
+                    # source. Rewriting it only to stamp a new `fetched_at`
+                    # made each daily derive republish all ~6,250 partitions
+                    # and keep a new copy of the whole table per revision.
+                    continue
+                merged = pl.concat([existing, fresh], how="diagonal_relaxed")
+                merged = dedupe_by_primary_key(merged, "adj_factors")
+                writer.write_partition(
+                    "adj_factors", "trade_date", td_str, merged, "part-0.parquet"
+                )
+                continue
+            merged = group
         merged = dedupe_by_primary_key(merged, "adj_factors")
         writer.write_partition("adj_factors", "trade_date", td_str, merged, "part-0.parquet")
         total += group.height
@@ -1981,6 +2173,30 @@ def _compute_adj_factors_locked(
     out = pl.concat(frames, how="diagonal_relaxed").unique(subset=_ADJ_PK, keep="last")
     out, computed_findings = _apply_computed_factors(config, out)
     findings.extend(computed_findings)
+    from cnequity.derive.fund_factors import apply_fund_share_factors
+
+    out, fund_findings = apply_fund_share_factors(config, out)
+    findings.extend(
+        {
+            "dataset": "adj_factors",
+            "check": "fund_share_factor",
+            "severity": "warning" if "reason" in item else "info",
+            **item,
+        }
+        for item in fund_findings
+    )
+    from cnequity.derive.stock_factors import apply_stock_event_factors
+
+    out, stock_findings = apply_stock_event_factors(config, out)
+    findings.extend(
+        {
+            "dataset": "adj_factors",
+            "check": "stock_event_factor",
+            "severity": "warning" if "reason" in item else "info",
+            **item,
+        }
+        for item in stock_findings
+    )
     findings.extend(_factor_continuity_findings(out))
     findings.extend(_corporate_action_crosscheck_findings(config, out))
     findings.extend(_pre_close_step_findings(config, out))

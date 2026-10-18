@@ -80,6 +80,15 @@ def test_normalize_is_idempotent():
     assert normalize_legacy(once).equals(once)
 
 
+def test_normalize_keeps_an_explicit_unknown_designation():
+    frame = _legacy(STATUS_NORMAL).with_columns(
+        pl.lit(None, dtype=pl.Boolean).alias("risk_warning")
+    )
+    out = normalize_legacy(frame)
+    assert out["risk_warning"].to_list() == [None]
+    assert normalize_legacy(out).equals(out)
+
+
 def test_normalize_leaves_the_trading_state_alone():
     out = normalize_legacy(_legacy(STATUS_SUSPENDED))
     assert out["status"].to_list() == [STATUS_SUSPENDED]

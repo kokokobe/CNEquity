@@ -115,6 +115,7 @@ def test_write_user_config_refuses_overwrite(tmp_path):
     assert Path(payload["data"]["root"]).resolve() == (tmp_path / "data").resolve()
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cli_config_create_and_validate(tmp_path):
     out = tmp_path / "cnequity.toml"
     runner = CliRunner()
@@ -150,6 +151,7 @@ def test_resolve_config_missing_suggests_config_init(tmp_path, monkeypatch):
     assert "cne config create" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_first_init_creates_the_default_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CNE_CONFIG", raising=False)

@@ -63,9 +63,8 @@ cne run daily
 
 <a id="init-scope"></a>
 
-## Init：范围、磁盘与续跑
-
-这部分已整理到[初始化、范围与续跑](initialization.md#init-scope)：包含 quick/full 的区别、自动退市恢复与可选历史 ST 补数、成本、Ctrl-C 后恢复、日志和验收。旧链接保留在这里，便于从已有资料跳转。
+!!! tip "范围、磁盘与续跑"
+    quick 与 full 的区别、退市与历史 ST 补数、磁盘成本、Ctrl-C 后恢复和验收，见[初始化、范围与续跑](initialization.md#init-scope)。
 
 ## 遇到问题
 

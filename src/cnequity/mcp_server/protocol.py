@@ -15,13 +15,20 @@ transport — those are where the SDK earns its footprint. Serving tools does no
 reports a parse error with no hint where it came from, so `serve_stdio` points
 logging at stderr before the loop starts and nothing here writes to stdout
 except `_send`.
+
+**The wire is UTF-8.** The stdio transport says so; the console code page
+(GBK on a Chinese Windows) does not. `serve_stdio` therefore reads the real
+stdin as bytes and decodes each frame itself, and writes the real stdout as
+UTF-8 with bare `\n` line ends.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import sys
+from collections.abc import Iterable
 from typing import Any, TextIO
 
 from cnequity.config import Config
@@ -167,11 +174,38 @@ def serve_stdio(
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
 ) -> None:
-    """Read requests from stdin and write responses to stdout until EOF."""
-    stdin = stdin or sys.stdin
-    stdout = stdout or sys.stdout
+    """Read requests from stdin and write responses to stdout until EOF.
 
-    for line in stdin:
+    Streams passed in are used as given. The process's own stdin and stdout
+    are put on UTF-8 whatever the locale says, because the client on the other
+    end of the pipe writes and expects UTF-8.
+    """
+    frames: Iterable[str | bytes]
+    if stdin is not None:
+        frames = stdin
+    else:
+        frames = getattr(sys.stdin, "buffer", sys.stdin)
+    if stdout is None:
+        stdout = sys.stdout
+        if isinstance(stdout, io.TextIOWrapper):
+            # backslashreplace: a lone surrogate echoed from a request can only
+            # sit inside a JSON string, where `\udxxx` is a valid escape.
+            stdout.reconfigure(encoding="utf-8", errors="backslashreplace", newline="\n")
+
+    for line in frames:
+        if isinstance(line, bytes):
+            try:
+                line = line.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                _send(
+                    stdout,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": PARSE_ERROR, "message": f"frame is not UTF-8: {exc}"},
+                    },
+                )
+                continue
         line = line.strip()
         if not line:
             continue

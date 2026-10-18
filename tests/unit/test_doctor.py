@@ -65,7 +65,9 @@ def test_missing_package_is_an_error(tmp_path, monkeypatch):
         ],
     )
     report = build_report(config=_config(tmp_path))
-    finding = next(f for f in report.findings if "必需依赖无法导入" in f.title)
+    finding = next(
+        f for f in report.findings if "required dependencies cannot be imported" in f.title
+    )
     assert finding.severity is Severity.ERROR
     assert "baostock" in finding.detail
     assert "pandas" not in finding.detail
@@ -78,7 +80,7 @@ def test_all_packages_present_produces_no_finding(tmp_path, monkeypatch):
         lambda: [PackageStatus(RequiredPackage("baostock", "历史回填"), importable=True)],
     )
     report = build_report(config=_config(tmp_path))
-    assert not any("必需依赖" in f.title for f in report.findings)
+    assert not any("required dependencies" in f.title for f in report.findings)
 
 
 # --- data.root ---------------------------------------------------------------
@@ -86,14 +88,14 @@ def test_all_packages_present_produces_no_finding(tmp_path, monkeypatch):
 
 def test_relative_data_root_is_an_error(tmp_path):
     report = build_report(config=_config(tmp_path, data_root=Path("./data/cnequity")))
-    finding = next(f for f in report.findings if "相对路径" in f.title)
+    finding = next(f for f in report.findings if "relative path" in f.title)
     assert finding.severity is Severity.ERROR
     assert not report.ok
 
 
 def test_missing_data_root_only_warns(tmp_path):
     report = build_report(config=_config(tmp_path, data_root=tmp_path / "absent"))
-    finding = next(f for f in report.findings if "尚不存在" in f.title)
+    finding = next(f for f in report.findings if "does not exist yet" in f.title)
     assert finding.severity is Severity.WARN
     assert report.ok
 
@@ -108,9 +110,9 @@ def test_unwritable_data_root_is_an_error(tmp_path, monkeypatch):
         lambda _path: False,
     )
     report = build_report(config=_config(tmp_path, data_root=root))
-    finding = next(f for f in report.findings if "不可写" in f.title)
+    finding = next(f for f in report.findings if "not writable" in f.title)
     assert finding.severity is Severity.ERROR
-    assert "chmod" in finding.fix or "修改" in finding.fix
+    assert "chmod" in finding.fix or "Modify" in finding.fix
 
 
 # --- no-config mode ----------------------------------------------------------
@@ -118,7 +120,7 @@ def test_unwritable_data_root_is_an_error(tmp_path, monkeypatch):
 
 def test_report_without_config_still_probes_packages():
     report = build_report(config=None)
-    assert any("未加载配置" in f.title for f in report.findings)
+    assert any("No config loaded" in f.title for f in report.findings)
     assert report.packages
 
 
@@ -141,6 +143,7 @@ def test_to_dict_is_json_serializable(tmp_path):
 # --- CLI ---------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_doctor_cli_runs_without_config(tmp_path):
     runner = CliRunner()
     result = runner.invoke(cli, ["doctor", "--config", str(tmp_path / "nope.toml")])

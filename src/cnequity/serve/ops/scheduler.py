@@ -14,6 +14,7 @@ from pathlib import Path
 from cnequity.config import load_config
 from cnequity.config.upgrade import _table_span, tomllib
 from cnequity.file_lock import LockUnavailable, exclusive_lock
+from cnequity.i18n import _, current_language, normalize_language
 from cnequity.orchestrator.scheduler_lock import lock_directory
 from cnequity.serve.ops.catalog import OpsError, config_file
 from cnequity.serve.ops.records import atomic_write, read_record
@@ -34,12 +35,16 @@ def settings(config) -> dict:
         key in value and not isinstance(value[key], bool)
         for key in ("daily", "stale", "backup", "events")
     ):
-        raise OpsError("定时任务设置无效，请核对 settings.json。")
+        raise OpsError(_("The scheduled task settings are invalid; check settings.json."))
     if value.get("config_path") != str(config_file(config)):
-        raise OpsError("这个数据湖的 Web 调度绑定了另一份配置，请使用原配置管理。")
+        raise OpsError(
+            _(
+                "This lake's web schedule is bound to another config; manage it with the original config."
+            )
+        )
     interval = value.get("events_interval_minutes", 60)
     if isinstance(interval, bool) or not isinstance(interval, int) or not 1 <= interval <= 1440:
-        raise OpsError("事件流运行间隔无效，请重新设置。")
+        raise OpsError(_("The event-stream run interval is invalid; set it again."))
     if value.get("backup") and (
         not isinstance(value.get("backup_run_at"), str)
         or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value["backup_run_at"])
@@ -49,12 +54,15 @@ def settings(config) -> dict:
         or not value["backup_datasets"]
         or not all(isinstance(item, str) for item in value["backup_datasets"])
     ):
-        raise OpsError("自动备份设置无效，请重新设置。")
+        raise OpsError(_("The automatic backup settings are invalid; set them again."))
     if value.get("events") and not isinstance(value.get("events_group"), str):
-        raise OpsError("定时事件组无效，请重新设置。")
+        raise OpsError(_("The scheduled event groups are invalid; set them again."))
+    language = value.get("language")
+    if language is not None and normalize_language(language) is None:
+        raise OpsError(_("The scheduled task settings are invalid; check settings.json."))
     packs = value.get("daily_packs", [])
     if not isinstance(packs, list) or not all(isinstance(item, str) for item in packs):
-        raise OpsError("研究包设置无效，请重新设置。")
+        raise OpsError(_("The research pack settings are invalid; set them again."))
     if packs:
         from cnequity.research.packs import normalize_packs
 
@@ -74,7 +82,7 @@ def edit_times(text: str, daily: str, stale: str) -> str:
     """Preserve comments/other values and verify the complete TOML semantic diff."""
     for value in (daily, stale):
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", value):
-            raise OpsError("运行时间必须为北京时间 HH:MM。")
+            raise OpsError(_("The run time must be HH:MM, Beijing time."))
     original = tomllib.loads(text)
     expected = copy.deepcopy(original)
     for name, value in (("daily", daily), ("stale", stale)):
@@ -100,10 +108,16 @@ def edit_times(text: str, daily: str, stale: str) -> str:
         parsed = tomllib.loads(text)
     except ValueError as exc:
         raise OpsError(
-            "无法自动修改这份配置的时间，请将 run_at 放在 [job.daily] 和 [job.stale] 表内。"
+            _(
+                "Cannot change this config's times automatically; put run_at inside the [job.daily] and [job.stale] tables."
+            )
         ) from exc
     if parsed != expected:
-        raise OpsError("配置结构不支持自动修改时间，请使用标准 TOML 表。")
+        raise OpsError(
+            _(
+                "The config structure does not support changing times automatically; use standard TOML tables."
+            )
+        )
     return text
 
 
@@ -124,7 +138,7 @@ class ScheduleService:
     def __init__(self, config):
         path = config_file(config)
         if path is None:
-            raise OpsError("先生成配置，再设置定时任务。")
+            raise OpsError(_("Generate the config before setting up scheduled tasks."))
         self.config = config
         self.path = path
         saved = settings(config)
@@ -139,7 +153,11 @@ class ScheduleService:
     def _current(self):
         config = load_config(self.path)
         if Path(config.meta_root) != Path(self.config.meta_root):
-            raise OpsError("配置的数据目录已经变化，请重新启动 serve 后设置定时任务。")
+            raise OpsError(
+                _(
+                    "The configured data directory has changed; restart serve before setting up scheduled tasks."
+                )
+            )
         return config
 
     def home(self) -> dict:
@@ -186,11 +204,9 @@ class ScheduleService:
             "last_tick": last_tick,
             "warning": state.get("warning"),
             "note": (
-                "每分钟检查一次。日更与补抓每个交易日各尝试一次；补抓只处理快照，并等待日更已执行。"
-                "备份每个自然日到点后尝试一次，事件流按独立频率运行，含周末和节假日。任务占用时等待，下次检查再判断。"
-                "关闭网页或 serve 后继续生效。Windows 和 macOS 需要当前用户已登录；Linux 需要 cron 服务运行。"
-                "休眠期间不执行，恢复后再判断；日更与补抓最迟到下个交易日 09:15，备份只补当天，事件流不累积补跑。"
-                "这里只管理 Web 创建的任务，已有的脚本和其他系统任务请先核对，避免重复调度。"
+                _(
+                    "Checked once a minute. The daily update and catch-up each try once per trading day; the catch-up only handles snapshots and waits for the daily update to have run. Backups try once per calendar day once their time comes, and event streams run at their own frequency, weekends and holidays included. When a task is busy it waits and the next check decides again. It keeps working after the web page or serve is closed. Windows and macOS need the current user logged in; Linux needs the cron service running. Nothing runs during sleep, and it decides again after waking; the daily update and catch-up go no later than 09:15 on the next trading day, backups only make up the same day, and event streams do not accumulate missed runs. Only tasks created from the web are managed here; check existing scripts and other system tasks first to avoid double scheduling."
+                )
             ),
             "note_en": (
                 "Checked once a minute. The daily update and the catch-up are each tried once per trading "
@@ -223,21 +239,21 @@ class ScheduleService:
         daily_packs: list[str] | None = None,
     ) -> dict:
         if stale and not daily:
-            raise OpsError("启用收尾补抓需要同时启用日更。")
+            raise OpsError(_("Enabling the closing catch-up needs the daily update enabled too."))
         native = self.backend.observe()
         from cnequity.serve.ops.catalog import normalize, spec_for
 
         config = self._current()
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", backup_run_at):
-            raise OpsError("备份时间必须为北京时间 HH:MM。")
+            raise OpsError(_("The backup time must be HH:MM, Beijing time."))
         if (
             isinstance(events_interval_minutes, bool)
             or not isinstance(events_interval_minutes, int)
             or not 1 <= events_interval_minutes <= 1440
         ):
-            raise OpsError("事件流间隔必须为 1–1440 分钟。")
+            raise OpsError(_("The event-stream interval must be 1–1440 minutes."))
         if events and events_group not in config.events_groups:
-            raise OpsError("请选择有效的事件组。")
+            raise OpsError(_("Select valid event groups."))
         datasets = sorted(set(backup_datasets or []))
         backup_root = backup_root or str(Path(config.meta_root) / "snapshots")
         if backup:
@@ -252,10 +268,10 @@ class ScheduleService:
 
             root = Path(backup_root).expanduser()
             if not root.is_absolute():
-                raise OpsError("备份目录必须是绝对路径。")
+                raise OpsError(_("The backup directory must be an absolute path."))
             _reject_symlink_path(root, label="snapshot root")
             if root.exists() and not root.is_dir():
-                raise OpsError("备份目录不是目录。")
+                raise OpsError(_("The backup directory is not a directory."))
         packs = list(daily_packs or [])
         if packs:
             from cnequity.research.packs import normalize_packs
@@ -280,7 +296,11 @@ class ScheduleService:
         if enabled and native["error"]:
             raise OpsError(native["error"])
         if enabled and native["installed"] and not native.get("owned", native["matches"]):
-            raise OpsError("同名系统任务已被修改，请先在系统调度器中核对。")
+            raise OpsError(
+                _(
+                    "A system task with the same name was modified; check it in the system scheduler first."
+                )
+            )
         raw = self.path.read_bytes()
         text = edit_times(raw.decode("utf-8"), daily_run_at, stale_run_at)
         artifact = self.backend.render() if enabled else ""
@@ -309,7 +329,7 @@ class ScheduleService:
         return {
             "token": token,
             "backend": self.backend.kind,
-            "action": "启用 / 更新" if enabled else "暂停",
+            "action": _("Enable / update") if enabled else _("Pause"),
             "action_en": "Enable / update" if enabled else "Pause",
             "daily": daily,
             "stale": stale,
@@ -318,17 +338,21 @@ class ScheduleService:
             **options,
             "artifact": artifact,
             "confirmation": (
-                "系统将按所选范围自动取数或复制备份（备份持续占用磁盘，不自动删除）；关闭 Web 服务后仍会运行。"
+                _(
+                    "The system will fetch or copy backups automatically for the selected scope (backups keep using disk and are not deleted automatically); it keeps running after the web service is closed."
+                )
                 + (
-                    " 日更只跑研究包 "
-                    + "、".join(options["daily_packs"])
-                    + " 的调度组，不含事件流。快照漏一天无法按日期补回。"
+                    _(" The daily update only runs the schedule groups of research packs ")
+                    + _(", ").join(options["daily_packs"])
+                    + _(
+                        ", without event streams. A snapshot missed for a day cannot be filled back by date."
+                    )
                     if options.get("daily_packs")
                     else ""
                 )
             )
             if enabled
-            else "停止后续定时触发，已在运行的任务继续执行。",
+            else _("Stops future scheduled triggers; tasks already running continue."),
             "confirmation_en": (
                 "The system will fetch or copy backups on schedule for the selected scope (backups keep "
                 "using disk space and are never deleted automatically); this continues after the web "
@@ -347,18 +371,18 @@ class ScheduleService:
 
     def apply(self, token: str, *, acknowledged: bool, requested_by: str) -> dict:
         if not acknowledged:
-            raise OpsError("请先确认定时任务的执行范围。")
+            raise OpsError(_("First confirm the scope the scheduled tasks will run."))
         try:
             with exclusive_lock(state_dir(self.config) / "control.lock", blocking=False):
                 plan = self.previews.pop(token, None)
                 if plan is None or plan["expires"] <= time.monotonic():
-                    raise OpsError("定时设置预览已失效，请重新预览。")
+                    raise OpsError(_("The schedule settings preview has expired; preview again."))
                 if (
                     self.path.read_bytes() != plan["raw"]
                     or self.backend.observe()["fingerprint"] != plan["native"]
                     or _settings_bytes(self.config) != plan["state"]
                 ):
-                    raise OpsError("配置或系统任务已经变化，请重新预览。")
+                    raise OpsError(_("The config or system tasks have changed; preview again."))
                 state = {
                     "schema_version": 1,
                     "config_path": str(self.path),
@@ -367,6 +391,9 @@ class ScheduleService:
                     "requested_by": requested_by,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "working_directory": self.backend.working_directory,
+                    # A launchd, cron or Task Scheduler job has no LANG of its
+                    # own, so the language it reports in is the installer's.
+                    "language": current_language(),
                     **plan["options"],
                     "backup": False,
                     "events": False,
@@ -391,15 +418,25 @@ class ScheduleService:
                     self.backend.apply(plan["enabled"], plan["artifact"])
                     native = self.backend.observe()
                     if plan["enabled"] and not (native["active"] and native["matches"]):
-                        raise OpsError("系统任务注册后没有确认到活动状态。")
+                        raise OpsError(
+                            _("The system task was registered but could not be confirmed active.")
+                        )
                 except OpsError as exc:
                     if plan["enabled"]:
-                        raise OpsError(f"定时执行保持暂停；时间设置已保存。{exc}") from exc
+                        raise OpsError(
+                            _(
+                                "Scheduled runs stay paused; the time settings were saved. {exc}"
+                            ).format(exc=exc)
+                        ) from exc
                     # The worker checks this state even if the OS task cannot
                     # be removed (permission change, offline scheduler, drift).
-                    state["warning"] = f"自动取数已暂停，但系统触发未移除：{exc}"
+                    state["warning"] = _(
+                        "Automatic fetching is paused, but the system trigger was not removed: {exc}"
+                    ).format(exc=exc)
                 state.update(daily=plan["daily"], stale=plan["stale"], **plan["options"])
                 atomic_write(destination, state)
         except LockUnavailable as exc:
-            raise OpsError("另一个页面正在修改定时设置，请稍后重试。") from exc
+            raise OpsError(
+                _("Another page is changing the schedule settings; try again shortly.")
+            ) from exc
         return self.home()

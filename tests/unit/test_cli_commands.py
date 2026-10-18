@@ -55,6 +55,7 @@ def cfg_path(tmp_path):
     return _write_config(tmp_path)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_config_validate_ok(cfg_path):
     result = CliRunner().invoke(cli, ["config", "validate", "--config", cfg_path])
     assert result.exit_code == 0, result.output
@@ -296,12 +297,14 @@ def test_run_daily_run_lock_error(cfg_path, monkeypatch):
     assert "daily lock held" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_run_daily_unknown_group(cfg_path):
     result = CliRunner().invoke(cli, ["run", "daily", "--config", cfg_path, "--group", "nope"])
     assert result.exit_code != 0
     assert "未知调度组" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_run_daily_unknown_group_names_the_configured_ones(tmp_path):
     """`Unknown group: core` alone leaves the reader guessing what is valid."""
     cfg = _write_config(
@@ -313,6 +316,7 @@ def test_run_daily_unknown_group_names_the_configured_ones(tmp_path):
     assert "配置里有：capital" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_run_daily_refuses_a_config_with_no_waves(tmp_path):
     """An empty plan is not a successful day.
 
@@ -331,6 +335,7 @@ def test_run_daily_refuses_a_config_with_no_waves(tmp_path):
     assert "cne config create" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_status_no_runs(cfg_path):
     result = CliRunner().invoke(cli, ["status", "--config", cfg_path])
     assert result.exit_code == 0, result.output
@@ -410,6 +415,7 @@ def test_status_run_core_failure_exits_one(tmp_path, cfg_path):
     assert payload["dataset_status"] == "failed"
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_status_datasets_all_fresh(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "cnequity.cli.quality_cmds._last_trading_day",
@@ -433,6 +439,7 @@ def test_status_datasets_all_fresh(cfg_path, monkeypatch):
     assert "最后交易日：2024-06-28" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_status_datasets_fails_when_an_init_is_incomplete(cfg_path, monkeypatch):
     cfg = Config(data_root=Path(cfg_path).parent / "data")
     manifest = Manifest(cfg.manifest_path)
@@ -470,6 +477,7 @@ def test_status_datasets_fails_when_an_init_is_incomplete(cfg_path, monkeypatch)
     assert "cne init" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_status_datasets_rejects_a_fresh_but_narrow_daily_bar_tip(cfg_path, monkeypatch):
     cfg = Config(data_root=Path(cfg_path).parent / "data")
     instruments_root = cfg.curated_root / "instruments"
@@ -626,6 +634,7 @@ def test_daily_bar_tip_requires_every_symbol_or_explicit_suspension(
     assert scope["expected"] == 10
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_daily_bar_tip_cannot_prove_all_a_from_an_instrument_list_without_bj(tmp_path):
     from cnequity.cli.quality_cmds import _tip_scope
 
@@ -663,9 +672,10 @@ def test_daily_bar_tip_cannot_prove_all_a_from_an_instrument_list_without_bj(tmp
     assert scope is not None
     assert scope["state"] == "unverified"
     assert "BJ" in scope["message"]
-    assert "残缺证券表" in scope["message"]
+    assert "truncated security table" in scope["message"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_daily_bar_tip_rejects_an_instrument_table_smaller_than_its_success_receipt(tmp_path):
     from cnequity.cli.quality_cmds import _tip_scope
 
@@ -704,11 +714,12 @@ def test_daily_bar_tip_rejects_an_instrument_table_smaller_than_its_success_rece
 
     assert scope is not None
     assert scope["state"] == "unverified"
-    assert "只有 3 只" in scope["message"]
-    assert "成功批次写入的 5000 只" in scope["message"]
-    assert "可能被截断" in scope["message"]
+    assert "has only 3 symbols" in scope["message"]
+    assert "the 5000 the latest successful batch wrote" in scope["message"]
+    assert "may be truncated" in scope["message"]
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_status_datasets_treats_sample_dates_as_non_gating(tmp_path, monkeypatch):
     cfg_path = tmp_path / "sample.toml"
     cfg_path.write_text(
@@ -820,6 +831,7 @@ def test_status_datasets_all_columns_keeps_the_full_inventory(cfg_path, monkeypa
     assert "shape: (1, 10)" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_status_all_columns_without_datasets_is_a_usage_error(cfg_path):
     result = CliRunner().invoke(cli, ["status", "--all-columns", "--config", cfg_path])
 
@@ -827,6 +839,7 @@ def test_status_all_columns_without_datasets_is_a_usage_error(cfg_path):
     assert "--all-columns 只能配合 --datasets 使用" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_retry_unknown_run(cfg_path, monkeypatch):
     class FakeManifest:
         def get_run(self, run_id):
@@ -882,6 +895,7 @@ def test_retry_failed_job(cfg_path, monkeypatch):
     assert result.exit_code == 1
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_retry_failed_groups_retries_only_latest_failed_per_group(cfg_path, monkeypatch):
     class FakeManifest:
         def list_runs(self):
@@ -945,12 +959,14 @@ def test_retry_failed_groups_reports_child_failure(cfg_path, monkeypatch):
     assert result.exit_code == 1
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_retry_requires_exactly_one_scope(cfg_path):
     result = CliRunner().invoke(cli, ["run", "retry", "--config", cfg_path])
     assert result.exit_code != 0
     assert "请给出 --run-id 或 --failed-groups" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_derive_adj_factors(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "cnequity.query.parquet_scan.dataset_has_parquet", lambda _root, **kwargs: True
@@ -977,6 +993,7 @@ def test_derive_industry_index(cfg_path, monkeypatch):
     assert '"rows": 3' in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_derive_unknown_target(cfg_path):
     result = CliRunner().invoke(cli, ["derive", "not_a_thing", "--config", cfg_path])
     assert result.exit_code != 0
@@ -1040,6 +1057,7 @@ def test_stats_show_scans_curated_when_no_stats_exist(tmp_path, cfg_path):
     assert any(e["dataset"] == "daily_bars" and e["rows"] == 1 for e in entries)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_stats_show_builds_the_tables_a_detail_view_needs(cfg_path):
     """The scan has no per-source detail, so `--by-source` builds the tables
     itself rather than sending the reader to `cne stats rebuild` first."""
@@ -1053,6 +1071,7 @@ def test_stats_show_builds_the_tables_a_detail_view_needs(cfg_path):
     assert load_summary(load_config(cfg_path)) is not None
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_stats_show_refreshes_tables_a_later_run_made_stale(cfg_path):
     from cnequity.config import load_config
     from cnequity.storage.stats import rebuild_stats, stats_freshness
@@ -1098,6 +1117,7 @@ def test_query_on_demand(cfg_path, monkeypatch):
     assert payload["refresh"] is True
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize(
     "args",
     [
@@ -1143,6 +1163,7 @@ def _stub_audit(monkeypatch, *, errors: int = 0, warnings: int = 0, total: int =
     monkeypatch.setattr("cnequity.cli.quality_cmds.run_audit", run_audit)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_audit_with_run_id(cfg_path, monkeypatch):
     _stub_audit(monkeypatch)
     result = CliRunner().invoke(cli, ["audit", "--config", cfg_path, "--run-id", "r1"])
@@ -1150,6 +1171,25 @@ def test_audit_with_run_id(cfg_path, monkeypatch):
     assert "2 条 findings" in result.output
 
 
+def test_audit_multiple_run_ids_are_collected_in_one_pass(cfg_path, monkeypatch):
+    calls = []
+
+    def audit(cfg, rid, day, context):
+        calls.append((rid, context["related_run_ids"]))
+        context["audit_by_severity"] = {"error": 1}
+        context["audit_error_findings"] = [{"message": "early group error"}]
+        return 1
+
+    monkeypatch.setattr("cnequity.cli.quality_cmds.run_audit", audit)
+    result = CliRunner().invoke(
+        cli, ["audit", "--config", cfg_path, "--run-id", "core", "--run-id", "research"]
+    )
+    assert result.exit_code == 1
+    assert calls == [("research", ["core", "research"])]
+    assert "early group error" in result.output
+
+
+@pytest.mark.usefixtures("chinese_output")
 def test_per_run_audit_exits_non_zero_on_error_findings(cfg_path, monkeypatch):
     """It is used as a gate, so recording an error and reporting success is a
     gate that never fires."""
@@ -1206,6 +1246,7 @@ def test_bare_compact_publishes_every_unpublished_finished_run(cfg_path, monkeyp
     )
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_bare_compact_with_nothing_pending(cfg_path):
     result = CliRunner().invoke(cli, ["run", "compact", "--config", cfg_path])
     assert result.exit_code == 0, result.output
@@ -1270,6 +1311,7 @@ def test_audit_full_unhealthy(cfg_path, monkeypatch):
     assert "UNHEALTHY" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_audit_full_research_window_is_a_strict_independent_gate(cfg_path, monkeypatch):
     monkeypatch.setattr(
         "cnequity.quality.audit.lake_health",
@@ -1306,6 +1348,7 @@ def test_audit_full_research_window_is_a_strict_independent_gate(cfg_path, monke
     assert "HEALTHY（运维层面；研究层面 BLOCKED）" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_audit_full_can_select_scoped_research_universe(cfg_path, monkeypatch):
     observed: dict[str, object] = {}
 
@@ -1482,6 +1525,7 @@ def test_delisted_profile_runs_shared_backfill_path(cfg_path, monkeypatch):
     assert '"run_id": "bf-1"' in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_shfe_annual_plan_is_offline_and_requires_partial_fields(cfg_path, tmp_path, monkeypatch):
     archive = tmp_path / "annual.zip"
     archive.write_bytes(b"local-plan-only")
@@ -1582,6 +1626,7 @@ def test_backfill_trading_status_bj_reports_capability_limit(cfg_path, extra):
         assert not list(Path(cfg_path).parent.joinpath("data").rglob("*.parquet"))
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_backfill_sector_bars_force_and_retry_mutex(cfg_path):
     result = CliRunner().invoke(
         cli,
@@ -1637,6 +1682,7 @@ def test_backfill_success_compacts(cfg_path, monkeypatch):
     assert "bf-ok" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_backfill_workers_rejects_unsupported_date_walk(cfg_path):
     result = CliRunner().invoke(
         cli,
@@ -1647,6 +1693,7 @@ def test_backfill_workers_rejects_unsupported_date_walk(cfg_path):
     assert "只支持 margin_trading" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_backfill_workers_help_describes_shared_limiter(cfg_path):
     result = CliRunner().invoke(cli, ["backfill", "--help"])
 
@@ -1709,6 +1756,7 @@ def test_bad_sql_is_an_error_not_a_traceback(cfg_path):
     assert "nosuchtable" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize(
     "argv",
     [
@@ -1779,6 +1827,7 @@ def _stale_lake(monkeypatch, datasets: list[str]):
     monkeypatch.setattr("cnequity.domain.datasets.is_stale", lambda *a, **k: True)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_freshness_gate_can_be_scoped_to_the_groups_this_host_runs(tmp_path, monkeypatch):
     """A host scheduling `core` alone has twenty-odd datasets no job fetches, so
     they are permanently stale by construction.
@@ -1828,6 +1877,7 @@ def test_an_unscoped_gate_still_fails_on_everything(cfg_path, monkeypatch):
     assert result.exit_code == 1, result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 @pytest.mark.parametrize("errors, expected", [(0, 0), (1, 1)])
 def test_full_quality_gate_does_not_conflate_optional_freshness(
     cfg_path, monkeypatch, errors, expected
@@ -1855,6 +1905,7 @@ def test_full_quality_gate_does_not_conflate_optional_freshness(
     assert "Quality gate:" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_quality_only_cannot_silently_change_a_per_run_audit(cfg_path):
     result = CliRunner().invoke(cli, ["audit", "--quality-only", "--config", cfg_path])
     assert result.exit_code != 0
@@ -2299,6 +2350,7 @@ def test_scope_gate_respects_the_groups_flag_that_owns_daily_bars(cfg_path, monk
     assert exempt.exit_code == 0, exempt.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_unprovable_coverage_exits_two_not_one(cfg_path, monkeypatch):
     """ "5,207 securities have no bar" is a repair; "instruments is missing, so
     I cannot check" is a setup problem. A caller that reads both as the same

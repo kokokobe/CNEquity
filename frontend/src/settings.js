@@ -1,4 +1,5 @@
 // Lake switches. A preview writes nothing; apply updates the config file only.
+import { driftHeldNote } from "./drift.js";
 import { pick, tr } from "./i18n.js";
 export async function renderSettings(ctx, home, alive, flash = "") {
   const { api, esc } = ctx;
@@ -8,6 +9,11 @@ export async function renderSettings(ctx, home, alive, flash = "") {
   host.settingsRevision = revision;
   const pageAlive = alive;
   alive = () => pageAlive() && host.settingsRevision === revision;
+  const held = driftHeldNote(home, tr("取数设置", "Fetch settings"));
+  if (held) {
+    host.innerHTML = held;
+    return;
+  }
   let value;
   try {
     value = await api("/api/ops/settings");

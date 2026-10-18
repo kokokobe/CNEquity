@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from cnequity.config import Config
+from cnequity.i18n import _, normalize_language, use_language
 from cnequity.serve.lake import RUN_STATUSES, LakeView
 
 logger = logging.getLogger(__name__)
@@ -243,6 +244,7 @@ class RowPage(BaseModel):
     total: int = Field(description="Rows matching the filter, before paging.")
     offset: int
     limit: int
+    adjustment: dict[str, Any] | None = None
 
 
 class RunFailure(BaseModel):
@@ -417,7 +419,7 @@ class Heatmap(BaseModel):
 def get_view(request: Request) -> LakeView:
     view = request.app.state.view
     if view is None:
-        raise HTTPException(409, "尚未配置")
+        raise HTTPException(409, _("Not configured yet"))
     return view
 
 
@@ -448,11 +450,13 @@ def reload_lake_config(app: FastAPI) -> Config:
 
     path = app.state.config_path
     if path is None:
-        raise OpsError("没有可写入的配置文件。")
+        raise OpsError(_("There is no config file to write."))
     try:
         config = load_config(path)
     except (OSError, ValueError) as exc:
-        raise OpsError("配置已写入，但服务没能重新加载，请重启 serve。") from exc
+        raise OpsError(
+            _("The config was written, but the service could not reload it; restart serve.")
+        ) from exc
     app.state.config = config
     if app.state.view is not None:
         app.state.view.config = config
@@ -470,6 +474,22 @@ def reload_lake_config(app: FastAPI) -> Config:
 # stays out of the signature's defaults, where it is both a bugbear finding
 # (B008) and evaluated once at import.
 View = Annotated[LakeView, Depends(get_view)]
+
+
+def request_language(headers) -> str | None:
+    """The language a request asks for: the page's choice, then the browser's.
+
+    The page sends `X-CNE-Lang` with every API call; a page opened directly,
+    such as /source-health, only has `Accept-Language`. None leaves the
+    server's own language in force.
+    """
+    chosen = normalize_language(headers.get("x-cne-lang"))
+    if chosen:
+        return chosen
+    for part in headers.get("accept-language", "").split(","):
+        if language := normalize_language(part.split(";", 1)[0]):
+            return language
+    return None
 
 
 def create_app(
@@ -547,7 +567,9 @@ def create_app(
             header = request.headers.get("authorization", "")
             supplied = header[7:] if header.lower().startswith("bearer ") else None
             supplied = supplied or request.query_params.get("token")
-            if supplied != expected:
+            if not supplied or not secrets.compare_digest(
+                supplied.encode("utf-8"), expected.encode("utf-8")
+            ):
                 from fastapi.responses import JSONResponse
 
                 return JSONResponse({"detail": "unauthorized"}, status_code=401)
@@ -569,13 +591,18 @@ def create_app(
         if request.app.state.setup or request.app.state.view is None:
             from fastapi.responses import JSONResponse
 
-            return JSONResponse({"detail": "尚未配置"}, status_code=409)
+            return JSONResponse({"detail": _("Not configured yet")}, status_code=409)
         maintenance = request.app.state.storage_maintenance
         if maintenance is None or not maintenance.gate.enter():
             from fastapi.responses import JSONResponse
 
             return JSONResponse(
-                {"detail": "存储维护正在执行，读取暂时暂停，请稍后刷新。"}, status_code=503
+                {
+                    "detail": _(
+                        "Storage maintenance is running and reads are paused for now; refresh shortly."
+                    )
+                },
+                status_code=503,
             )
         try:
             return await call_next(request)
@@ -589,6 +616,13 @@ def create_app(
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         return response
+
+    # Registered last, so it wraps every other middleware: their own replies
+    # ("not configured yet") are in the reader's language too.
+    @app.middleware("http")
+    async def _language(request: Request, call_next):
+        with use_language(request_language(request.headers)):
+            return await call_next(request)
 
     # Same-origin only: the bundle is packaged beside the page, never fetched
     # from a CDN. `html=False` so a missing asset 404s rather than silently
@@ -625,7 +659,7 @@ def create_app(
         from cnequity.diagnostics.source_health import HealthReport
 
         if request.app.state.view is None:
-            return HTMLResponse("尚未配置。", status_code=409)
+            return HTMLResponse(_("Not configured yet."), status_code=409)
         root = request.app.state.view.config.meta_root / "source_health"
         reports = []
         # Latest reports are ``<vantage>.json``. The incident ledger and any
@@ -641,14 +675,9 @@ def create_app(
                 logger.warning("skipping source-health report %s: %s", path.name, exc)
         if not reports:
             return HTMLResponse(
-                "<!doctype html><meta charset=utf-8>"
-                "<style>body{font:15px/1.7 system-ui;margin:3rem auto;max-width:34rem}"
-                "code{background:#f6f8fa;padding:.1rem .3rem;border-radius:4px}</style>"
-                "<h1>还没有探测记录</h1>"
-                "<p>先跑一次探测，报告会写进湖里，这个页面读它：</p>"
-                "<pre><code>cne sources probe --vantage cn</code></pre>"
-                "<p>这个页面只展示已有报告，打开它不会去请求第三方主机。"
-                "要探测，在操作页启动，或运行 <code>cne sources probe</code>。</p>",
+                _(
+                    "<!doctype html><meta charset=utf-8><style>body{font:15px/1.7 system-ui;margin:3rem auto;max-width:34rem}code{background:#f6f8fa;padding:.1rem .3rem;border-radius:4px}</style><h1>No probe records yet</h1><p>Run a probe first; the report is written into the lake, and this page reads it:</p><pre><code>cne sources probe --vantage cn</code></pre><p>This page only shows existing reports, and opening it does not contact third-party hosts. To probe, start it from the operations page, or run <code>cne sources probe</code>.</p>"
+                ),
                 status_code=404,
             )
         return HTMLResponse(render_page(reports))
@@ -745,6 +774,13 @@ def create_app(
         ] = None,
         symbol: Annotated[str | None, Query(description="e.g. 600519.SH")] = None,
         as_of: Annotated[date | None, Query(description="PIT cutoff on announce_date.")] = None,
+        pit_mode: Annotated[
+            str | None,
+            Query(
+                pattern="^(strict|best_effort)$",
+                description="With as_of; best_effort (default) keeps backfilled rows.",
+            ),
+        ] = None,
         adjust: Annotated[str | None, Query(pattern="^(hfq|qfq|total_return)$")] = None,
         # Capped rather than unbounded: this endpoint is a viewer, and a full
         # market-day of a wide dataset is not something to hand back by accident.
@@ -760,6 +796,7 @@ def create_app(
                     period=period,
                     symbol=symbol,
                     as_of=as_of,
+                    pit_mode=pit_mode,
                     adjust=adjust,
                     limit=limit,
                     offset=offset,

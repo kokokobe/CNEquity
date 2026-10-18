@@ -25,6 +25,7 @@ from cnequity.config import Config
 from cnequity.domain.contracts import contract_fingerprint, dataset_contract
 from cnequity.domain.datasets import DATASETS
 from cnequity.file_lock import lake_mutation_lock
+from cnequity.i18n import N_, Message
 from cnequity.storage.atomic import (
     RollbackIncompleteError,
     replace_with_retry,
@@ -3505,9 +3506,18 @@ class SnapshotStore:
                 if unrestored:
                     # The backups are the only copy of these files now.
                     raise RollbackIncompleteError(
-                        f"增量包回滚未完成：{len(unrestored)} 个文件没能还原"
-                        f"（例如 {unrestored[0]}）。原文件备份保留在 {backup_root}，"
-                        f"关闭占用的程序后按相对路径复制回 {target} 即可恢复"
+                        Message(
+                            N_(
+                                "Incremental package rollback incomplete: %d files could not be "
+                                "restored (e.g. %s). The original backups are kept at %s; close "
+                                "the program holding them and copy them back to %s by relative "
+                                "path to recover"
+                            ),
+                            len(unrestored),
+                            unrestored[0],
+                            backup_root,
+                            target,
+                        )
                     ) from exc
                 raise
             finally:

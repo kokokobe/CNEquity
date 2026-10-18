@@ -10,7 +10,9 @@ import polars as pl
 from cnequity.adapters.eastmoney.clist import clist_rows_to_symbols, fetch_clist_pages
 from cnequity.adapters.eastmoney.common import _to_float
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
-from cnequity.domain.valuation import MV_VENDOR_REPORTED
+from cnequity.domain.market_time import last_closed_session
+from cnequity.domain.valuation import MV_VENDOR_REPORTED, null_missing_valuations
+from cnequity.orchestrator.outcomes import SourceUnavailableError
 
 # f130 is 市销率 TTM. f45 — which this used to read as ps_ttm — is an amount in
 # yuan, not a ratio: it put a median of 2.05e7 into `ps_ttm` for every EastMoney
@@ -35,7 +37,10 @@ def fetch_valuation_metrics(
     date, covers Beijing, and its host is not the one that bans for volume.
     push2's clist snapshot is the fallback for a session datacenter has not
     published yet or cannot serve; its rows stay ``eastmoney`` because its f9
-    is the dynamic P/E, not TTM (see ``valuation_datacenter``).
+    is the dynamic P/E, not TTM (see ``valuation_datacenter``). The snapshot
+    carries no date, so the fallback only serves *trade_date* while it is the
+    last closed session; a catch-up run over older days used to stamp one live
+    snapshot onto each of them.
 
     A bare call (no config) keeps the historical push2-only behaviour.
     """
@@ -55,6 +60,12 @@ def fetch_valuation_metrics(
         )
     except Exception as exc:  # noqa: BLE001 — every datacenter failure gets the fallback
         failure = exc
+    if last_closed_session() != trade_date:
+        raise SourceUnavailableError(
+            f"valuation_metrics: datacenter has nothing usable for {trade_date.isoformat()} "
+            f"({failure}); push2's clist snapshot is undated live data and describes that "
+            "session only from its 15:30 close until the next session opens (Beijing)"
+        ) from failure
     logger.warning(
         "valuation_metrics: datacenter failed (%s); trying push2 for %s",
         failure,
@@ -107,7 +118,7 @@ def _fetch_valuation_push2(
     finally:
         if owns:
             client.close()
-    return (
+    return null_missing_valuations(
         pl.DataFrame(rows).unique(subset=["symbol", "trade_date"], keep="last")
         if rows
         else pl.DataFrame()

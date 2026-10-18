@@ -1,4 +1,4 @@
-# Python API reference
+# Python API
 
 Module: `cnequity.query`. Read the [query guide](../datasets/query-guide.md) first to understand the semantics; this page is for looking up parameters, return values, and version boundaries.
 
@@ -25,6 +25,7 @@ def load(
     strict_universe: bool = False,
     all_vintages: bool = False,
     pit_mode: Literal["strict", "best_effort"] | None = None,
+    include_otc: bool = False,
     config: Config | None = None,
     data_root: str | Path | None = None,
     revision: RevisionSelection | None = None,
@@ -46,7 +47,8 @@ def load(
 | `strict_adj` | When True, missing adjustment factors raise `ReaderError` |
 | `strict_universe` | When True, a supported universe raises if instruments, per-day trading_status coverage, or versioned historical ST evidence receipts are missing; suited to research reads |
 | `all_vintages` | When True, returns **all** versions before `as_of` (for studying financial statement revisions); do not enable it for cross-sectional stock selection, as it counts the same fact more than once |
-| `pit_mode` | PIT evidence mode: `strict` excludes reconstructed backfills; `best_effort` keeps them but returns `pit_is_exact=False`. Omitting it gives the 0.x compatibility mode, which still cuts off by `fetched_at` and does not mean strict PIT |
+| `pit_mode` | PIT evidence mode: omitted or `None` defaults to `best_effort`, keeping historical backfills collected after `as_of` and returning `pit_is_exact=False`; announcement and known availability/publication dates still obey the cutoff. `strict` excludes reconstructed backfills and returns only evidence the lake held by the cutoff |
+| `include_otc` | Defaults to False: `daily_bars` and `adj_factors` exclude Beijing securities' quotes before exchange trading began. True retains those OTC quotes. The exchange start is the later of the listing date and 2020-07-27 |
 | `config` / `data_root` | Lake location; reads `configs/cnequity.toml` by default |
 | `profile` / `universe_profile` | Versioned universe policy; the two are aliases. Official research profiles enable strict evidence checks automatically |
 | `revision` | Pins the primary dataset by revision number or ID; a per-dataset mapping is also supported. A single number does not pin factor or universe dependencies |
@@ -106,6 +108,8 @@ bulk research should still use the Python API. This endpoint requires every read
 - Non-empty `adjust`: appends `adj_open`, `adj_high`, `adj_low`, `adj_close`, `adj_is_exact`
 
 ### Exceptions
+
+`strict_adj` and `adj_is_exact` describe factor coverage only, not historical accuracy. The `adjustment` summary from `load_with_receipt()` reports sources and advisory historical diagnostics for the revision read; unavailable diagnostics are unassessed.
 
 `ReaderError` (a subclass of `ValueError`): unknown dataset, no data, strict_adj failure, and so on.
 

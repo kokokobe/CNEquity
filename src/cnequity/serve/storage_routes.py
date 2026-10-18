@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool
 
 from cnequity.file_lock import LockUnavailable
+from cnequity.i18n import _
 from cnequity.serve.guard import check_browser
 from cnequity.serve.storage import StorageMaintenance
 from cnequity.storage.lifecycle import LifecycleError
@@ -16,7 +17,7 @@ from cnequity.storage.revisions import RevisionConsistencyError
 
 class ReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["revisions", "experiments"]
+    kind: Literal["revisions", "experiments", "staging"]
     phase: Literal["mark", "purge"] = "purge"
     resume_plan_id: str | None = None
     object_ids: list[str] | None = None
@@ -33,7 +34,7 @@ class Confirmation(BaseModel):
 def _service(request: Request) -> StorageMaintenance:
     service = request.app.state.storage_maintenance
     if request.app.state.setup or service is None:
-        raise HTTPException(409, "尚未配置")
+        raise HTTPException(409, _("Not configured yet"))
     return service
 
 
@@ -54,7 +55,7 @@ def install_storage_routes(app: FastAPI, *, mutations: bool = True) -> None:
         try:
             return service.job(job_id)
         except KeyError as exc:
-            raise HTTPException(404, "检查记录已过期，请重新检查。") from exc
+            raise HTTPException(404, _("The check record has expired; check again.")) from exc
 
     if not mutations:
         return

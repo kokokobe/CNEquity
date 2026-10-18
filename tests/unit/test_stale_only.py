@@ -108,6 +108,7 @@ def test_per_dataset_tolerance_is_respected(lake):
     assert "margin_trading" not in stale_fetch_steps(lake, ANCHOR)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_nothing_stale_is_a_clean_no_op(config, monkeypatch):
     """Safe on a timer: it must not create a run when there is nothing to do."""
     _write(config, "daily_bars", ANCHOR)

@@ -481,13 +481,10 @@ max_payload_bytes = 33554432
 # datasets = ["announcement_index", "financial_statement_items", "top_holders"]
 
 [universe]
-# Which instrument classes the daily fetch covers.  `instruments` lists every
-# code TDX returns and about a quarter are ETF/LOF/fund quote codes that no
-# research profile selects and that no configured vendor reliably serves —
-# fetching them costs a quarter of every sweep, trips the EastMoney and Sina
-# circuit breakers on symbols nobody needs, and leaves unfillable keys in the
-# coverage gate.  ST, suspended, CDR and delisted names are always kept: those
-# are exactly what this lake exists to retain.
+# Which instrument classes the daily fetch covers. The security master also
+# contains subscription placeholders and unverified quote codes; listed funds
+# can be added separately with ingest_listed_funds, without research filters.
+# ST, suspended, CDR and delisted stock names are always retained.
 #   all_a           — SH/SZ/BJ A shares (default)
 #   all_a_sh_sz     — drop the Beijing exchange as well
 #   all_instruments — everything `instruments` lists, including ETF/LOF quotes
@@ -496,6 +493,10 @@ ingest = "all_a"
 # eligible exchange directory (at most 14 calendar days old). This does not
 # change all_a stock queries or admit other ETF/LOF/fund codes.
 ingest_eligible_etfs = false
+# Fetch ETF/LOF quote codes in instruments independently of research eligibility.
+# Known listing bounds apply; unknown listing dates remain coverage findings.
+# Takes precedence over ingest_eligible_etfs. Existing A-share installs stay opt-in.
+ingest_listed_funds = false
 
 # Wave DAG for daily job (see docs/zh/datasets/catalog.md)
 [[job.daily.waves]]
@@ -677,8 +678,8 @@ steps = ["news_headlines", "flash_news_wire", "compact"]
 [job.init.phases]
 names = [
   "phase1_reference",
-  "phase2a_corporate_actions",
   "phase2c_daily_bars_backfill",
+  "phase2a_corporate_actions",
   "phase3_index_and_status",
   "phase4_finalize",
   "phase5_derive_and_publish",

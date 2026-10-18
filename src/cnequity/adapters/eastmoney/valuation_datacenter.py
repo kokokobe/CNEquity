@@ -28,7 +28,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.common import _to_float, symbol_from_secucode
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
-from cnequity.domain.valuation import MV_VENDOR_REPORTED
+from cnequity.domain.valuation import MV_VENDOR_REPORTED, null_missing_valuations
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,8 @@ def fetch_valuation_datacenter(
         logger.info("%s: skipped %d non-A-share row(s)", _REPORT, skipped)
     if not rows:
         return pl.DataFrame(schema=_SCHEMA)
-    return pl.DataFrame(rows, schema=_SCHEMA).unique(
-        subset=["symbol", "trade_date"], keep="last", maintain_order=True
+    return null_missing_valuations(
+        pl.DataFrame(rows, schema=_SCHEMA).unique(
+            subset=["symbol", "trade_date"], keep="last", maintain_order=True
+        )
     )

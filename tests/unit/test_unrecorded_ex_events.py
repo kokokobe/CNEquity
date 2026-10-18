@@ -27,7 +27,9 @@ def _write(root, partition: str, rows: list[dict]) -> None:
     pl.DataFrame(rows).write_parquet(target / "part-0.parquet")
 
 
-def _lake(tmp_path, *, factors: dict[date, float], recorded: list[date]) -> Config:
+def _lake(
+    tmp_path, *, factors: dict[date, float], recorded: list[date], symbol: str = "159327.SZ"
+) -> Config:
     """A lake whose hfq factor follows *factors*, with actions on *recorded*."""
     cfg = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
     init_data_layout(cfg)
@@ -51,7 +53,7 @@ def _lake(tmp_path, *, factors: dict[date, float], recorded: list[date]) -> Conf
             f"trade_date={session.isoformat()}",
             [
                 {
-                    "symbol": "159327.SZ",
+                    "symbol": symbol,
                     "trade_date": session,
                     "adjust_type": "hfq",
                     "factor": factor,
@@ -67,7 +69,7 @@ def _lake(tmp_path, *, factors: dict[date, float], recorded: list[date]) -> Conf
             f"ex_date={ex_date.year}",
             [
                 {
-                    "symbol": "159327.SZ",
+                    "symbol": symbol,
                     "ex_date": ex_date,
                     "action_type": "unit_split",
                     "cash_dividend": 0.0,
@@ -205,3 +207,134 @@ def test_the_audit_reports_what_the_heal_could_not_fix(tmp_path):
         cfg, SESSIONS[-1], exclude={("159327.SZ", SESSIONS[2].isoformat())}
     )
     assert excluded == [], "the price-based check already filed this day"
+
+
+def test_a_fund_miss_is_a_warning_because_baostock_cannot_switch_it(tmp_path):
+    """159xxx is outside Baostock's factor table, so the gate must not fail the run."""
+    from cnequity.quality.cross_checks import unstepped_corporate_action_findings
+
+    cfg = _lake(
+        tmp_path,
+        factors={session: 1.0 for session in SESSIONS},
+        recorded=[SESSIONS[2]],
+    )
+
+    (finding,) = unstepped_corporate_action_findings(cfg, SESSIONS[-1])
+
+    assert finding["check"] == "unstepped_corporate_action"
+    assert finding["severity"] == "warning"
+    assert (finding["symbol"], finding["trade_date"]) == ("159327.SZ", SESSIONS[2].isoformat())
+
+
+def test_an_unarbitrated_stock_miss_is_advisory(tmp_path):
+    from cnequity.quality.cross_checks import unstepped_corporate_action_findings
+
+    cfg = _lake(
+        tmp_path,
+        factors={session: 1.0 for session in SESSIONS},
+        recorded=[SESSIONS[2]],
+        symbol="600001.SH",
+    )
+
+    (finding,) = unstepped_corporate_action_findings(cfg, SESSIONS[-1])
+
+    assert finding["severity"] == "warning"
+    assert finding["symbol"] == "600001.SH"
+
+
+def test_a_step_on_the_action_day_clears_the_reverse_check(tmp_path):
+    from cnequity.quality.cross_checks import unstepped_corporate_action_findings
+
+    cfg = _lake(
+        tmp_path,
+        factors={SESSIONS[0]: 1.0, SESSIONS[1]: 1.0, SESSIONS[2]: 3.0, SESSIONS[3]: 3.0},
+        recorded=[SESSIONS[2]],
+    )
+
+    assert unstepped_corporate_action_findings(cfg, SESSIONS[-1]) == []
+
+
+def test_an_action_past_the_last_fetched_factor_is_not_yet_a_miss(tmp_path):
+    """The factor for the ex-date has not been fetched; there is no step to judge."""
+    from cnequity.quality.cross_checks import unstepped_corporate_action_findings
+
+    cfg = _lake(
+        tmp_path,
+        factors={session: 1.0 for session in SESSIONS[:3]},
+        recorded=[SESSIONS[3]],
+    )
+
+    assert unstepped_corporate_action_findings(cfg, SESSIONS[-1]) == []
+
+
+def _closes(cfg: Config, symbol: str, closes: list[float]) -> None:
+    for day, close in zip(SESSIONS, closes, strict=True):
+        part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "symbol": [symbol],
+                "trade_date": [day],
+                "open": [close],
+                "high": [close],
+                "low": [close],
+                "close": [close],
+                "pre_close": [close],
+                "volume": [100.0],
+                "amount": [close * 100],
+            }
+        ).write_parquet(part / f"{symbol}.parquet")
+
+
+def test_a_proven_miss_switches_the_stock_onto_baostock(tmp_path):
+    from cnequity.derive.factor_arbitration import settle_recent_unstepped_factors, source_overrides
+
+    cfg = _lake(
+        tmp_path,
+        factors={session: 1.0 for session in SESSIONS},
+        recorded=[SESSIONS[2]],
+        symbol="600001.SH",
+    )
+    _closes(cfg, "600001.SH", [30.0, 30.0, 10.0, 10.0])
+
+    def events(symbols, start, end, *, config=None):
+        return (
+            pl.DataFrame(
+                {
+                    "symbol": ["600001.SH", "600001.SH"],
+                    "trade_date": [SESSIONS[0], SESSIONS[2]],
+                    "factor": [1.0, 3.0],
+                }
+            ),
+            [],
+        )
+
+    switched = settle_recent_unstepped_factors(cfg, SESSIONS[-1], fetch=events)
+
+    assert switched == ["600001.SH"]
+    assert source_overrides(cfg)["600001.SH"]["source"] == "baostock"
+
+
+def test_an_unconfirmed_action_does_not_fail_the_gate(tmp_path):
+    """Baostock's factor is still too: the recorded action is not Sina's miss."""
+    from cnequity.derive.factor_arbitration import settle_recent_unstepped_factors
+    from cnequity.quality.cross_checks import unstepped_corporate_action_findings
+
+    cfg = _lake(
+        tmp_path,
+        factors={session: 1.0 for session in SESSIONS},
+        recorded=[SESSIONS[2]],
+        symbol="600001.SH",
+    )
+    _closes(cfg, "600001.SH", [10.0, 10.0, 10.0, 10.0])
+
+    def events(symbols, start, end, *, config=None):
+        return (
+            pl.DataFrame({"symbol": ["600001.SH"], "trade_date": [SESSIONS[0]], "factor": [1.0]}),
+            [],
+        )
+
+    assert settle_recent_unstepped_factors(cfg, SESSIONS[-1], fetch=events) == []
+    (finding,) = unstepped_corporate_action_findings(cfg, SESSIONS[-1])
+    assert finding["severity"] == "warning"
+    assert "did not prove" in finding["message"]

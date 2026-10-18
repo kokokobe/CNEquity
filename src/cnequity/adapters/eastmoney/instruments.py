@@ -10,6 +10,7 @@ listings too new for it — and only for the board those names sit on.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date, datetime, timezone
 
 import polars as pl
@@ -142,14 +143,19 @@ def fetch_ipo_list_date_map(
             client.close()
 
 
-def _baostock_list_dates(config: Config) -> dict[str, date]:
+def _baostock_list_dates(
+    config: Config, basics_source: Callable[[], pl.DataFrame] | None = None
+) -> dict[str, date]:
     """SH/SZ stock and ETF listing dates from one baostock query; {} on failure."""
     if not config.sources.get("baostock", False):
         return {}
     try:
-        from cnequity.adapters.baostock.instruments import fetch_instrument_basics
+        if basics_source is None:
+            from cnequity.adapters.baostock.instruments import fetch_instrument_basics
 
-        basics = fetch_instrument_basics(config=config)
+            basics = fetch_instrument_basics(config=config)
+        else:
+            basics = basics_source()
     except Exception as exc:  # noqa: BLE001 — enrichment falls through to EastMoney
         logger.warning("baostock instrument list_date lookup failed: %s", exc)
         return {}
@@ -174,12 +180,22 @@ def _fill_list_dates(df: pl.DataFrame, date_map: dict[str, date]) -> pl.DataFram
     ).drop("_list_date_fill")
 
 
-def enrich_instrument_list_dates(config: Config, df: pl.DataFrame) -> pl.DataFrame:
-    """Fill null list_date on *df*: baostock, push2, then datacenter IPO."""
+def enrich_instrument_list_dates(
+    config: Config,
+    df: pl.DataFrame,
+    *,
+    basics_source: Callable[[], pl.DataFrame] | None = None,
+) -> pl.DataFrame:
+    """Fill null list_date on *df*: baostock first, EastMoney push2 next,
+    then the datacenter IPO-apply report for the rest.
+
+    *basics_source* lets a caller that also needs baostock's instrument basics
+    share one query instead of making the ~90s request twice.
+    """
     if df.is_empty() or df.filter(pl.col("list_date").is_null()).is_empty():
         return df
 
-    df = _fill_list_dates(df, _baostock_list_dates(config))
+    df = _fill_list_dates(df, _baostock_list_dates(config, basics_source))
     missing = df.filter(pl.col("list_date").is_null())
     if missing.is_empty() or not config.sources.get("eastmoney", True):
         return df

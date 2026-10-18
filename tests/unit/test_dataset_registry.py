@@ -174,7 +174,7 @@ def test_futures_and_options_are_one_tier_beside_the_equity_spine():
         "commodity_bars",
     }
     assert set(datasets_by_tier()["L9"]) == family
-    assert TIER_LABELS["L9"] == "衍生品"
+    assert TIER_LABELS["L9"] == "Derivatives"
     assert all(not DATASETS[name].required for name in family)
 
 

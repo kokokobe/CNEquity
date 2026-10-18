@@ -28,6 +28,7 @@ from cnequity.cli._shared import (
 from cnequity.cli.backfill_cmds import _require_known_dataset, _run_backfill
 from cnequity.domain.market_profile import BSE_FIRST_SESSION
 from cnequity.domain.market_time import is_session_final, shanghai_today
+from cnequity.i18n import N_, _, localize
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.quality.audit import run_audit
 from cnequity.storage.atomic import write_json_atomic
@@ -171,7 +172,7 @@ def _tip_scope(cfg, catalog: pl.DataFrame, dataset: str = "daily_bars") -> dict 
         return {
             "dataset": dataset,
             "state": "unverified",
-            "message": f"{dataset} 有数据，但没有可用于截面校验的 watermark/coverage_end",
+            "message": f"{dataset} has data but no watermark/coverage_end usable for the cross-section check",
         }
     tip = raw_day.date() if hasattr(raw_day, "date") and not isinstance(raw_day, date) else raw_day
 
@@ -182,7 +183,7 @@ def _tip_scope(cfg, catalog: pl.DataFrame, dataset: str = "daily_bars") -> dict 
                 "dataset": dataset,
                 "state": "unverified",
                 "date": tip,
-                "message": f"{dataset} 有数据，但 instruments 缺失，无法证明全市场标的范围",
+                "message": f"{dataset} has data but instruments is missing, so the whole-market symbol scope cannot be proven",
             }
         instrument_count = instruments["symbol"].drop_nulls().n_unique()
         instrument_receipt = Manifest(cfg.manifest_path).latest_successful_batch("instruments")
@@ -195,8 +196,7 @@ def _tip_scope(cfg, catalog: pl.DataFrame, dataset: str = "daily_bars") -> dict 
                 "state": "unverified",
                 "date": tip,
                 "message": (
-                    f"当前 instruments 只有 {instrument_count} 只，少于最近成功批次写入的 "
-                    f"{receipt_count} 只；证券表可能被截断"
+                    f"The current instruments has only {instrument_count} symbols, fewer than the {receipt_count} the latest successful batch wrote; the security table may be truncated"
                 ),
             }
         expected_rows = instruments
@@ -219,7 +219,7 @@ def _tip_scope(cfg, catalog: pl.DataFrame, dataset: str = "daily_bars") -> dict 
                 "dataset": dataset,
                 "state": "unverified",
                 "date": tip,
-                "message": "instruments 在该日没有可校验的 active 标的",
+                "message": "instruments has no active symbols to check on that date",
             }
         exchanges = {symbol.rsplit(".", 1)[-1] for symbol in expected if "." in symbol}
         required_exchanges = {"SH", "SZ"}
@@ -232,8 +232,7 @@ def _tip_scope(cfg, catalog: pl.DataFrame, dataset: str = "daily_bars") -> dict 
                 "state": "unverified",
                 "date": tip,
                 "message": (
-                    f"instruments 缺少配置范围应有的市场：{', '.join(missing_exchanges)}；"
-                    "无法用残缺证券表证明日线截面完整"
+                    f"instruments lacks markets the configured scope should have: {', '.join(missing_exchanges)}; a truncated security table cannot prove the daily cross-section complete"
                 ),
             }
 
@@ -287,68 +286,79 @@ def _tip_scope(cfg, catalog: pl.DataFrame, dataset: str = "daily_bars") -> dict 
             "dataset": dataset,
             "state": "unverified",
             "date": tip,
-            "message": f"读取截面证据失败：{exc}",
+            "message": f"Failed to read cross-section evidence: {exc}",
         }
 
 
 @cli.command()
 @config_option
-@click.option("--run-id", default=None)
+@click.option(
+    "--run-id",
+    multiple=True,
+    help=N_("Run ID; repeat to merge evidence from these runs into one audit."),
+)
 @click.option(
     "--full",
     "full",
     is_flag=True,
-    help="整个湖的健康快照（当前状态 + 新鲜度），而不是某一次 run 的文件。",
+    help=N_(
+        "Health snapshot of the whole lake (current state + freshness), not the files of a single run."
+    ),
 )
 @click.option(
     "--research-start",
     default=None,
-    help="严格校验从这一天开始的研究窗口（需要 --full）。",
+    help=N_("Strictly validate the research window starting on this date (requires --full)."),
 )
 @click.option(
     "--quality-only",
     is_flag=True,
-    help="配合 --full：只按质量 error 判门禁；调度新鲜度请另外用 status 检查。",
+    help=N_(
+        "With --full: gate only on quality errors; check schedule freshness separately with status."
+    ),
 )
 @click.option(
     "--research-end",
     default=None,
-    help="研究窗口终点（默认取最新的 daily_bars；需要 --research-start）。",
+    help=N_(
+        "End of the research window (defaults to the latest daily_bars; requires --research-start)."
+    ),
 )
 @click.option(
     "--research-universe",
     type=click.Choice(["all_a", "all_a_sh_sz"]),
     default="all_a",
     show_default=True,
-    help="--full 检查的历史研究 universe。",
+    help=N_("Historical research universe checked by --full."),
 )
 def audit(
     config_path: str,
-    run_id: str | None,
+    run_id: tuple[str, ...],
     full: bool,
     research_start: str | None,
     research_end: str | None,
     research_universe: str,
     quality_only: bool = False,
 ):
-    """跑质量审计；加 --full 则给出当前整个湖的健康快照。
+    """Run the quality audit; add --full for a health snapshot of the whole lake as it is now.
 
     \b
-    不带参数的 `cne run daily` 在全部调度组之后已经审计一次（`--core-only` 则是 `finalize` wave 的最后一步），
-    所以在这里跑等于把已经审过的数据再审一遍；仓库的 health_notify.sh 不经 `run daily`，由它自己审计一次。
-    没有被调度的是 `--full`：它判的是此刻这个湖的状态，而不是某一次 run 写了什么，
-    健康检查和面板读的也是它。
+    A bare `cne run daily` already audits once after all schedule groups (with `--core-only`, as the last step of the `finalize` wave),
+    so running it here re-audits data that has already been audited; the repository's health_notify.sh does not go through `run daily` and audits once itself.
+    What is not scheduled is `--full`: it judges the state of the lake right now rather than what one run wrote,
+    and it is what the health check and the dashboard read.
+
     """
     cfg = _cfg(config_path)
     attach_log_file(cfg, "audit")
 
     if quality_only and not full:
-        raise click.ClickException("--quality-only 需要配合 --full")
+        raise click.ClickException(_("--quality-only needs --full"))
 
     if research_start and not full:
-        raise click.ClickException("--research-start 需要配合 --full")
+        raise click.ClickException(_("--research-start needs --full"))
     if research_end and not research_start:
-        raise click.ClickException("--research-end 需要配合 --research-start")
+        raise click.ClickException(_("--research-end needs --research-start"))
 
     if full:
         from cnequity.quality.audit import lake_health
@@ -356,7 +366,7 @@ def audit(
         start_date = parse_date_option(research_start, "--research-start")
         end_date = parse_date_option(research_end, "--research-end")
         if start_date and end_date and start_date > end_date:
-            raise click.ClickException("--research-start 必须早于或等于 --research-end")
+            raise click.ClickException(_("--research-start must be on or before --research-end"))
         health = lake_health(
             cfg,
             shanghai_today(),
@@ -365,27 +375,43 @@ def audit(
             research_universe=research_universe,
         )
         sev = health["findings_by_severity"]
-        click.echo(f"湖健康度 @ 最后交易日 {health['last_trading_day']}")
         click.echo(
-            f"  findings：{sev.get('error', 0)} error、"
-            f"{sev.get('warning', 0)} warning、{sev.get('info', 0)} info"
+            _("Lake health @ last trading day {last_trading_day}").format(
+                last_trading_day=health["last_trading_day"]
+            )
+        )
+        click.echo(
+            _("  findings: {value} error, {value2} warning, {value3} info").format(
+                value=sev.get("error", 0), value2=sev.get("warning", 0), value3=sev.get("info", 0)
+            )
         )
         if getattr(cfg, "lake_profile", None) == "sample":
             click.echo(
-                "  sample 湖：source=mock 是这个离线 profile 的预期证据，"
-                "不参与健康门禁；它仍不可用于研究。"
+                _(
+                    "  Sample lake: source=mock is the expected evidence of this offline profile and does not count toward the health gate; it is still not usable for research."
+                )
             )
             if sev.get("error", 0):
                 click.echo(
-                    f"  注意：剩下的 {sev['error']} 条 error 不属于合成数据的预期范围。",
+                    _(
+                        "  Note: the remaining {error} errors are outside what synthetic data is expected to produce."
+                    ).format(error=sev["error"]),
                     err=True,
                 )
         if health["empty_datasets"]:
-            click.echo(f"  空数据集：{', '.join(health['empty_datasets'])}")
+            click.echo(
+                _("  Empty datasets: {value}").format(value=", ".join(health["empty_datasets"]))
+            )
         if health.get("expected_empty_datasets"):
-            click.echo(f"  预期就是空的数据集：{', '.join(health['expected_empty_datasets'])}")
+            click.echo(
+                _("  Datasets expected to be empty: {value}").format(
+                    value=", ".join(health["expected_empty_datasets"])
+                )
+            )
         if health["stale_datasets"]:
-            click.echo(f"  STALE 数据集：{', '.join(health['stale_datasets'])}")
+            click.echo(
+                _("  STALE datasets: {value}").format(value=", ".join(health["stale_datasets"]))
+            )
         for f in health["error_findings"]:
             click.echo(f"  [error]   {f.get('dataset', ''):22} {f.get('message', '')}")
         for f in health["warning_findings"]:
@@ -401,9 +427,12 @@ def audit(
             else validity.get("universe", research_universe)
         )
         click.echo(
-            f"  历史 {universe_label} "
-            f"{validity['window']['start']}.."
-            f"{validity['window']['end']}：{research_state}"
+            _("  History {universe_label} {start}..{end}: {research_state}").format(
+                universe_label=universe_label,
+                start=validity["window"]["start"],
+                end=validity["window"]["end"],
+                research_state=research_state,
+            )
         )
         supported = validity.get("supported_window")
         # Only worth a line when it adds something: a READY gate with no
@@ -411,55 +440,84 @@ def audit(
         # print a contradiction.
         if supported:
             click.echo(
-                f"  可背书窗口：{supported['start']}..{supported['end']}"
-                "（证据支持的最长区间；研究窗口落在里面即可放行）"
+                _(
+                    "  Endorsable window: {start}..{end} (the longest range the evidence supports; a research window inside it passes)"
+                ).format(start=supported["start"], end=supported["end"])
             )
         elif not validity["universe_ready"]:
             detail = validity.get("checks", {}).get("historical_st_labels", {})
             blocked_by = detail.get("supported_window_blocked_by")
             per_source = detail.get("supported_window_by_source") or {}
-            offered = "、".join(
+            offered = _(", ").join(
                 f"{name} {item['start']}..{item['end']}"
                 for name, item in sorted(per_source.items())
             )
             short = detail.get("supported_window_missing_symbols")
             total = detail.get("supported_window_current_symbols")
-            near = f"，最接近的回执差 {short}/{total} 只" if short and total else ""
+            near = (
+                _(", the closest receipt is short {short}/{total} symbols").format(
+                    short=short, total=total
+                )
+                if short and total
+                else ""
+            )
             click.echo(
-                "  可背书窗口：无"
-                + (f"（{blocked_by} 尚无覆盖当前股票池的回执{near}）" if blocked_by else "")
-                + (f"；各源现有区间：{offered}" if offered else "")
+                _("  Endorsable window: none")
+                + (
+                    _(
+                        " ({blocked_by} has no receipt covering the current stock pool yet{near})"
+                    ).format(blocked_by=blocked_by, near=near)
+                    if blocked_by
+                    else ""
+                )
+                + (
+                    _("; ranges each source has: {offered}").format(offered=offered)
+                    if offered
+                    else ""
+                )
             )
         for blocker in validity["blockers"]:
             click.echo(f"  [research] {blocker['message']}")
             if blocker.get("remediation"):
-                click.echo(f"              修复建议：{blocker['remediation']}")
+                click.echo(
+                    _("              Suggested fix: {remediation}").format(
+                        remediation=blocker["remediation"]
+                    )
+                )
         if not health["healthy"]:
             click.echo("UNHEALTHY")
         elif research_start and not validity["universe_ready"]:
             # Operational freshness and research readiness are separate
             # contracts. Keep the former visible, but never let a green lake
             # label hide the strict research gate printed immediately above.
-            click.echo("HEALTHY（运维层面；研究层面 BLOCKED）")
+            click.echo(_("HEALTHY (operationally; BLOCKED for research)"))
         else:
             click.echo("HEALTHY")
         failed = bool(sev.get("error", 0)) if quality_only else not health["healthy"]
         if quality_only:
-            click.echo("Quality gate: FAILED" if failed else "Quality gate: OK（新鲜度另算）")
+            click.echo(
+                "Quality gate: FAILED"
+                if failed
+                else _("Quality gate: OK (freshness checked separately)")
+            )
         if failed or (research_start and not validity["universe_ready"]):
             raise SystemExit(1)
         return
 
     manifest = Manifest(cfg.manifest_path)
     latest = manifest.latest_run() if not run_id else None
-    rid = run_id or (latest["run_id"] if latest else "manual")
+    rid = run_id[-1] if run_id else (latest["run_id"] if latest else "manual")
 
-    severities: dict = {}
+    severities: dict = {"related_run_ids": list(dict.fromkeys(run_id))} if run_id else {}
     n = run_audit(cfg, rid, shanghai_today(), severities)
     by_severity = severities.get("audit_by_severity", {})
     errors = int(by_severity.get("error", 0))
     warnings = int(by_severity.get("warning", 0))
-    click.echo(f"审计完成：写入 {n} 条 findings（{errors} error，{warnings} warning）")
+    click.echo(
+        _("Audit finished: wrote {n} findings ({errors} error, {warnings} warning)").format(
+            n=n, errors=errors, warnings=warnings
+        )
+    )
     if getattr(cfg, "lake_profile", None) == "sample":
         # The fabricated-row check is doing its job here, loudly and correctly.
         # Say which lake it is looking at, so a first-time reader does not take
@@ -473,14 +531,15 @@ def audit(
         expected = int(severities.get("audit_profile_expected_findings", 0) or 0)
         if expected:
             click.echo(
-                f"sample 湖：每一行都是刻意生成的合成数据（source=mock），其中 {expected} 条"
-                "「伪造行」findings 已降级为预期 info，不代表安装失败。"
-                "要建真数据的湖，运行 `cne init`。"
+                _(
+                    'Sample lake: every row is deliberately generated synthetic data (source=mock), and {expected} "fabricated row" findings were downgraded to expected info; they do not mean the install failed. To build a lake with real data, run `cne init`.'
+                ).format(expected=expected)
             )
         if errors:
             click.echo(
-                f"注意：还有 {errors} 条 error 不在 sample profile 的预期范围内，"
-                "它们说的是真问题，不是合成数据本身。",
+                _(
+                    "Note: {errors} more errors are outside what the sample profile expects; they describe real problems, not the synthetic data itself."
+                ).format(errors=errors),
                 err=True,
             )
     # Exit like `--full` does. Callers use this as a gate, and a mode that
@@ -498,7 +557,7 @@ def _last_trading_day(cfg, today: date) -> date:
     from cnequity.steps.common import is_trading_day
 
     d = today if is_session_final(today) else today - timedelta(days=1)
-    for _ in range(15):
+    for _day in range(15):
         if is_trading_day(cfg, d):
             return d
         d -= timedelta(days=1)
@@ -506,10 +565,10 @@ def _last_trading_day(cfg, today: date) -> date:
 
 
 _GAP_LABELS = {
-    "empty": "空",
-    "stale": "陈旧",
-    "interior": "区间内缺口",
-    "shallow": "历史偏浅",
+    "empty": N_("empty"),
+    "stale": N_("stale"),
+    "interior": N_("gaps inside the range"),
+    "shallow": N_("history too shallow"),
 }
 
 
@@ -536,11 +595,11 @@ def _verify_bars(cfg, start: str | None, end: str | None) -> None:
     from cnequity.quality.bar_coverage import daily_bar_coverage
 
     if not start:
-        raise click.UsageError("--bars 需要配合 --start")
+        raise click.UsageError(_("--bars needs --start"))
     start_date = parse_date_option(start, "--start")
     end_date = parse_date_option(end, "--end") or _last_trading_day(cfg, shanghai_today())
     if start_date > end_date:
-        raise click.ClickException("--start 必须早于或等于 --end")
+        raise click.ClickException(_("--start must be on or before --end"))
     result = daily_bar_coverage(cfg, start_date, end_date)
     click.echo(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["complete"]:
@@ -557,7 +616,7 @@ def _verify_runs(cfg, days: int | None, as_of: str | None, enforce: bool) -> Non
             cfg.curated_root / "trading_calendar", partition_col="trade_date"
         )
     except FileNotFoundError as exc:
-        raise click.ClickException("需要 curated 里的 trading_calendar") from exc
+        raise click.ClickException(_("Needs trading_calendar in curated")) from exc
     trading_days = (
         calendar.filter(pl.col("is_trading"))["trade_date"].drop_nulls().unique().to_list()
     )
@@ -590,7 +649,7 @@ _VERIFY_MODE_OPTIONS = {
 def _verify_mode(bars: bool, runs: bool, given: dict) -> str:
     """Pick the mode, and refuse options belonging to the other two."""
     if bars and runs:
-        raise click.UsageError("--bars 和 --runs 只能用一个")
+        raise click.UsageError(_("Use only one of --bars and --runs"))
     mode = "bars" if bars else "runs" if runs else "datasets"
     for other, options in _VERIFY_MODE_OPTIONS.items():
         if other == mode:
@@ -598,63 +657,79 @@ def _verify_mode(bars: bool, runs: bool, given: dict) -> str:
         for flag, key in options:
             if given.get(key):
                 hint = {
-                    "datasets": "默认的数据集覆盖模式",
+                    "datasets": _("the default dataset-coverage mode"),
                     "bars": "--bars",
                     "runs": "--runs",
                 }[other]
-                raise click.UsageError(f"{flag} 属于 {hint}")
+                raise click.UsageError(_("{flag} belongs to {hint}").format(flag=flag, hint=hint))
     return mode
 
 
 @cli.command()
 @config_option
 @click.option(
-    "--derivatives", is_flag=True, help="只读验收衍生品研究窗口；需 --dataset、--start、--end。"
+    "--derivatives",
+    is_flag=True,
+    help=N_(
+        "Read-only acceptance check of a derivatives research window; requires --dataset, --start, --end."
+    ),
 )
 @click.option(
     "--bars",
     is_flag=True,
-    help="改为检查「证券 × 交易日」，含窗口内一行都没有的证券。需要 --start。",
+    help=N_(
+        'Check "security × trading day" instead, including securities with no rows at all in the window. Requires --start.'
+    ),
 )
 @click.option(
     "--runs",
     is_flag=True,
-    help="改为检查连续交易日的运行证据，不补任何缺口。",
+    help=N_("Check run evidence over consecutive trading days instead; fills no gaps."),
 )
 @click.option(
     "--dataset",
     "only",
     default=None,
-    help="只校验这些数据集（逗号分隔）；默认校验注册表里的全部。",
+    help=N_(
+        "Validate only these datasets (comma-separated); by default validates everything in the registry."
+    ),
 )
 @click.option(
     "--repair",
     is_flag=True,
-    help="把能补的缺口跑一遍回填，按数据集从新到旧。",
+    help=N_("Run backfill over fillable gaps, dataset by dataset from newest to oldest."),
 )
 @click.option(
     "--kind",
     "kinds",
     default=None,
-    help="只看这些缺口类型：empty,stale,interior,shallow。",
+    help=N_("Show only these gap types: empty,stale,interior,shallow."),
 )
-@click.option("--start", default=None, help="配合 --bars/--derivatives：覆盖窗口起点（含）。")
+@click.option(
+    "--start",
+    default=None,
+    help=N_("With --bars/--derivatives: coverage window start (inclusive)."),
+)
 @click.option(
     "--end",
     default=None,
-    help="覆盖窗口终点；--bars 默认上一个完整交易日，--derivatives 必填。",
+    help=N_(
+        "Coverage window end; --bars defaults to the last complete trading day, required for --derivatives."
+    ),
 )
 @click.option(
     "--days",
     default=None,
     type=click.IntRange(min=1),
-    help=f"配合 --runs：要求连续多少个交易日（默认 {DEFAULT_STABILITY_DAYS}）。",
+    # The default is DEFAULT_STABILITY_DAYS, written out for the catalog; a test
+    # fails if it drifts.
+    help=N_("With --runs: number of consecutive trading days required (default 20)."),
 )
-@click.option("--as-of", default=None, help="配合 --runs：截止日期 YYYY-MM-DD（含）。")
+@click.option("--as-of", default=None, help=N_("With --runs: cutoff date YYYY-MM-DD (inclusive)."))
 @click.option(
     "--enforce",
     is_flag=True,
-    help="配合 --runs：连续天数门禁没过就退出 1。",
+    help=N_("With --runs: exit 1 if the consecutive-days gate fails."),
 )
 def verify(
     config_path: str,
@@ -670,34 +745,39 @@ def verify(
     as_of: str | None,
     enforce: bool,
 ):
-    """拿这个湖应该有的东西，对一对它实际有的东西。
+    """Compare what this lake should have with what it actually has.
 
     \b
-    `cne audit` 问的是落进来的数据对不对。这条问的是该落的有没有落 ——
-    这是另一种失败，也是一碰就抛的 step 会造成的那种。没有它，一个数据集可以连着几周每次 run 都失败，
-    而每一次 run 都只是记一条 failed batch。
+    `cne audit` asks whether the data that landed is right. This asks whether what should have landed did:
+    a different failure, and the kind a step that throws on contact causes. Without it, a dataset can fail every run for weeks
+    while each run only records a failed batch.
 
     \b
-    缺口按「能不能补」分开：`by_date` 数据集少一个交易日是故障，snapshot 数据集少一个是它本来的形态，
-    任何回填都补不诚实。`--repair` 只会去跑前一种。
+    Gaps are split by whether they can be filled: a `by_date` dataset missing a session is a fault, while a snapshot dataset missing one
+    is simply its shape, and no backfill could fill it honestly. `--repair` only runs the first kind.
 
     \b
-    `--bars` 和 `--runs` 在另外两个粒度上问同一个问题：一个是「证券 × 交易日」而不是「数据集 × 交易日」，
-    另一个是「每个交易日一次 run」而不是湖里的行。
+    `--bars` and `--runs` ask the same question at two other grains: "security × session" instead of "dataset × session",
+    and "one run per session" instead of rows in the lake.
+
     """
     from cnequity.quality.verify import verify_lake
 
     if derivatives:
         if bars or runs or repair or kinds or days or as_of or enforce:
-            raise click.UsageError("--derivatives 不支持其他模式、--repair、--kind 或运行证据参数")
+            raise click.UsageError(
+                _(
+                    "--derivatives does not support other modes, --repair, --kind or run-evidence options"
+                )
+            )
         if only not in {"futures_bars", "option_bars"} or not start or not end:
             raise click.UsageError(
-                "--derivatives 需要 --dataset futures_bars|option_bars、--start、--end"
+                _("--derivatives needs --dataset futures_bars|option_bars, --start and --end")
             )
         start_date = parse_date_option(start, "--start")
         end_date = parse_date_option(end, "--end")
         if start_date > end_date:
-            raise click.UsageError("--start 必须早于或等于 --end")
+            raise click.UsageError(_("--start must be on or before --end"))
         from cnequity.quality.derivative_window import derivative_window
 
         report = derivative_window(_cfg(config_path), only, start_date, end_date)
@@ -738,7 +818,9 @@ def verify(
     kind_names = comma_values(kinds, "--kind")
     wanted = set(kind_names) if kind_names else None
     if wanted and wanted - {"empty", "stale", "interior", "shallow"}:
-        raise click.BadParameter("只支持 empty,stale,interior,shallow", param_hint="--kind")
+        raise click.BadParameter(
+            _("Only empty,stale,interior,shallow are supported"), param_hint="--kind"
+        )
 
     if names is None and getattr(cfg, "lake_profile", None) in {"demo", "sample"}:
         # A demo lake holds a handful of symbols and two or three datasets on
@@ -747,9 +829,13 @@ def verify(
         # command — as a broken install. Judge what this lake actually holds.
         names = _datasets_with_data(cfg)
         click.echo(
-            f"demo 湖（{cfg.lake_profile}）：只检查它实际持有的 {len(names)} 个数据集"
-            f"（{', '.join(names) or '无'}）；其余的从来没有采集过，"
-            "这是这个 profile 本来的样子，不是缺口。"
+            _(
+                "Demo lake ({profile}): only the {count} datasets it actually holds are checked "
+                "({names}); the rest were never collected, which is how this profile is meant "
+                "to be, not a gap."
+            ).format(
+                profile=cfg.lake_profile, count=len(names), names=", ".join(names) or _("none")
+            )
         )
 
     gaps = verify_lake(cfg, anchor=anchor, datasets=names)
@@ -764,50 +850,59 @@ def verify(
         if stale:
             gaps = [gap for gap in gaps if gap.kind != "stale"]
             click.echo(
-                f"sample 湖：不对 {len(stale)} 个数据集判新鲜度 —— "
-                "这些行是合成的（source=mock），日期由生成器决定。"
+                _(
+                    "Sample lake: freshness is not judged for {value} datasets; these rows are synthetic (source=mock), with dates chosen by the generator."
+                ).format(value=len(stale))
             )
 
-    click.echo(f"校验 @ {anchor.isoformat()} —— {len(gaps)} 个缺口")
+    click.echo(
+        _("Verify @ {value}: {value2} gaps").format(value=anchor.isoformat(), value2=len(gaps))
+    )
     if not gaps:
-        click.echo("覆盖完整：没有可修复的缺口。")
+        click.echo(_("Coverage complete: no repairable gaps."))
         return
 
     for gap in gaps:
-        label = _GAP_LABELS.get(gap.kind, gap.kind)
-        flag = "可修复" if gap.repairable else "源的形态，无法回填"
+        label = _(_GAP_LABELS.get(gap.kind, gap.kind))
+        flag = _("repairable") if gap.repairable else _("the source's shape, cannot be backfilled")
         click.echo(f"  [{label}] {gap.dataset:28} {gap.detail}  ({flag})")
         if gap.sample:
             shown = ", ".join(d.isoformat() for d in gap.sample)
             more = (
-                f" … 还有 {gap.missing_days - len(gap.sample)} 天"
+                _(" … {value} more days").format(value=gap.missing_days - len(gap.sample))
                 if gap.missing_days > len(gap.sample)
                 else ""
             )
-            click.echo(f"      例：{shown}{more}")
+            click.echo(_("      e.g. {shown}{more}").format(shown=shown, more=more))
 
     repairable = [g for g in gaps if g.repairable]
     if not repair:
         if repairable:
-            click.echo(f"\n{len(repairable)} 个缺口可修复。加 --repair 执行，或手动跑：")
+            click.echo(
+                _(
+                    "\n{value} gaps are repairable. Add --repair to run them, or run by hand:"
+                ).format(value=len(repairable))
+            )
             for gap in repairable[:10]:
                 click.echo(f"  {gap.repair_command(config_path)}")
         raise SystemExit(1)
 
     if not repairable:
-        click.echo("\n没有可修复的缺口。")
+        click.echo(_("\nNo repairable gaps."))
         raise SystemExit(1)
 
-    click.echo(f"\n修复 {len(repairable)} 个缺口…")
+    click.echo(_("\nRepairing {value} gaps…").format(value=len(repairable)))
     failed: list[str] = []
     empty_upstream: set[str] = set()
     for gap in repairable:
-        click.echo(f"  → {gap.dataset} ({_GAP_LABELS.get(gap.kind, gap.kind)})")
+        click.echo(f"  → {gap.dataset} ({_(_GAP_LABELS.get(gap.kind, gap.kind))})")
         try:
             result = _run_backfill(cfg, gap.dataset, gap.start, gap.end)
         except Exception as exc:  # noqa: BLE001 — one gap must not sink the rest
             failed.append(gap.dataset)
-            click.echo(f"    失败：{type(exc).__name__}: {exc}", err=True)
+            click.echo(
+                _("    Failed: {name}: {exc}").format(name=type(exc).__name__, exc=exc), err=True
+            )
             continue
         # A failing step does not raise: the engine records a failed batch and
         # hands back status="failed". Reading only exceptions here reported
@@ -816,17 +911,26 @@ def verify(
         written = (result or {}).get("rows_written", 0)
         if status != "success":
             failed.append(gap.dataset)
-            click.echo(f"    失败：status={status}", err=True)
+            click.echo(_("    Failed: status={status}").format(status=status), err=True)
         elif not written:
             # Succeeded and wrote nothing: the window is genuinely empty
             # upstream, so re-running will not change it. Say so rather than
             # claiming a repair.
             empty_upstream.add(gap.dataset)
-            click.echo("    源在该区间没有数据，缺口未变（重跑也不会变）")
+            click.echo(
+                _(
+                    "    The source has no data in this range; the gap is unchanged (re-running will not change it)"
+                )
+            )
         else:
-            click.echo(f"    写入 {written:,} 行")
+            click.echo(_("    Wrote {written:,} rows").format(written=written))
     if failed:
-        click.echo(f"\n{len(failed)} 个未能修复：{', '.join(failed)}", err=True)
+        click.echo(
+            _("\n{value} could not be repaired: {value2}").format(
+                value=len(failed), value2=", ".join(failed)
+            ),
+            err=True,
+        )
 
     # Re-check here rather than asking for a second `cne verify`: a backfill that
     # reported success is a claim about the fetch, not about the coverage.
@@ -837,11 +941,15 @@ def verify(
     # it was already reported above and must not fail every later run.
     left = [g for g in rechecked if g.repairable and g.dataset not in empty_upstream]
     if left:
-        click.echo(f"\n复查：还有 {len(left)} 个可修复缺口没有补上：")
+        click.echo(
+            _("\nRe-check: {value} repairable gaps are still unfilled:").format(value=len(left))
+        )
         for gap in left:
-            click.echo(f"  [{_GAP_LABELS.get(gap.kind, gap.kind)}] {gap.dataset:28} {gap.detail}")
+            click.echo(
+                f"  [{_(_GAP_LABELS.get(gap.kind, gap.kind))}] {gap.dataset:28} {gap.detail}"
+            )
     else:
-        click.echo("\n复查：修复过的数据集已没有可修复缺口。")
+        click.echo(_("\nRe-check: the repaired datasets have no repairable gaps left."))
     if failed or left:
         raise SystemExit(1)
 
@@ -864,7 +972,9 @@ def _echo_resample_backlog(cfg, df) -> None:
         pending = resample_backlog(cfg, dataset)["pending"]
         if pending:
             click.echo(
-                f"\n{dataset}：输入有 {pending} 个交易日尚未重算；运行 cne derive {dataset} 更新。"
+                _(
+                    "\n{dataset}: {pending} sessions of input have not been recomputed yet; run cne derive {dataset} to update."
+                ).format(dataset=dataset, pending=pending)
             )
 
 
@@ -874,28 +984,38 @@ def _echo_resample_backlog(cfg, df) -> None:
     "--run",
     "run_selector",
     default=None,
-    help="要看的 run id，或 'latest'（默认）。包含各数据集 stage 的结果。",
+    help=N_("Run id to show, or 'latest' (default). Includes stage results per dataset."),
 )
 @click.option(
     "--datasets",
     "show_datasets",
     is_flag=True,
-    help="逐数据集的新鲜度：覆盖区间、水位，以及相对最后交易日是否陈旧。",
+    help=N_(
+        "Per-dataset freshness: coverage range, watermark, and whether it is stale relative to the last trading day."
+    ),
 )
 @click.option(
     "--all-columns",
     "all_columns",
     is_flag=True,
-    help="配合 --datasets：打印数据集清单的全部列，而不只是新鲜度。",
+    help=N_("With --datasets: print all columns of the dataset inventory, not just freshness."),
+)
+@click.option(
+    "--hide-empty",
+    "hide_empty",
+    is_flag=True,
+    help=N_(
+        "With --datasets: list only datasets that hold data or are stale, and fold the empty ones into one line."
+    ),
 )
 @click.option(
     "--groups",
     "gate_groups",
     default=None,
     help=(
-        "配合 --datasets：只对这些调度组拥有的数据集判失败（空格或逗号分隔）。其它组的数据集照常列出、照常报为调度缺口，"
-        "但不会让门禁失败。截面检查同样受它约束——daily_bars 归哪个组，它的覆盖率就归谁判。"
-        "未跑完的 init 不属于任何调度组，始终判失败。"
+        N_(
+            "With --datasets: fail only on datasets owned by these schedule groups (space- or comma-separated). Datasets of other groups are still listed and reported as schedule gaps but do not fail the gate. The cross-section check follows it too: daily_bars coverage is judged by whichever group owns it. An unfinished init belongs to no schedule group and always fails."
+        )
     ),
 )
 @click.option(
@@ -904,34 +1024,43 @@ def _echo_resample_backlog(cfg, df) -> None:
     default=True,
     show_default=True,
     help=(
-        "配合 --datasets：是否做最新交易日的标的截面校验。它要读 daily_bars 的 tip 分区、"
-        "instruments 和 trading_status，比单纯看水位贵；--no-scope 让这条命令回到纯元数据。"
+        N_(
+            "With --datasets: whether to run the cross-sectional symbol check for the latest trading day. It reads the daily_bars tip partition, instruments and trading_status, which costs more than checking watermarks alone; --no-scope returns this command to pure metadata."
+        )
     ),
 )
-@click.option("--gate", is_flag=True, help="按所选范围和新鲜度执行门禁；默认只报告。")
+@click.option(
+    "--gate",
+    is_flag=True,
+    help=N_("Enforce the gate for the selected scope and freshness; by default only reports."),
+)
 def status(
     config_path: str,
     run_selector: str | None,
     show_datasets: bool,
     all_columns: bool,
+    hide_empty: bool,
     gate_groups: str | None,
     scope: bool,
     gate: bool,
 ):
-    """查看最近一次 run 的状态；加 --datasets 则看逐数据集的新鲜度。
+    """Show the latest run's status; add --datasets for per-dataset freshness.
 
     \b
-    --gate 的退出码：0 正常；1 确实不合格（数据集 STALE、截面缺标的、init 没跑完）；
-    2 证明不了（instruments 缺失、证据读不出来）。后者是装配问题，不是数据缺口。
+    Exit codes with --gate: 0 fine; 1 genuinely failing (a dataset STALE, symbols missing from the cross-section, init not finished);
+    2 cannot be proven (instruments missing, evidence unreadable). The latter is a setup problem, not a data gap.
+
     """
     cfg = _cfg(config_path)
 
     if all_columns and not show_datasets:
-        raise click.UsageError("--all-columns 只能配合 --datasets 使用")
+        raise click.UsageError(_("--all-columns only works with --datasets"))
+    if hide_empty and not show_datasets:
+        raise click.UsageError(_("--hide-empty only works with --datasets"))
     if gate_groups and not show_datasets:
-        raise click.UsageError("--groups 只能配合 --datasets 使用")
+        raise click.UsageError(_("--groups only works with --datasets"))
     if not scope and not show_datasets:
-        raise click.UsageError("--no-scope 只能配合 --datasets 使用")
+        raise click.UsageError(_("--no-scope only works with --datasets"))
 
     if show_datasets:
         import polars as pl_mod
@@ -977,7 +1106,7 @@ def status(
         df = df.with_columns(
             pl_mod.Series("freshness", [_freshness(r) for r in df.iter_rows(named=True)])
         )
-        click.echo(f"最后交易日：{anchor.isoformat()}")
+        click.echo(_("Last trading day: {value}").format(value=anchor.isoformat()))
         # This flag is the freshness probe the runbooks reach for, but
         # `list_datasets` has grown to twenty columns — contract fingerprints,
         # revision ids, PIT storage lists — and forcing all of them into a
@@ -995,13 +1124,28 @@ def status(
             "watermark",
         ]
         view = df if all_columns else df.select([c for c in freshness_columns if c in df.columns])
+        hidden: list[str] = []
+        if hide_empty:
+            # A first lake holds a handful of the registered datasets; forty
+            # rows of "empty" read as a broken install rather than as groups
+            # nobody has run yet. They are not judged here, so fold them.
+            listed = pl_mod.col("has_data") | (pl_mod.col("freshness") == "STALE")
+            hidden = view.filter(~listed)["dataset"].to_list()
+            view = view.filter(listed)
         with pl_mod.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
             click.echo(view)
+        if hidden:
+            click.echo(
+                _(
+                    "{value} more datasets have no data yet: their schedule groups are not enabled or have not run, which does not affect the conclusion here. Full list: cne status --datasets"
+                ).format(value=len(hidden))
+            )
         _echo_resample_backlog(cfg, df)
         if lake_profile == "sample":
             click.echo(
-                "\nsample 湖：这些是 source=mock 的合成数据，日期不参与新鲜度门禁；"
-                "它只验证安装、Parquet 落盘和查询链路。"
+                _(
+                    "\nSample lake: these are synthetic source=mock rows whose dates do not count toward the freshness gate; it only verifies the install, Parquet writes and the query path."
+                )
             )
         wanted_groups = _gate_groups(gate_groups)
         scopes = [
@@ -1025,15 +1169,28 @@ def status(
         ]
         scope_incomplete = any(r["state"] == "incomplete" for r in gating_scopes)
         scope_unverified = any(r["state"] == "unverified" for r in gating_scopes)
-        default_heading = f"取数截面（{ingest_scope_label(cfg.ingest_universe)}）"
+        default_heading = _("Ingest cross-section ({value})").format(
+            value=ingest_scope_label(cfg.ingest_universe)
+        )
         for report in scopes:
             dataset = report["dataset"]
-            scope_heading = report.get("heading", default_heading)
+            scope_heading = (
+                localize(report["heading"]) if report.get("heading") else default_heading
+            )
             if report.get("missing_exchanges"):
-                click.echo(f"{dataset} 缺整所：{', '.join(report['missing_exchanges'])}", err=True)
+                click.echo(
+                    _("{dataset} is missing whole exchanges: {value}").format(
+                        dataset=dataset, value=", ".join(report["missing_exchanges"])
+                    ),
+                    err=True,
+                )
             if report.get("owed_dates"):
                 click.echo(
-                    f"{dataset} 待补交易日：{report['owed']}（例：{', '.join(report['owed_dates'][:5])}）",
+                    _("{dataset} sessions still owed: {owed} (e.g. {value})").format(
+                        dataset=dataset,
+                        owed=report["owed"],
+                        value=", ".join(report["owed_dates"][:5]),
+                    ),
                     err=True,
                 )
                 if _gates_on_dataset(cfg, dataset, wanted_groups):
@@ -1041,34 +1198,57 @@ def status(
             if all_columns and report.get("coverage"):
                 click.echo(pl_mod.DataFrame(report["coverage"]))
             if report["state"] == "complete":
-                owed_note = f"，另有 {report['owed']} 只已记账待补" if report.get("owed") else ""
-                if report.get("unverifiable_exchanges"):
-                    owed_note += (
-                        f"；{'、'.join(report['unverifiable_exchanges'])} 走供应商路线"
-                        "（无成交日缺行），不在证明之内"
+                owed_note = (
+                    _(", plus {owed} symbols already in the ledger to fill").format(
+                        owed=report["owed"]
                     )
+                    if report.get("owed")
+                    else ""
+                )
+                if report.get("unverifiable_exchanges"):
+                    owed_note += _(
+                        "; {exchanges} go through a vendor route (no rows on days without "
+                        "trades) and are outside the proof"
+                    ).format(exchanges=_(", ").join(report["unverifiable_exchanges"]))
                 click.echo(
-                    f"\n{scope_heading}：OK —— {dataset} "
-                    f"{report['date']} 覆盖证据 {report['covered']}/"
-                    f"{report['expected']}（{report['ratio']:.1%}）{owed_note}"
+                    _(
+                        "\n{scope_heading}: OK: {dataset} {date} coverage evidence {covered}/{expected} ({ratio:.1%}){owed_note}"
+                    ).format(
+                        scope_heading=scope_heading,
+                        dataset=dataset,
+                        date=report["date"],
+                        covered=report["covered"],
+                        expected=report["expected"],
+                        ratio=report["ratio"],
+                        owed_note=owed_note,
+                    )
                 )
             elif report["state"] == "incomplete":
                 sample = ", ".join(report["missing"][:5])
                 click.echo(
-                    f"\n{scope_heading}：INCOMPLETE —— {dataset} "
-                    f"{report['date']} 有 {len(report['missing'])} "
-                    f"{report.get('noun', '只 active 标的')}"
-                    f"既无数据、也无停牌证据、也没有记账"
-                    f"（覆盖 {report['covered']}/{report['expected']}，"
-                    f"{report['ratio']:.1%}；示例：{sample}）。"
-                    "日期 fresh 不代表标的覆盖完整。",
+                    _(
+                        "\n{scope_heading}: INCOMPLETE: on {date}, {count} {noun} of {dataset} "
+                        "have no data, no suspension evidence and no ledger entry (coverage "
+                        "{covered}/{expected}, {ratio:.1%}; e.g. {sample}). A fresh date does not "
+                        "mean symbol coverage is complete."
+                    ).format(
+                        scope_heading=scope_heading,
+                        date=report["date"],
+                        count=len(report["missing"]),
+                        noun=_(report.get("noun") or N_("active symbols")),
+                        dataset=dataset,
+                        covered=report["covered"],
+                        expected=report["expected"],
+                        ratio=report["ratio"],
+                        sample=sample,
+                    ),
                     err=True,
                 )
             else:
                 click.echo(
-                    f"\n{scope_heading}：UNVERIFIED —— {report['message']}。"
-                    "这是「证明不了」，不是「已证明不全」；"
-                    "日期 fresh 仍不代表标的覆盖完整。",
+                    _(
+                        '\n{scope_heading}: UNVERIFIED: {message}. This means "cannot be proven", not "proven incomplete"; a fresh date still does not mean symbol coverage is complete.'
+                    ).format(scope_heading=scope_heading, message=report["message"]),
                     err=True,
                 )
         if scope and is_dataset_enabled("option_greeks", cfg):
@@ -1077,7 +1257,9 @@ def status(
             stale_greeks = stale_sessions(cfg)
             if stale_greeks:
                 click.echo(
-                    f"option_greeks：{len(stale_greeks)} 个交易日缺结果或依赖已变化；运行 cne derive option_greeks",
+                    _(
+                        "option_greeks: {value} sessions lack results or have changed dependencies; run cne derive option_greeks"
+                    ).format(value=len(stale_greeks)),
                     err=True,
                 )
                 if _gates_on_dataset(cfg, "option_greeks", wanted_groups):
@@ -1087,10 +1269,9 @@ def status(
         )
         if incomplete_init is not None:
             click.echo(
-                "\ninit 尚未完成："
-                f"run {incomplete_init['run_id']} 当前为 {incomplete_init['status']}。"
-                "上表的 fresh 只表示已有数据的日期新鲜，不代表全市场覆盖完整；"
-                "运行 `cne init` 会从这个 run 继续。",
+                _(
+                    '\nInit has not finished: run {run_id} is currently {status}. "fresh" above only means the dates of existing data are fresh, not that whole-market coverage is complete; running `cne init` continues from this run.'
+                ).format(run_id=incomplete_init["run_id"], status=incomplete_init["status"]),
                 err=True,
             )
         # A tolerated gap is invisible in freshness: the watermark moved over
@@ -1102,7 +1283,9 @@ def status(
         stale = stale_rows.height
         if stale:
             click.echo(
-                f"\n{stale} 个数据集 STALE —— 用 `cne status` / `cne run retry` 查一下相关 run。"
+                _(
+                    "\n{stale} datasets are STALE; look into the related runs with `cne status` / `cne run retry`."
+                ).format(stale=stale)
             )
             # Which schedule group each one belongs to. A lake where every
             # stale dataset sits in groups this host never runs is a schedule
@@ -1113,10 +1296,11 @@ def status(
                 summary = ", ".join(
                     f"{group} {len(names)}" for group, names in sorted(by_group.items())
                 )
-                click.echo(f"按调度组：{summary}")
+                click.echo(_("By schedule group: {summary}").format(summary=summary))
                 click.echo(
-                    "你没有排期的调度组，是调度缺口而不是失败 —— "
-                    "用 `cne run daily --group <名字>` 跑它。"
+                    _(
+                        "A schedule group you have not scheduled is a scheduling gap, not a failure; run it with `cne run daily --group <name>`."
+                    )
                 )
             # ...and until this flag existed, the gate said exactly that and then
             # failed anyway. A host scheduling `core` alone has twenty-odd
@@ -1141,8 +1325,11 @@ def status(
                 skipped = stale - len(gating)
                 if skipped:
                     click.echo(
-                        f"门禁只看 {', '.join(sorted(wanted))}："
-                        f"其中 {len(gating)} 个 stale，另有 {skipped} 个属于这台机器不跑的组。"
+                        _(
+                            "The gate only looks at {value}: {value2} of them are stale, and {skipped} more belong to groups this machine does not run."
+                        ).format(
+                            value=", ".join(sorted(wanted)), value2=len(gating), skipped=skipped
+                        )
                     )
                 if gating and gate:
                     raise SystemExit(1)
@@ -1163,11 +1350,11 @@ def status(
     if selected and selected != "latest":
         latest = manifest.get_run(selected)
         if latest is None:
-            raise click.ClickException(f"未知 run_id：{selected}")
+            raise click.ClickException(_("Unknown run_id: {selected}").format(selected=selected))
     else:
         latest = manifest.latest_run()
     if not latest:
-        click.echo("还没有任何 run。")
+        click.echo(_("No runs yet."))
         return
     summary = manifest.run_summary(latest["run_id"])
     # Keep the historical summary shape while making `cne status --run latest`
@@ -1199,14 +1386,15 @@ def status(
 
 @cli.group("sources")
 def sources_grp():
-    """探测这个湖依赖的数据源，并检查相关证据。
+    """Probe the data sources this lake depends on, and check the related evidence.
 
     \b
-    只有 `probe` 会碰网络；其余都只读已存的探测历史和数据集注册表。
+    Only `probe` touches the network; the rest only read stored probe history and the dataset registry.
 
     \b
-    它们以前是 `cne sources` 和 `cne source <子命令>` —— 两个只差一个字母的顶层命令，
-    以至于这个组的帮助文本本身得先解释哪个是哪个。
+    They used to be `cne sources` and `cne source <subcommand>`: two top-level commands one letter apart,
+    so that this group's own help first had to explain which was which.
+
     """
 
 
@@ -1214,9 +1402,9 @@ def sources_grp():
 @config_option
 @click.option("--window-days", default=30, show_default=True, type=click.IntRange(min=1))
 @click.option("--minimum-observations", default=10, show_default=True, type=click.IntRange(min=1))
-@click.option("--enforce", is_flag=True, help="关键源的 SLO 未达标时退出 1。")
+@click.option("--enforce", is_flag=True, help=N_("Exit 1 when a critical source misses its SLO."))
 def source_slo(config_path: str, window_days: int, minimum_observations: int, enforce: bool):
-    """评估历史源探测记录，并输出事件载荷。"""
+    """Evaluate historical source-probe records, and output event payloads."""
     from cnequity.diagnostics.source_slo import (
         build_source_incidents,
         evaluate_source_slo,
@@ -1245,11 +1433,13 @@ def source_slo(config_path: str, window_days: int, minimum_observations: int, en
 @sources_grp.command("resilience")
 @config_option
 @click.option("--out", type=click.Path(path_type=Path), default=None)
-@click.option("--enforce", is_flag=True, help="核心数据集没有独立备份时退出 1。")
+@click.option(
+    "--enforce", is_flag=True, help=N_("Exit 1 when a core dataset has no independent backup.")
+)
 @click.option(
     "--with-availability",
     is_flag=True,
-    help="把实测的探测可用率接到每个故障域上（会读湖）。",
+    help=N_("Attach measured probe availability to each failure domain (reads the lake)."),
 )
 @click.option("--window-days", default=30, show_default=True, type=click.IntRange(min=1))
 def source_resilience(
@@ -1259,17 +1449,18 @@ def source_resilience(
     with_availability: bool,
     window_days: int,
 ):
-    """展示源的集中度、影响半径，以及独立备份门禁。
+    """Show source concentration, blast radius, and the independent-backup gate.
 
     \b
-    只看集中度决定不了路由问题。最大的那个域承载了注册表里的大部分数据集，
-    但这件事有多严重，取决于它多久不可达一次 —— 那是测出来的，不是声明出来的。
-    所以 `--with-availability` 会把这个湖已经积累的探测历史，接到每一个故障域上。
+    Concentration alone cannot settle a routing question. The largest domain carries most datasets in the registry,
+    but how serious that is depends on how often it is unreachable, which is measured, not declared.
+    So `--with-availability` joins the probe history this lake has accumulated onto every failure domain.
 
     \b
-    报告本身由注册表算出，因此不需要湖，在哪儿跑答案都一样。
-    `--config` 只在 `--with-availability` 时才读；显式传了也仍然会解析，
-    所以拼错路径在这里是报错，而不是被悄悄忽略。
+    The report itself is computed from the registry, so it needs no lake and gives the same answer wherever it runs.
+    `--config` is only read with `--with-availability`; passed explicitly it is still parsed,
+    so a misspelled path is an error here rather than quietly ignored.
+
     """
     from cnequity.diagnostics.source_resilience import (
         annotate_measured_availability,
@@ -1310,7 +1501,7 @@ def source_resilience(
 )
 @click.option("--redistribution", is_flag=True)
 def source_policy(source: str | None, profile: str | None, redistribution: bool):
-    """查看源的使用政策；权限不明时按拒绝处理。"""
+    """Show source usage policies; unclear permission is treated as refusal."""
     from cnequity.compliance.source_policy import load_source_policies, usage_profile
 
     policies = load_source_policies()
@@ -1324,7 +1515,7 @@ def source_policy(source: str | None, profile: str | None, redistribution: bool)
         )
         return
     if source not in policies:
-        raise click.ClickException(f"未知的源政策 {source!r}")
+        raise click.ClickException(_("Unknown source policy {source!r}").format(source=source))
     assessment = usage_profile(
         policies[source],
         profile=profile,
@@ -1338,7 +1529,7 @@ def source_policy(source: str | None, profile: str | None, redistribution: bool)
 @sources_grp.command("limits")
 @config_option
 def source_limits(config_path: str):
-    """离线查看共享冷却、出口预算、最近请求遥测和欠账续跑入口。"""
+    """Show shared cooldowns, egress budgets, recent request telemetry and debt-resume entry points, offline."""
     from cnequity.diagnostics.source_limits import build_source_limits
 
     payload = build_source_limits(_cfg(config_path))
@@ -1351,25 +1542,37 @@ def source_limits(config_path: str):
     "--vantage",
     default="local",
     show_default=True,
-    help="这次探测是从哪儿跑的 —— 'cn'、'overseas'，或你自己用的任何标签。有几个源拒绝非大陆出口，所以没有这个标签的结果没法解读。",
+    help=N_(
+        "Where this probe runs from — 'cn', 'overseas', or any label you use. Some sources reject non-mainland egress, so results without this label cannot be interpreted."
+    ),
 )
 @click.option(
     "--only",
     default=None,
-    help="要探测的 key，逗号分隔；高成本/已受挑战的端点仅在显式列出时探测。",
+    help=N_(
+        "Keys to probe, comma-separated; costly/challenged endpoints are probed only when listed explicitly."
+    ),
 )
 @click.option(
     "--stale-only",
     is_flag=True,
-    help="复用 12 小时内已校验的采集证据，只主动探测缺少新证据的端点。",
+    help=N_(
+        "Reuse collection evidence verified within 12 hours; actively probe only endpoints lacking fresh evidence."
+    ),
 )
-@click.option("--list", "list_only", is_flag=True, help="离线列出探测源名称，不需要配置。")
+@click.option(
+    "--list",
+    "list_only",
+    is_flag=True,
+    help=N_("List probe source names offline; no config needed."),
+)
 @click.option(
     "--out",
     default=None,
     help=(
-        "JSON 报告写到哪。默认写到湖内的 meta/source_health/<vantage>.json，`cne serve` "
-        "也从那里读。"
+        N_(
+            "Where to write the JSON report. Defaults to meta/source_health/<vantage>.json in the lake, which `cne serve` also reads."
+        )
     ),
 )
 def sources_probe(
@@ -1380,23 +1583,24 @@ def sources_probe(
     list_only: bool = False,
     stale_only: bool = False,
 ):
-    """探测这个湖依赖的公开数据源。
+    """Probe the public data sources this lake depends on.
 
     \b
-    逐源串行做最小探测（部分源需要分页或连接握手），共享采集的限流与冷却：
-    一个把自己探到被限流封禁的健康检查，等于亲手制造它本要观测的故障。
+    Minimal probes run source by source (some sources need paging or a connection handshake), sharing the ingest rate limits and cooldowns:
+    a health check that probes itself into a rate-limit ban creates exactly the failure it was meant to observe.
 
     \b
-    报告写进湖里，`cne serve` 在 /source-health 上渲染它。
-    探测被有意做成 CLI 动作 —— 面板保持只读，
-    而一个不需要认证、却能主动连出十几家第三方的本地服务，不适合一直挂在那里听。
+    The report is written into the lake, and `cne serve` renders it at /source-health.
+    Probing is deliberately a CLI action: the dashboard stays read-only,
+    and an unauthenticated local service that can reach out to a dozen third parties is not something to leave listening.
+
     """
     from cnequity.diagnostics.source_health import PROBES, STATUS_LABELS, ProbeStatus, run_probes
 
     if list_only:
         for probe in PROBES:
-            suffix = " [仅显式探测]" if probe.manual_only else ""
-            click.echo(f"{probe.key:<24} {probe.label}{suffix}")
+            suffix = _(" [explicit probe only]") if probe.manual_only else ""
+            click.echo(f"{probe.key:<24} {_(probe.label)}{suffix}")
         return
     _progress_logging(quiet=True)
     keys = comma_values(only, "--only")
@@ -1408,8 +1612,10 @@ def sources_probe(
 
     for result in report.results:
         latency = f"{result.latency_ms:>6}ms" if result.latency_ms is not None else "     \u2014"
-        label = STATUS_LABELS[ProbeStatus(result.status)]
-        click.echo(f"{result.status:<8}{label:<5}{latency}  {result.key:<22}{result.detail}")
+        label = _(STATUS_LABELS[ProbeStatus(result.status)])
+        click.echo(
+            f"{result.status:<8}{label:<5}{latency}  {result.key:<22}{localize(result.detail)}"
+        )
 
     if out:
         path = Path(out)
@@ -1418,33 +1624,39 @@ def sources_probe(
         from cnequity.diagnostics.source_slo import store_health_report
 
         path, historical = store_health_report(cfg.meta_root, report)
-        click.echo(f"历史抽样：{historical}")
-    click.echo(f"\n已写入 {path}")
-    click.echo("查看方式：cne serve  \u2192  http://127.0.0.1:8787/source-health")
+        click.echo(_("Historical sample: {historical}").format(historical=historical))
+    click.echo(_("\nWritten to {path}").format(path=path))
+    click.echo(_("View it with: cne serve  →  http://127.0.0.1:8787/source-health"))
 
 
 @sources_grp.command("substitutes")
 @config_option
 @click.option(
-    "--vantage", default="local", show_default=True, help="读哪个出口位置（vantage）的报告。"
+    "--vantage",
+    default="local",
+    show_default=True,
+    help=N_("Which egress location (vantage) report to read."),
 )
 @click.option(
     "--probe/--no-probe",
     default=False,
     show_default=True,
-    help="现在实测，而不是读已存的报告。请求和 `sources probe` 相同。",
+    help=N_(
+        "Measure now instead of reading the stored report. Makes the same requests as `sources probe`."
+    ),
 )
-@click.option("--json", "as_json", is_flag=True, help="输出机器可读的 JSON。")
+@click.option("--json", "as_json", is_flag=True, help=N_("Output machine-readable JSON."))
 def sources_substitutes(config_path: str, vantage: str, probe: bool, as_json: bool):
-    """对每个挂掉的源，还有谁能替它的数据集作答。
+    """For each source that is down, who else can answer for its datasets.
 
     \b
-    探测报告说的是什么活着；这条说的是对死掉的那些该怎么办。
-    候选按「是否独立」优先排序，因为和故障源共享影响半径的端点算不上第二个意见 ——
-    东财的历史主机替不了东财的快照主机。
+    The probe report says what is alive; this says what to do about the dead ones.
+    Candidates are ranked by independence first, because an endpoint sharing the failed source's blast radius is no second opinion:
+    EastMoney's history host cannot stand in for EastMoney's snapshot host.
 
     \b
-    当某个数据集被困住 —— 它需要的东西挂了，而可达的替代一个都不剩 —— 时非零退出。
+    Exits non-zero when a dataset is stranded: what it needs is down, and no reachable alternative is left.
+
     """
     import json as json_mod
 
@@ -1467,8 +1679,9 @@ def sources_substitutes(config_path: str, vantage: str, probe: bool, as_json: bo
         path = cfg.meta_root / "source_health" / f"{vantage}.json"
         if not path.exists():
             raise click.ClickException(
-                f"{path} 下没有 vantage {vantage!r} 的探测报告。"
-                "先跑 `cne sources probe`，或者加 --probe 现在实测。"
+                _(
+                    "No probe report for vantage {vantage!r} under {path}. Run `cne sources probe` first, or add --probe to measure now."
+                ).format(path=path, vantage=vantage)
             )
         report = HealthReport.from_dict(json_mod.loads(path.read_text(encoding="utf-8")))
 
@@ -1476,7 +1689,11 @@ def sources_substitutes(config_path: str, vantage: str, probe: bool, as_json: bo
     if as_json:
         click.echo(json.dumps(to_dict(entries), indent=2, ensure_ascii=False))
     else:
-        click.echo(f"探测时间 {report.generated_at} · vantage {report.vantage}")
+        click.echo(
+            _("Probed at {generated_at} · vantage {vantage}").format(
+                generated_at=report.generated_at, vantage=report.vantage
+            )
+        )
         for line in render_substitutions(entries):
             click.echo(line)
     if any(entry.stranded for entry in entries):
@@ -1501,9 +1718,9 @@ def _report_outstanding_keys(cfg, datasets: list[str]) -> None:
         return
     summary = ", ".join(f"{dataset} {count}" for dataset, count, _ in sorted(owed))
     click.echo(
-        f"\n被容忍缺口欠下的 key：{summary}"
-        "\n这些交易日已经在水位之后，任何增量 run 都不会再去要它们 —— "
-        "用 `cne backfill <数据集> --outstanding` 补上。"
+        _(
+            "\nKeys owed by tolerated gaps: {summary}\nThese sessions are already past the watermark, and no incremental run will ask for them again; fill them with `cne backfill <dataset> --outstanding`."
+        ).format(summary=summary)
     )
     # Separated because they need a different decision. A key three repairs
     # could not fill is not backlog, it is a key no configured source serves,
@@ -1512,9 +1729,9 @@ def _report_outstanding_keys(cfg, datasets: list[str]) -> None:
     if stuck:
         detail = ", ".join(f"{dataset} {n}" for dataset, n in stuck)
         click.echo(
-            f"其中修复尝试 3 次以上仍未补上的：{detail}"
-            " —— 没有任何已配置的源提供它们；查一下 `cne sources probe`，"
-            "或者接受这个缺口。"
+            _(
+                "Of these, still unfilled after 3 or more repair attempts: {detail}. No configured source provides them; check `cne sources probe`, or accept the gap."
+            ).format(detail=detail)
         )
 
 
@@ -1523,32 +1740,37 @@ def _report_outstanding_keys(cfg, datasets: list[str]) -> None:
 @click.option(
     "--full",
     is_flag=True,
-    help="立即重跑全湖审计（读每个历史分区，大湖可能要数小时）；默认读最近一次的审计结果。",
+    help=N_(
+        "Rerun the full-lake audit now (reads every historical partition; can take hours on a large lake); by default reads the latest audit result."
+    ),
 )
 @click.option(
     "--pack",
     "pack_names",
     multiple=True,
     type=click.Choice(["market", "fundamentals", "universe"]),
-    help="按研究包给出窗口、缺口和下一步。可重复。指定后，缺数据或历史 ST 未覆盖会使退出码变差。",
+    help=N_(
+        "Report window, gaps and next steps per research pack. Repeatable. When given, missing data or uncovered historical ST worsens the exit code."
+    ),
 )
 @click.pass_context
 def check(ctx: click.Context, config_path: str, full: bool, pack_names: tuple[str, ...]):
-    """验收这个湖：新鲜度与覆盖、数据质量、规模，一条命令给出结论。
+    """Accept this lake: freshness and coverage, data quality and size, with a verdict from one command.
 
     \b
-    依次给出：
-      1. 新鲜度与覆盖 —— 与 `cne status --datasets --gate` 相同（含截面核对、未完成的 init）；
-      2. 数据质量 —— 最近一次 run 的审计和最近的全湖审计快照；`--full` 当场重跑全湖审计；
-      3. 规模 —— 数据集、行数和体积（统计表过期时先自动重算）。
-    退出码取最差的一项：0 可用；1 有缺口或质量 error；2 证明不了（缺证据或配置问题）。
-    `--pack` 另按研究包给出窗口、缺口和下一步。
+    In order:
+      1. Freshness and coverage: the same as `cne status --datasets --gate` (including the cross-section check and unfinished init);
+      2. Data quality: the latest run's audit and the latest whole-lake audit snapshot; `--full` re-runs the whole-lake audit on the spot;
+      3. Size: datasets, rows and volume (stats are recomputed first when stale).
+    The exit code is the worst of them: 0 usable; 1 gaps or quality errors; 2 cannot be proven (missing evidence or a config problem).
+    `--pack` also gives the window, gaps and next step per research pack.
+
     """
     cfg = _cfg(config_path)
     codes: list[int] = []
     problems: list[str] = []
 
-    click.echo("== 新鲜度与覆盖 ==")
+    click.echo(_("== Freshness and coverage =="))
     try:
         ctx.invoke(
             status,
@@ -1556,6 +1778,7 @@ def check(ctx: click.Context, config_path: str, full: bool, pack_names: tuple[st
             run_selector=None,
             show_datasets=True,
             all_columns=False,
+            hide_empty=True,
             gate_groups=None,
             scope=True,
             gate=True,
@@ -1565,34 +1788,40 @@ def check(ctx: click.Context, config_path: str, full: bool, pack_names: tuple[st
         code = int(exc.code or 0)
         codes.append(code)
         if code:
-            problems.append("新鲜度或覆盖不合格" if code == 1 else "新鲜度证明不了")
+            problems.append(
+                _("freshness or coverage failing") if code == 1 else _("freshness cannot be proven")
+            )
 
-    click.echo("\n== 数据质量 ==")
+    click.echo(_("\n== Data quality =="))
     code, note = _check_quality(cfg, full=full)
     codes.append(code)
     if note:
         problems.append(note)
 
-    click.echo("\n== 规模 ==")
+    click.echo(_("\n== Size =="))
     _check_size(cfg)
 
     if pack_names:
         from cnequity.research.packs import assess, format_readiness, readiness_exit_code
 
-        click.echo("\n== 研究包 ==")
+        click.echo(_("\n== Research packs =="))
         rows = assess(cfg, pack_names)
         click.echo(format_readiness(cfg, pack_names))
         pack_code = readiness_exit_code(rows)
         codes.append(pack_code)
         if pack_code:
-            problems.append("研究包还有缺口" if pack_code == 1 else "研究包证明不了")
+            problems.append(
+                _("research packs still have gaps")
+                if pack_code == 1
+                else _("research packs cannot be proven")
+            )
 
     worst = 1 if 1 in codes else max(codes, default=0)
-    click.echo("\n== 结论 ==")
+    click.echo(_("\n== Verdict =="))
     if worst == 0:
-        click.echo("✓ 湖可用：新鲜度、覆盖和质量都通过")
+        click.echo(_("✓ The lake is usable: freshness, coverage and quality all pass"))
         return
-    click.echo(f"✗ {'；'.join(problems)}")
+    click.echo(f"✗ {_('; ').join(problems)}")
     raise SystemExit(worst)
 
 
@@ -1610,59 +1839,93 @@ def _check_quality(cfg, *, full: bool) -> tuple[int, str | None]:
     )
     if runs:
         payload = json.loads(runs[0].read_text(encoding="utf-8"))
-        findings = payload.get("findings", [])
+        from cnequity.quality.factor_policy import advisory_factor_findings
+
+        findings = advisory_factor_findings(payload.get("findings", []))
         errors = [f for f in findings if f.get("severity") == "error" and not coverage_only(f)]
         warnings = sum(f.get("severity") == "warning" for f in findings)
         click.echo(
-            f"  最近一次 run 审计（{payload.get('run_id')}，{payload.get('trade_date')}）："
-            f"{len(errors)} error、{warnings} warning"
+            _("  Latest run audit ({value}, {value2}): {value3} error, {warnings} warning").format(
+                value=payload.get("run_id"),
+                value2=payload.get("trade_date"),
+                value3=len(errors),
+                warnings=warnings,
+            )
         )
         for finding in errors[:10]:
             click.echo(f"    [error] {finding.get('dataset', ''):22} {finding.get('message', '')}")
         if errors:
-            code, note = 1, f"最近一次审计有 {len(errors)} 条 error"
+            code, note = 1, _("the latest audit has {value} errors").format(value=len(errors))
     else:
-        click.echo("  还没有任何 run 的审计记录")
+        click.echo(_("  No run audit records yet"))
 
     if full:
         from cnequity.quality.audit import lake_health
 
-        click.echo("  正在重跑全湖审计（读每个历史分区）…")
+        click.echo(_("  Re-running the whole-lake audit (reads every historical partition)…"))
         health = lake_health(cfg, shanghai_today())
-        errors = int(health["findings_by_severity"].get("error", 0))
-        click.echo(f"  全湖审计（刚刚）：{errors} error")
-        for finding in health["error_findings"][:10]:
-            click.echo(f"    [error] {finding.get('dataset', ''):22} {finding.get('message', '')}")
-        if errors:
-            code, note = 1, f"全湖审计有 {errors} 条 error"
+        health_errors = _health_errors(health, coverage_only)
+        click.echo(
+            _("  Whole-lake audit (just now): {value} error").format(value=len(health_errors))
+        )
+        label = _("whole-lake audit")
     else:
         snapshot = quality_root / "health-latest.json"
+        health_errors = []
         if snapshot.exists():
             health = json.loads(snapshot.read_text(encoding="utf-8"))
             age = (datetime.now() - datetime.fromtimestamp(snapshot.stat().st_mtime)).days
-            errors = int(health.get("findings_by_severity", {}).get("error", 0))
+            health_errors = _health_errors(health, coverage_only)
             click.echo(
-                f"  全湖审计快照（{health.get('trade_date')}，{age} 天前）：{errors} error"
-                "；加 --full 立即重跑"
+                _(
+                    "  Whole-lake audit snapshot ({value}, {age} days ago): {value2} error; add --full to re-run now"
+                ).format(value=health.get("trade_date"), age=age, value2=len(health_errors))
             )
         else:
-            click.echo("  还没有全湖审计快照；加 --full 立即生成")
+            click.echo(_("  No whole-lake audit snapshot yet; add --full to generate one now"))
+        label = _("whole-lake audit snapshot")
+    for finding in [f for f in health_errors if f][:10]:
+        click.echo(f"    [error] {finding.get('dataset', ''):22} {finding.get('message', '')}")
+    if health_errors:
+        found = _("{label} has {value} errors").format(label=label, value=len(health_errors))
+        code, note = (
+            1,
+            found if note is None else _("{note}, {found}").format(note=note, found=found),
+        )
     if not runs and not full:
-        return 2, "没有审计记录，质量证明不了（加 --full 立即审计）"
+        return 2, _("no audit records, quality cannot be proven (add --full to audit now)")
     return code, note
+
+
+def _health_errors(health: dict, coverage_only) -> list[dict]:
+    """Quality errors in a whole-lake audit, without the coverage-only ones.
+
+    A snapshot from before ``error_findings`` was recorded has only counts;
+    those count as errors with nothing to list.
+    """
+    if "error_findings" not in health:
+        count = int(health.get("findings_by_severity", {}).get("error", 0))
+        return [{} for _ in range(count)]
+    from cnequity.quality.factor_policy import factor_advisory
+
+    return [f for f in health["error_findings"] if not coverage_only(f) and not factor_advisory(f)]
 
 
 def _check_size(cfg) -> None:
     from cnequity.storage.stats import load_summary, refresh_stats_if_stale, stats_freshness
 
     if stats_freshness(cfg).stale:
-        click.echo("  统计表过期或尚未生成，正在重算…", err=True)
+        click.echo(_("  Stats are stale or not generated yet; recomputing…"), err=True)
         refresh_stats_if_stale(cfg)
     summary = load_summary(cfg)
     if summary is None:
-        click.echo("  还没有统计表（另一个重算正在进行）")
+        click.echo(_("  No stats tables yet (another recompute is in progress)"))
         return
     click.echo(
-        f"  {int(summary.get('datasets') or 0)} 个数据集、{int(summary.get('rows') or 0):,} 行、"
-        f"{int(summary.get('bytes') or 0) / 1e9:.1f} GB（统计于 {summary.get('generated_at')}）"
+        _("  {value} datasets, {value2:,} rows, {value3:.1f} GB (counted at {value4})").format(
+            value=int(summary.get("datasets") or 0),
+            value2=int(summary.get("rows") or 0),
+            value3=int(summary.get("bytes") or 0) / 1e9,
+            value4=summary.get("generated_at"),
+        )
     )

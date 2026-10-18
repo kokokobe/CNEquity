@@ -1,4 +1,4 @@
-# Data lake layout
+# Lake layout
 
 The lake root is determined by `[data].root` in the configuration. Demo lakes and production lakes should use separate paths.
 

@@ -1,4 +1,4 @@
-# CLI side-effect inventory
+# Network and write inventory
 
 Checked against the Click command registry by `scripts/dev/sync_docs.py`. “When run” means when the command body executes; `--help` executes nothing. For source selection and limits, see [Fetching and source protection](../operations/fetch-policy.md).
 
@@ -22,10 +22,26 @@ Checked against the Click command registry by `scripts/dev/sync_docs.py`. “Whe
 | `cne profile list` | none | Lists built-in scopes |
 | `cne profile show` | none | Shows a built-in scope |
 | `cne query` | conditional | SQL reads the lake; fetches data on an on-demand cache miss or refresh |
+| `cne repair adj-factors` | --refresh-sources only | Offline preview with a saved plan by default; --apply publishes supported corrections, retains old revisions and unresolved diagnostics, and saves bounded historical progress |
 | `cne repair corporate-action-gaps` | with --apply | Offline preview by default; --apply queries Baostock and CNINFO per gap, publishes a new version after verification and keeps the old one |
+| `cne repair daily-bar-coverage` | none | Read-only preview by default; --apply retires BSE session debts and proven pre-listing debts using committed data and refreshes coverage watermarks, retaining evidence receipts without changing bars |
+| `cne repair financial-announcements` | none | Read-only preview by default; --apply appends financial reconstructions with LICO original-disclosure evidence, publishes through the repair gate and retains existing vintages |
+| `cne repair financial-originals` | --refresh-sources only | Replays original periodic reports offline by default; --apply appends identifiable current-period consolidated figures, publishes through the repair gate and retains existing vintages and honest observation times |
+| `cne repair fund-factors` | none | Read-only preview by default; --apply overlays recorded fund splits and transfers on the original vendor series, publishes through the repair gate and retains the old revision |
+| `cne repair fund-listing-dates` | Requests current official ETF/LOF directories | Preview by default; --apply archives source responses and fills unknown listing dates through the repair gate, retaining known dates and old revisions |
+| `cne repair fund-no-print` | --refresh-sources only | Offline preview by default; source refresh archives reports and updates caches; --apply approves explicit official fund auction-bar coverage evidence, retires corresponding debts and refreshes watermarks without creating bars or halt rows |
+| `cne repair fund-volume` | only with --refresh-sources | Offline preview by default; online refresh archives historical K-lines from the SSE quote service and reuses or collects EastMoney evidence when turnover conflicts; --apply repairs verified Shanghai and Shenzhen fund volume, passes publication checks and retains old revisions |
+| `cne repair index-history` | --refresh-sources only | Replays the reviewed official attachment catalog for the selected SZSE Component or STAR 50 index offline by default; --apply replaces whole books on effective dates, retaining official dated weights and old revisions; unknown historical weights remain null |
+| `cne repair index-snapshots` | --refresh-sources only | Replays official files offline by default; --apply replaces complete dated constituent snapshots and real weights, publishes through the repair gate and retains old revisions |
 | `cne repair layout` | none | Preview only by default; --apply publishes a new version, keeping the old version and duplicate-observation evidence |
+| `cne repair misdated-valuation` | with --apply | Offline preview by default; --apply fetches valuation for the replaced sessions from the EastMoney datacenter, publishes a new version after verification and keeps the old one |
+| `cne repair missing-values` | none | Read-only preview by default; --apply replaces valuation zero placeholders and unavailable EastMoney/CNI weights with nulls, publishes through the repair gate and retains the old revision |
 | `cne repair orphan-symbols` | none | Preview by default, may register an old-lake baseline version; --apply removes factor and corporate-action rows of securities without daily bars, publishes a new version and keeps the old one |
 | `cne repair stale-suspensions` | none | Preview by default, may register an old-lake baseline version; --apply removes inferred suspensions contradicted by traded daily bars, publishes a new version and keeps the old one |
+| `cne repair status-listing-window` | none | Preview by default, may register an old-lake baseline version; --apply deletes status rows before a security's listing date or without a delisting on record, publishes a new version and keeps the old one |
+| `cne repair status-outages` | none | Preview by default, may register an old-lake baseline version; --apply rebuilds the EastMoney-outage carried rows in the window under the current rule, publishes a new version and keeps the old one |
+| `cne repair status-traded` | none | Read-only preview by default; --apply fills missing status keys from committed positive-volume bars, leaves ST unknown, publishes a new version and keeps the old one |
+| `cne repair stock-listing-dates` | --refresh-sources only | Replays IPO calendars offline by default; --apply fills stock listing dates confirmed by official listed events, publishes through the repair gate and retains old revisions |
 | `cne repair valuation-basis` | none | Preview only by default; --apply publishes a new version and keeps the old one |
 | `cne run clean` | none | Only previews expired files; an explicit --reconcile-runs may modify run state |
 | `cne run compact` | none | Publishes finished, unpublished staging data to the lake |

@@ -269,6 +269,50 @@ def test_fundamentals_apply_the_pit_cutoff(lake):
     assert items == {"roe"}
 
 
+def _backfilled_vintage(lake) -> None:
+    """A 2023Q4 figure announced before as_of but fetched by a 2026 backfill."""
+    part = lake.data_root / "curated" / "financial_statement_items" / "report_period=2023Q4"
+    part.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "report_period": ["2023Q4"],
+            "statement_type": ["income"],
+            "item_code": ["net_profit"],
+            "item_value": [7.0e10],
+            "announce_date": [date(2024, 3, 30)],
+            "source": ["test"],
+            "data_version": ["v1"],
+            "fetched_at": [datetime(2026, 9, 1, tzinfo=timezone.utc)],
+        }
+    ).write_parquet(part / "part-0.parquet")
+
+
+def test_fundamentals_return_backfilled_history_flagged_inexact(lake):
+    _backfilled_vintage(lake)
+    payload = tools.query_fundamentals(lake, as_of="2024-04-30")
+    cols = payload["columns"]
+    exact = {
+        row[cols.index("item_code")]: row[cols.index("pit_is_exact")] for row in payload["rows"]
+    }
+    assert exact == {"roe": True, "net_profit": False}
+    assert payload["pit_mode"] == "best_effort"
+    assert payload["exact_rows"] == 1
+
+
+def test_an_empty_strict_answer_points_at_the_backfilled_rows(lake):
+    _backfilled_vintage(lake)
+    payload = tools.query_fundamentals(lake, as_of="2024-04-01", pit_mode="strict")
+    assert payload["total"] == 0
+    assert "1 row(s)" in payload["note"]
+    assert "best_effort" in payload["note"]
+
+
+def test_fundamentals_reject_an_unknown_pit_mode(lake):
+    with pytest.raises(tools.ToolError, match="pit_mode"):
+        tools.query_fundamentals(lake, as_of="2024-04-30", pit_mode="compatibility")
+
+
 # --- query_dataset ---------------------------------------------------------
 
 
@@ -493,9 +537,44 @@ def test_malformed_frame_gets_a_parse_error_and_the_loop_continues(lake):
     assert replies[1]["id"] == 7
 
 
+def test_process_streams_speak_utf8_under_a_gbk_console(lake, monkeypatch):
+    """Chinese Windows hands the process GBK pipes with CRLF line ends; the
+    client still writes and reads UTF-8 with bare LF."""
+    import io
+
+    def call(index, query):
+        return json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "tools/call",
+                "params": {"name": "resolve_symbol", "arguments": {"query": query}},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+
+    wire = b"\n".join([call(1, "茅台"), b'{"bad": "\xff"}', call(2, "600519")]) + b"\n"
+    sent = io.BytesIO()
+    monkeypatch.setattr(protocol.sys, "stdin", io.TextIOWrapper(io.BytesIO(wire), encoding="gbk"))
+    monkeypatch.setattr(
+        protocol.sys, "stdout", io.TextIOWrapper(sent, encoding="gbk", newline="\r\n")
+    )
+    protocol.serve_stdio(lake)
+
+    raw = sent.getvalue()
+    assert b"\r" not in raw
+    replies = [json.loads(line) for line in raw.decode("utf-8").splitlines()]
+    assert [reply["id"] for reply in replies] == [1, None, 2]
+    assert replies[1]["error"]["code"] == protocol.PARSE_ERROR
+    for reply in (replies[0], replies[2]):
+        body = json.loads(reply["result"]["content"][0]["text"])
+        assert body["rows"][0][:2] == ["600519.SH", "贵州茅台"]
+
+
 # --- the CLI entry point ---------------------------------------------------
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_mcp_refuses_a_lake_with_nothing_in_it(tmp_path):
     """An MCP client spawns this from a directory of its own choosing. A
     relative data.root then resolves somewhere else, every tool answers "no
@@ -762,6 +841,7 @@ def test_every_tool_is_marked_read_only():
     assert all(d["annotations"] == {"readOnlyHint": True} for d in DESCRIPTORS)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_mcp_http_options_need_http():
     from click.testing import CliRunner
 

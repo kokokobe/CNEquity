@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from cnequity.cli.main import cli
@@ -68,6 +69,7 @@ def test_2018_ine_plan_counts_separate_official_file(tmp_path):
     assert not (tmp_path / "lake").exists()
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_minute_symbols_are_supported_but_history_dates_are_not(tmp_path):
     config = _config(tmp_path)
     args = [
@@ -94,6 +96,7 @@ def test_force_is_not_silently_ignored_for_derivatives(tmp_path):
     assert result.exit_code != 0 and "--refresh" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_continuous_rejects_ignored_date_bounds(tmp_path):
     config = _config(tmp_path)
     result = CliRunner().invoke(

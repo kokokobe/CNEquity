@@ -13,18 +13,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cnequity.i18n import N_, _, localize
 from cnequity.storage.atomic import write_json_atomic
 
 PACK_ORDER = ("market", "fundamentals", "universe")
 
-SNAPSHOT_NOTE = (
-    "交易状态这类快照漏掉当天，下一次按日期的日更补不回这一天；收尾补抓会在当天再试一次。"
-    "公告和资讯不在研究包日更里，需要时另跑 `cne run events`。"
+#: Translate where shown: `_(SNAPSHOT_NOTE)`.
+SNAPSHOT_NOTE = N_(
+    "A snapshot such as trading status that misses a day cannot be filled by the next dated "
+    "daily update; the closing catch-up tries again that same day. Announcements and news are "
+    "not part of the research-pack daily update; run `cne run events` separately when needed."
 )
 
 
 @dataclass(frozen=True)
 class ResearchPack:
+    """A pack; `title`, `summary` and `extra` are catalog messages (`N_`)."""
+
     id: str
     title: str
     summary: str
@@ -37,8 +42,11 @@ class ResearchPack:
 PACKS: dict[str, ResearchPack] = {
     "market": ResearchPack(
         id="market",
-        title="行情",
-        summary="全市场日线、复权、日历、公司行为和当前交易状态。初始化固定下载这一套。",
+        title=N_("Market"),
+        summary=N_(
+            "Whole-market daily bars, adjustment, calendar, corporate actions and current "
+            "trading status. Init always downloads this set."
+        ),
         datasets=(
             "instruments",
             "trading_calendar",
@@ -53,8 +61,11 @@ PACKS: dict[str, ResearchPack] = {
     ),
     "fundamentals": ResearchPack(
         id="fundamentals",
-        title="基本面",
-        summary="财报、股本和披露日程。不在初始化里下载。",
+        title=N_("Fundamentals"),
+        summary=N_(
+            "Financial statements, share structure and the disclosure schedule. "
+            "Not downloaded by init."
+        ),
         datasets=(
             "financial_statement_items",
             "share_structure",
@@ -62,19 +73,25 @@ PACKS: dict[str, ResearchPack] = {
         ),
         groups=("fundamentals",),
         next_command="cne run daily --pack fundamentals",
-        extra=(
-            "这个日更组还会带上指数成分、行业成分和股东人数。"
-            "估值历史用 `cne backfill valuation_metrics`，不必为此打开整个资金组。"
+        extra=N_(
+            "This daily group also brings index constituents, industry constituents and "
+            "shareholder counts. For valuation history use `cne backfill valuation_metrics`; "
+            "there is no need to enable the whole money-flow group for it."
         ),
     ),
     "universe": ResearchPack(
         id="universe",
-        title="股票池",
-        summary="历史 ST 证据。当前交易状态和窗口内退市日线已经在行情包里。",
+        title=N_("Universe"),
+        summary=N_(
+            "Historical ST evidence. Current trading status and delisted daily bars inside "
+            "the window are already in the market pack."
+        ),
         datasets=(),
         groups=(),
         next_command="cne backfill trading_status",
-        extra="这个包不增加日更请求。历史 ST 是单独一次补数。",
+        extra=N_(
+            "This pack adds no daily-update requests. Historical ST is a separate one-off backfill."
+        ),
     ),
 }
 
@@ -85,7 +102,7 @@ def normalize_packs(names: Sequence[str] | None) -> tuple[str, ...]:
         return ("market",)
     unknown = [name for name in names if name not in PACKS]
     if unknown:
-        raise ValueError("未知研究包：" + "、".join(unknown))
+        raise ValueError(_("Unknown research packs: {names}").format(names=_(", ").join(unknown)))
     selected = set(names)
     return tuple(name for name in PACK_ORDER if name in selected)
 
@@ -198,34 +215,34 @@ def assess(config, names: Sequence[str] | None = None) -> list[dict[str, Any]]:
                 window = _window(catalog.get(present[0]))
         if pack_id == "market" and "daily_bars" in missing and preview:
             status = "partial"
-            detail = (
-                f"已有 {len(preview)} 只股票的未复权日线可按代码查询"
-                '（`load("daily_bars", symbols=[...])`）。'
-                "复权因子要等初始化收尾发布。这还不是全市场。"
-            )
+            detail = _(
+                "Unadjusted daily bars for {count} stocks can already be queried by symbol "
+                '(`load("daily_bars", symbols=[...])`). Adjustment factors are published when '
+                "init finishes. This is not the whole market yet."
+            ).format(count=len(preview))
             nxt = 'load("daily_bars", symbols=["600519.SH"])'
         elif not missing:
             status = "ready"
-            detail = pack.summary
+            detail = _(pack.summary)
             nxt = ""
         elif len(missing) == len(pack.datasets):
             status = "missing"
-            detail = "还没有这些数据：" + "、".join(missing)
+            detail = _("None of this data yet: {datasets}").format(datasets=_(", ").join(missing))
             nxt = pack.next_command
         else:
             status = "partial"
-            detail = "还缺：" + "、".join(missing)
+            detail = _("Still missing: {datasets}").format(datasets=_(", ").join(missing))
             nxt = pack.next_command
         if window and pack_id == "market" and status == "ready":
-            detail = f"日线窗口 {window}。{detail}"
+            detail = _("Daily-bar window {window}. {detail}").format(window=window, detail=detail)
         elif window and status != "partial":
-            detail = f"已有窗口 {window}。{detail}"
+            detail = _("Window so far {window}. {detail}").format(window=window, detail=detail)
         if pack.extra:
-            detail = f"{detail} {pack.extra}"
+            detail = f"{detail} {localize(pack.extra)}"
         reports.append(
             {
                 "id": pack.id,
-                "title": pack.title,
+                "title": _(pack.title),
                 "status": status,
                 "window": window,
                 "detail": detail.strip(),
@@ -239,10 +256,12 @@ def _assess_universe(config, pack: ResearchPack, catalog: dict[str, dict]) -> di
     if not (catalog.get("instruments") or {}).get("has_data"):
         return {
             "id": pack.id,
-            "title": pack.title,
+            "title": _(pack.title),
             "status": "missing",
             "window": None,
-            "detail": f"{pack.summary} 先要有证券主数据。",
+            "detail": _("{summary} Security master data comes first.").format(
+                summary=_(pack.summary)
+            ),
             "next_command": "cne init",
         }
     try:
@@ -252,58 +271,76 @@ def _assess_universe(config, pack: ResearchPack, catalog: dict[str, dict]) -> di
     except (OSError, ValueError, TypeError) as exc:
         return {
             "id": pack.id,
-            "title": pack.title,
+            "title": _(pack.title),
             "status": "unknown",
             "window": None,
-            "detail": f"历史 ST 证据读不出来（{type(exc).__name__}）。{pack.extra}",
+            "detail": _("Historical ST evidence cannot be read ({error}). {extra}").format(
+                error=type(exc).__name__, extra=localize(pack.extra)
+            ),
             "next_command": pack.next_command,
         }
     verified = bool(evidence.get("verified"))
     start, end = evidence.get("coverage_start"), evidence.get("coverage_end")
     window = f"{start} .. {end}" if start and end else None
     if verified:
-        detail = "历史 ST 证据覆盖当前股票池。"
+        detail = _("Historical ST evidence covers the current universe.")
         if window:
-            detail = f"证据窗口 {window}。{detail}"
+            detail = _("Evidence window {window}. {detail}").format(window=window, detail=detail)
         return {
             "id": pack.id,
-            "title": pack.title,
+            "title": _(pack.title),
             "status": "ready",
             "window": window,
-            "detail": f"{detail} {pack.extra}".strip(),
+            "detail": f"{detail} {localize(pack.extra)}".strip(),
             "next_command": "",
         }
-    reason = evidence.get("reason") or "没有覆盖整个股票池的历史 ST 收据"
+    reason = evidence.get("reason") or _("no historical ST receipt covering the whole universe")
     return {
         "id": pack.id,
-        "title": pack.title,
+        "title": _(pack.title),
         "status": "missing",
         "window": window,
-        "detail": f"历史 ST 尚未覆盖：{reason}。当前交易状态不能代替它。{pack.extra}",
+        "detail": _(
+            "Historical ST not covered yet: {reason}. Current trading status cannot stand in "
+            "for it. {extra}"
+        ).format(reason=reason, extra=localize(pack.extra)),
         "next_command": pack.next_command,
     }
 
 
 def format_readiness(config, names: Sequence[str] | None = None) -> str:
-    lines = ["研究包："]
+    lines = [_("Research packs:")]
     for row in assess(config, names):
-        lines.append(f"- {row['title']}：{row['detail']}")
+        lines.append(_("- {title}: {detail}").format(title=row["title"], detail=row["detail"]))
         if row["next_command"]:
-            lines.append(f"  下一步：{row['next_command']}")
+            lines.append(_("  Next: {command}").format(command=row["next_command"]))
     groups = groups_for(names if names is not None else (load_packs(config) or ("market",)))
     if groups:
         snapshots = snapshot_steps(config, groups)
-        scheduled = "、".join(groups)
-        lines.append(f"定时日更若只跑这些研究包，调度组是 {scheduled}，不含事件流。")
+        lines.append(
+            _(
+                "If the scheduled daily update runs only these research packs, its schedule "
+                "groups are {groups}, without the event stream."
+            ).format(groups=_(", ").join(groups))
+        )
         if snapshots:
-            lines.append("其中漏一天就补不回的数据集：" + "、".join(snapshots) + "。")
-    lines.append(SNAPSHOT_NOTE)
+            lines.append(
+                _("Of these, datasets lost for good if a day is missed: {datasets}.").format(
+                    datasets=_(", ").join(snapshots)
+                )
+            )
+    lines.append(_(SNAPSHOT_NOTE))
     return "\n".join(lines)
 
 
 def readiness_payload(config) -> dict[str, Any]:
     if config is None:
-        return {"packs": [], "groups": [], "snapshots": [], "note": "先完成首次配置。"}
+        return {
+            "packs": [],
+            "groups": [],
+            "snapshots": [],
+            "note": _("Finish the first-time setup first."),
+        }
     chosen = load_packs(config) or ("market",)
     groups = groups_for(chosen)
     return {
@@ -311,7 +348,7 @@ def readiness_payload(config) -> dict[str, Any]:
         "saved": list(chosen),
         "groups": groups,
         "snapshots": snapshot_steps(config, groups),
-        "note": SNAPSHOT_NOTE,
+        "note": _(SNAPSHOT_NOTE),
     }
 
 

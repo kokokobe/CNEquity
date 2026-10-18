@@ -17,6 +17,18 @@ class _Client:
         self.closed = True
 
 
+def test_push2_zero_placeholders_are_null(monkeypatch):
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.valuation.fetch_clist_pages",
+        lambda *a, **k: [
+            {"f12": "600519", "f13": 1, "f9": 0, "f23": -2, "f130": 0, "f20": 0, "f21": 0}
+        ],
+    )
+    row = fetch_valuation_metrics(date(2024, 6, 28), client=_Client()).row(0, named=True)
+    assert row["pb"] == -2
+    assert all(row[column] is None for column in ["pe_dynamic", "ps_ttm", "total_mv", "float_mv"])
+
+
 def test_fetch_valuation_metrics_maps_fields(monkeypatch):
     raw = [
         {

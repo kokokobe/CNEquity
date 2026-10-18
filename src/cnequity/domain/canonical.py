@@ -26,6 +26,9 @@ def canonical_policy(dataset: str) -> str:
         "corporate_actions": "corporate_action_evidence_v1",
         "trading_status": "trading_status_evidence_v1",
         "instruments": "instrument_identity_merge_v1",
+        "financial_statement_items": "issuer_original_evidence_v1",
+        "index_constituents": "dated_index_weight_evidence_v1",
+        "daily_bars": "positive_turnover_quantity_v1",
     }.get(dataset, "observation_recency_v1")
 
 
@@ -59,6 +62,24 @@ def _evidence_rank_expr(dataset: str, schema) -> pl.Expr | None:
         return _trading_status_evidence_rank(schema)
     if dataset == "corporate_actions":
         return _action_evidence_level(set(schema.names()))
+    if dataset == "financial_statement_items" and "source" in schema:
+        return (
+            pl.when(pl.col("source") == "cninfo_original")
+            .then(2)
+            .when(pl.col("source").fill_null("").str.contains("backfill|reconstruct|snapshot"))
+            .then(0)
+            .otherwise(1)
+        )
+    if dataset == "index_constituents" and "weight" in schema:
+        # A later membership-only observation cannot erase a real weight for
+        # this exact date. No weight is ever carried between snapshot dates.
+        return pl.col("weight").is_not_null().cast(pl.Int8)
+    if dataset == "daily_bars" and {"volume", "amount"} <= set(schema.names()):
+        # A later whole-lot history refresh must not resurrect a rounded zero
+        # quantity after an independently published share count repaired it.
+        # Preserve unresolved rows when no better observation exists; zero
+        # amount/no-print rows and missing amounts keep normal recency rules.
+        return pl.when((pl.col("volume") == 0) & (pl.col("amount") > 0)).then(0).otherwise(1)
     return None
 
 

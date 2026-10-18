@@ -60,12 +60,12 @@ __all__ = [
 EXCHANGES: tuple[str, ...] = ("SHF", "INE", "DCE", "CZC", "GFE", "CFE")
 
 EXCHANGE_NAMES: dict[str, str] = {
-    "SHF": "上海期货交易所",
-    "INE": "上海国际能源交易中心",
-    "DCE": "大连商品交易所",
-    "CZC": "郑州商品交易所",
-    "GFE": "广州期货交易所",
-    "CFE": "中国金融期货交易所",
+    "SHF": "上海期货交易所",  # i18n-ignore: official exchange name
+    "INE": "上海国际能源交易中心",  # i18n-ignore: official exchange name
+    "DCE": "大连商品交易所",  # i18n-ignore: official exchange name
+    "CZC": "郑州商品交易所",  # i18n-ignore: official exchange name
+    "GFE": "广州期货交易所",  # i18n-ignore: official exchange name
+    "CFE": "中国金融期货交易所",  # i18n-ignore: official exchange name
 }
 
 #: CFFEX index options are written on the spot index, not on a futures

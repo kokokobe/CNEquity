@@ -1,4 +1,4 @@
-"""EastMoney index constituents and weights."""
+"""EastMoney index membership snapshots; constituent weights are unavailable."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.common import exchange_from_datacenter, symbol_from_em
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.domain.market_time import last_closed_session
 from cnequity.domain.symbols import format_symbol
 
 DEFAULT_INDICES = [
@@ -46,6 +47,16 @@ def fetch_index_constituents(
     client: EastMoneyClient | None = None,
     config=None,
 ) -> pl.DataFrame:
+    if indices == []:
+        return pl.DataFrame()
+    from cnequity.orchestrator.outcomes import SourceUnavailableError
+
+    if as_of_date != last_closed_session():
+        raise SourceUnavailableError(
+            "index_constituents: EastMoney serves current membership only; "
+            "an older as_of_date would introduce survivorship bias. "
+            "Use retained snapshots or supported CNI adjustment history."
+        )
     owns = client is None
     if client is None:
         client = EastMoneyClient(config=config)
@@ -65,9 +76,8 @@ def fetch_index_constituents(
                 filter_expr=f'(INDEX_CODE="{index_code}")',
                 page_size=5000,
             )
-            # This report is a change log. Reconstruct the requested as-of
-            # membership from the latest valid effective row per security;
-            # never stamp an undated or future row onto the requested date.
+            # Effective dates validate current membership; they cannot recover
+            # removed members or reconstruct an older snapshot.
             latest: dict[str, tuple[date, dict]] = {}
             for item in raw:
                 returned_code = str(item.get("INDEX_CODE") or "").zfill(6)
@@ -89,12 +99,11 @@ def fetch_index_constituents(
                     )
                     continue
                 if effective_date > as_of_date:
-                    logger.warning(
-                        "EastMoney index constituents: ignoring future member date for %s: %s",
-                        index_code,
-                        returned_date,
+                    raise SourceUnavailableError(
+                        f"index_constituents: {index_sym} contains a future adjustment "
+                        f"dated {returned_date}; current membership cannot recover "
+                        f"members removed from the {as_of_date} snapshot"
                     )
-                    continue
                 code = str(item.get("SECURITY_CODE", "")).zfill(6)
                 previous = latest.get(code)
                 if previous is None or effective_date > previous[0]:
@@ -115,7 +124,7 @@ def fetch_index_constituents(
                         "symbol": sym,
                         "as_of_date": as_of_date,
                         # EastMoney RPT_INDEX_CONSTITUENT no longer exposes constituent weights.
-                        "weight": 0.0,
+                        "weight": None,
                     }
                 )
             if matched == 0:
@@ -131,4 +140,6 @@ def fetch_index_constituents(
         )
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(subset=["index_symbol", "symbol", "as_of_date"], keep="last")
+    return pl.DataFrame(rows, schema_overrides={"weight": pl.Float64}).unique(
+        subset=["index_symbol", "symbol", "as_of_date"], keep="last"
+    )

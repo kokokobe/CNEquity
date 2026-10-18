@@ -215,9 +215,17 @@ def _scan_parquet_paths(
     if all(schema == schemas[0] for schema in schemas[1:]):
         return pl.scan_parquet(paths, hive_partitioning=hive)
     scans: list[pl.LazyFrame] = []
-    for path, _schema in zip(paths, schemas, strict=True):
-        scan = pl.scan_parquet(path, hive_partitioning=hive)
-        scans.append(scan)
+    # Preserve file order (canonical tie-breaking depends on it), while
+    # avoiding thousands of optimizer branches for a mostly uniform history.
+    group = [paths[0]]
+    previous_schema = schemas[0]
+    for path, schema in zip(paths[1:], schemas[1:], strict=True):
+        if schema != previous_schema:
+            scans.append(pl.scan_parquet(group, hive_partitioning=hive))
+            group = []
+        group.append(path)
+        previous_schema = schema
+    scans.append(pl.scan_parquet(group, hive_partitioning=hive))
     return pl.concat(scans, how="diagonal_relaxed")
 
 
@@ -384,7 +392,7 @@ def collect_parquet_root(
 
 
 def lazy_row_count(lf: pl.LazyFrame) -> int:
-    if lf.collect_schema().names() == ():
+    if not lf.collect_schema().names():
         return 0
     return int(lf.select(pl.len()).collect().item())
 

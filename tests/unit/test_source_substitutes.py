@@ -40,6 +40,7 @@ def _entry(entries, dataset):
     return next((e for e in entries if e.dataset == dataset), None)
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_a_healthy_lake_has_nothing_to_substitute():
     report = _report(*(_result(p.key, "ok") for p in sub.PROBES))
     assert sub.substitution_report(report) == []
@@ -133,6 +134,7 @@ def test_any_non_ok_endpoint_counts_as_failing(status):
     assert entry is not None and entry.stranded is True
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_cover_inside_the_failing_domain_is_not_cover():
     """A sibling host is not a second opinion. Every source in today's registry
     owns its failure domain, so this is checked directly on the rule."""

@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from cnequity.i18n import _
 from cnequity.serve.guard import LOOPBACK_HOSTS, check_browser, client_host, ops_enabled
 from cnequity.serve.ops.catalog import OpsError, UnknownOp
 from cnequity.serve.ops.runner import OpsRejected, OpsService, requested_by
@@ -75,13 +76,13 @@ def mode_payload(request: Request) -> dict:
     app = request.app.state
     host = client_host(request)
     if app.read_only:
-        label = "只读"
+        label = _("read-only")
     elif app.setup:
-        label = "首次配置"
+        label = _("first-time setup")
     elif host not in LOOPBACK_HOSTS and not app.allow_remote_ops:
-        label = "远程浏览"
+        label = _("remote browsing")
     else:
-        label = "可发起取数"
+        label = _("can start fetches")
     return {
         "setup": bool(app.setup),
         "read_only": bool(app.read_only),
@@ -90,7 +91,18 @@ def mode_payload(request: Request) -> dict:
         "label": label,
         "suggested_data_root": (str(Path("./data/cnequity").resolve()) if app.setup else None),
         "config_path": str(app.config_path) if app.config_path else None,
+        "data_root": str(app.config.data_root) if app.config is not None else None,
+        "config_drift": config_drift(app),
     }
+
+
+def config_drift(state) -> dict | None:
+    """The page's view of :func:`preflight.config_drift`; none before setup."""
+    from cnequity.serve.ops.preflight import config_drift as drift
+
+    if state.setup or state.config is None:
+        return None
+    return drift(state.config)
 
 
 def _service(request: Request) -> OpsService:
@@ -103,7 +115,7 @@ def _settings_service(request: Request):
     state = request.app.state
     config = state.config
     if config is None:
-        raise OpsError("先完成首次配置，再修改取数设置。")
+        raise OpsError(_("Finish first-time setup before changing fetch settings."))
     service = getattr(state, "settings_service", None)
     if service is None or service.config is not config:
         service = SettingsService(config)
@@ -117,7 +129,7 @@ def _schedule_service(request: Request):
     state = request.app.state
     config = state.config
     if config is None:
-        raise OpsError("先完成首次配置，再设置定时任务。")
+        raise OpsError(_("Finish first-time setup before setting up scheduled tasks."))
     service = getattr(state, "schedule_service", None)
     if service is None or service.config is not config:
         service = ScheduleService(config)
@@ -136,23 +148,25 @@ def _fail(exc: OpsError) -> HTTPException:
 def accept_data_root(text: str) -> tuple[Path, str | None]:
     path = Path(text).expanduser()
     if not path.is_absolute():
-        raise OpsError("数据目录必须是绝对路径。")
+        raise OpsError(_("The data directory must be an absolute path."))
     try:
         resolved = path.resolve()
     except OSError as exc:
-        raise OpsError(f"无法解析数据目录（{exc}）。") from exc
+        raise OpsError(_("Cannot resolve the data directory ({exc}).").format(exc=exc)) from exc
     if resolved.exists() and not resolved.is_dir():
-        raise OpsError("数据目录不能是已有文件。")
+        raise OpsError(_("The data directory cannot be an existing file."))
     parent = resolved.parent
     while not parent.exists():
         parent = parent.parent
     if not parent.is_dir():
-        raise OpsError("数据目录的上级路径不是目录。")
+        raise OpsError(_("The data directory's parent is not a directory."))
     if not os.access(resolved if resolved.exists() else parent, os.W_OK):
-        raise OpsError("数据目录或它的上级目录不可写。")
+        raise OpsError(_("The data directory or its parent is not writable."))
     hint = None
     if (resolved / "curated").exists() or (resolved / "meta" / "manifest.db").exists():
-        hint = "这个目录里已经有数据湖，生成配置后会接管它，不会清空。"
+        hint = _(
+            "This directory already holds a lake; once the config is generated it takes it over without clearing it."
+        )
     return resolved, hint
 
 
@@ -199,7 +213,7 @@ def install_ops_routes(app: FastAPI, *, mutations: bool) -> None:
 
                 path = Path(root).expanduser()
                 if not path.is_absolute():
-                    raise OpsError("备份目录必须是绝对路径。")
+                    raise OpsError(_("The backup directory must be an absolute path."))
                 _reject_symlink_path(path, label="snapshot root")
             return inventory(request.app.state.config, root)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -355,10 +369,10 @@ def install_ops_routes(app: FastAPI, *, mutations: bool) -> None:
     def setup_config(body: SetupBody, request: Request) -> dict:
         check_browser(request, mutation=True, scope="ops")
         if not request.app.state.setup:
-            raise HTTPException(409, "已经有配置。")
+            raise HTTPException(409, _("A config already exists."))
         target = request.app.state.config_path
         if target is None:
-            raise HTTPException(409, "没有可写入的配置路径。")
+            raise HTTPException(409, _("There is no writable config path."))
         try:
             data_root, hint = accept_data_root(body.data_root)
             from cnequity.config import load_config
@@ -370,11 +384,13 @@ def install_ops_routes(app: FastAPI, *, mutations: bool) -> None:
             config = load_config(target)
             activate_lake(request.app, config)
         except FileExistsError as exc:
-            raise HTTPException(409, "配置文件已经存在。") from exc
+            raise HTTPException(409, _("The config file already exists.")) from exc
         except OpsError as exc:
             raise _fail(exc) from exc
         except (OSError, ValueError) as exc:
-            raise HTTPException(422, f"无法生成配置（{type(exc).__name__}）。") from exc
+            raise HTTPException(
+                422, _("Could not generate the config ({name}).").format(name=type(exc).__name__)
+            ) from exc
         return {
             "config_path": str(Path(target).resolve()),
             "data_root": str(data_root),

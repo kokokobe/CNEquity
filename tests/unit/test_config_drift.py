@@ -8,6 +8,8 @@ answers `Configuration OK`.
 
 from __future__ import annotations
 
+import pytest
+
 from cnequity.config.bootstrap import example_toml_text
 from cnequity.config.drift import config_drift, render_drift
 
@@ -89,6 +91,7 @@ def test_extra_local_settings_are_not_reported(tmp_path):
     assert drift.clean
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_render_names_the_unscheduled_steps_first(tmp_path):
     text = _without_snapshot_step()
     path = _write(tmp_path, text)

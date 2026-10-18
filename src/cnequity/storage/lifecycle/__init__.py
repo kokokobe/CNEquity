@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from cnequity.file_lock import lake_mutation_lock
+from cnequity.i18n import _
 from cnequity.storage.atomic import write_json_atomic
 from cnequity.storage.revisions import RevisionStore, _reject_symlink_path, sha256_file
 
@@ -84,13 +85,48 @@ def _read(path: Path) -> dict:
         raise LifecycleError(f"Cannot read lifecycle metadata: {path}") from exc
 
 
-def reference_files(roots: list[dict]) -> list[Path]:
+#: What the lake rewrites under its own ``meta`` on every run: source caches,
+#: watermarks and current-pointer mirrors, checkpoints, locks, health and
+#: quality reports, and the derivatives capture records. None of it is a
+#: reference a reviewer registered, and scanning it made every run invalidate
+#: the import, so cleanup refused from the first run after one.
+RUNTIME_META_PATHS = (
+    "adj_factor_arbitration_cache",
+    "checkpoints",
+    "derivations",
+    "derivatives/annual_archives",
+    "derivatives/futures_bars",
+    "derivatives/greeks_dependencies",
+    "derivatives/http_cache",
+    "derivatives/option_bars",
+    "instruments_absence_streak.json",
+    "lifecycle",
+    "locks",
+    "payment_date_repairs",
+    "quality",
+    "rate_limits",
+    "raw",
+    "repairs",
+    "revisions",
+    "source_cache",
+    "source_health",
+    "source_snapshots",
+    "stability",
+    "state",
+    "stats",
+)
+
+
+def reference_files(roots: list[dict], *, meta_root: Path | None = None) -> list[Path]:
     """Enumerate registered evidence roots, including newly added reports.
 
     Exclusions are explicit root-relative paths, saved in the import report.
-    Missing roots, unreadable files and links never mean 'no references'.
+    A root that is the lake's own *meta_root* also skips
+    :data:`RUNTIME_META_PATHS`. Missing roots, unreadable files and links never
+    mean 'no references'.
     """
     found: set[Path] = set()
+    lake_meta = Path(meta_root).resolve() if meta_root is not None else None
     for spec in roots:
         root = Path(spec["path"])
         _reject_symlink_path(root)
@@ -99,6 +135,8 @@ def reference_files(roots: list[dict]) -> list[Path]:
         excluded = [Path(p) for p in spec.get("exclude", [])]
         if any(p.is_absolute() or ".." in p.parts or not p.parts for p in excluded):
             raise LifecycleError("Invalid reference exclusion")
+        if lake_meta is not None and root.resolve() == lake_meta:
+            excluded += [Path(p) for p in RUNTIME_META_PATHS]
 
         def onerror(error: OSError) -> None:
             raise LifecycleError(f"Reference scan failed: {error}") from error
@@ -119,8 +157,8 @@ def reference_files(roots: list[dict]) -> list[Path]:
     return sorted(found)
 
 
-def reference_fingerprint(roots: list[dict]) -> str:
-    return digest([(str(p), sha256_file(p)) for p in reference_files(roots)])
+def reference_fingerprint(roots: list[dict], *, meta_root: Path | None = None) -> str:
+    return digest([(str(p), sha256_file(p)) for p in reference_files(roots, meta_root=meta_root)])
 
 
 def _tree_signature(root: Path) -> str:
@@ -210,7 +248,7 @@ class LifecycleStore:
         ):
             raise LifecycleError("Invalid reference import manifest")
         with lake_mutation_lock(self.meta):
-            fingerprint = reference_fingerprint(manifest["reference_roots"])
+            fingerprint = reference_fingerprint(manifest["reference_roots"], meta_root=self.meta)
             if fingerprint != manifest.get("reference_fingerprint"):
                 raise LifecycleError("References changed since inventory; refresh the import")
             from cnequity.storage.lifecycle.snapshot import read_dependencies
@@ -451,7 +489,10 @@ class LifecycleStore:
     def _plan(self, keep: int) -> dict:
         registry = self.registry(required=True)
         assert registry is not None
-        if reference_fingerprint(registry["reference_roots"]) != registry["reference_fingerprint"]:
+        if (
+            reference_fingerprint(registry["reference_roots"], meta_root=self.meta)
+            != registry["reference_fingerprint"]
+        ):
             raise LifecycleError("Reference inventory changed; refresh holds before planning")
         report = self.inspect(keep=keep)
         candidates = [o for o in report["objects"] if not o["blocked_reasons"]]
@@ -470,7 +511,7 @@ class LifecycleStore:
         if phase not in ("mark", "purge"):
             raise LifecycleError("Invalid lifecycle plan phase")
         if selected_ids is not None and phase != "purge":
-            raise LifecycleError("手动选择只能用于删除。")
+            raise LifecycleError(_("A manual selection can only be used for deletion."))
         with lake_mutation_lock(self.meta):
             if unfinished(self):
                 raise LifecycleError("Resume unfinished purge before creating another plan")

@@ -41,6 +41,13 @@ hide:
     </div>
   </section>
 
+  <section class="cne-metrics" aria-label="覆盖范围">
+    <div><strong>55</strong><span>登记数据集，47 个采集 + 8 个派生</span></div>
+    <div><strong>沪深京</strong><span>股票、指数、ETF / LOF，可选商品期货与期权</span></div>
+    <div><strong>Parquet</strong><span>开放文件；Python、DuckDB、Polars 和只读 MCP 读同一份</span></div>
+    <a href="datasets/catalog/">看完整目录 →</a>
+  </section>
+
   <section class="cne-section">
     <div class="cne-coverage">
       <div class="cne-section__heading">
@@ -128,7 +135,7 @@ cne check</code></pre>
           <span>01</span>
           <div>
             <h3>注册不等于已采集</h3>
-            <p>当前开发树登记 55 个数据集，其中有可选和占位入口。安装不会附带行情。</p>
+            <p>目前登记 55 个数据集（47 个 curated + 8 个 derived），其中有可选和占位入口。安装不会附带行情。</p>
             <a href="datasets/catalog/">看数据集目录</a>
           </div>
         </article>
@@ -170,5 +177,5 @@ cne check</code></pre>
       <a class="cne-button cne-button--ghost" href="changelog/">更新日志</a>
     </div>
   </section>
-  <p class="cne-fine">文档对应当前仓库实现，PyPI 稳定版可能落后。先运行 <code>cne --version</code>，再核对<a href="changelog/">更新日志</a>。代码 Apache-2.0，数据受各上游条款约束，见<a href="legal-and-data-sources/">许可与来源</a>。方向和边界见<a href="architecture/overview/">产品设计</a>。问题请到 <a href="https://github.com/rootSunc/CNEquity/issues">Issues</a> 反馈。</p>
+  <p class="cne-fine">文档随 main 分支更新；还没发布到 PyPI 的改动列在<a href="changelog/">更新日志</a>顶部标为「未发布」的版本下。用 <code>cne --version</code> 核对本机版本。代码 Apache-2.0，数据受各上游条款约束，见<a href="legal-and-data-sources/">许可与来源</a>。方向和边界见<a href="architecture/overview/">产品设计</a>。问题请到 <a href="https://github.com/rootSunc/CNEquity/issues">Issues</a> 反馈。</p>
 </div>

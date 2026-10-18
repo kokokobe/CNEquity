@@ -16,6 +16,7 @@ _REPAIR_FLAGS = {
     "tdx_amount_repair": "_tdx_amount_repair",
     "tdx_volume_repair": "_tdx_volume_repair",
     "turnover_repair": "_turnover_repair",
+    "turnover_peer_review": "_turnover_peer_review",
 }
 _SETTINGS = (
     "ingest_universe",

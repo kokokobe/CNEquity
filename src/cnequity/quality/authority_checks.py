@@ -120,7 +120,7 @@ def _macro_pmi_vs_nbs_outcome(config: Config, trade_date: date) -> AuthorityChec
                 "check": "macro_pmi_vs_nbs",
                 "message": (
                     f"pmi_manufacturing for {obs_date.isoformat()} is {ours} in curated but "
-                    f"{published['value']} in the 国家统计局 release — the vendor has drifted "
+                    f"{published['value']} in the 国家统计局 release — the vendor has drifted "  # i18n-ignore: Chinese term in an English message
                     "from the publisher"
                 ),
                 "indicator_id": "pmi_manufacturing",

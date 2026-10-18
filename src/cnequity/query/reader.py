@@ -784,6 +784,8 @@ def _apply_adjustment(
             f"adj_factors has no {STORED_ADJUST_TYPE!r} rows; re-run derive (ADR-0004)"
         )
 
+    # Historical factor diagnostics are advisory and belong to the read
+    # receipt (load_with_receipt, MCP, serve), not to every adjusted load.
     factors = factors.select(["symbol", "trade_date", "factor"])
 
     if adjust == "qfq":
@@ -822,7 +824,6 @@ def _apply_pit_filters(
     items: list[str] | None,
     all_vintages: bool,
     pit_mode: PitMode,
-    legacy_cutoff: bool = False,
 ) -> pl.DataFrame:
     try:
         df = classify_pit_rows(
@@ -830,7 +831,6 @@ def _apply_pit_filters(
             dataset,
             as_of=as_of,
             pit_mode=pit_mode,
-            legacy_cutoff=legacy_cutoff,
         )
     except ValueError as exc:
         raise ReaderError(str(exc)) from exc
@@ -929,6 +929,8 @@ def load(
         announced on or before this date, and — because a restatement stores a
         second vintage of the same fact rather than overwriting the first —
         returns the vintage that was current on that date.
+        For ``index_constituents``, selects each index's latest whole retained
+        snapshot on or before this date; never backdates future membership.
     items:
         ``item_code`` filter for ``financial_statement_items``.
     all_vintages:
@@ -942,10 +944,10 @@ def load(
         later than ``as_of``. Rows from the current historical backfill are
         reconstructed and are excluded. ``"best_effort"`` keeps those rows
         for exploratory work and adds ``pit_is_exact=False``/
-        ``pit_quality="reconstructed"``. When omitted, the 0.x compatibility
-        path behaves like best-effort but retains the old ``fetched_at``
-        cutoff; it is deprecated and emits no exactness guarantee. Choose the
-        mode explicitly in research manifests.
+        ``pit_quality="reconstructed"``. Omitting the mode (or passing None)
+        selects best-effort, including history collected after ``as_of``.
+        Choose strict explicitly when the research needs evidence the lake
+        held on that date, and record the mode in research manifests.
     symbols:
         Restrict to these symbols when the dataset has a ``symbol`` column.
     strict_universe:
@@ -976,8 +978,7 @@ def load(
     )
     if dataset not in CURATED_DATASETS | DERIVED_DATASETS:
         raise ReaderError(f"unknown dataset {dataset!r}")
-    legacy_pit_mode = pit_mode is None
-    effective_pit_mode: PitMode = "best_effort" if legacy_pit_mode else pit_mode
+    effective_pit_mode: PitMode = "best_effort" if pit_mode is None else pit_mode
     if effective_pit_mode not in ("strict", "best_effort"):
         raise ReaderError(f"unsupported pit_mode {pit_mode!r}; use 'strict' or 'best_effort'")
 
@@ -1047,7 +1048,6 @@ def load(
             items=items,
             all_vintages=all_vintages,
             pit_mode=effective_pit_mode,
-            legacy_cutoff=legacy_pit_mode,
         )
         df = _apply_pit_date_range(df, dataset, start_d, end_d)
         df = _apply_symbol_filter(df, symbols)
@@ -1090,6 +1090,11 @@ def load(
         )
     if resolved_profile is not None and dataset == "daily_bars":
         _require_profile_delisting_evidence(cfg, df, resolved_profile, read_context)
+
+    if dataset == "index_constituents" and as_of_d is not None:
+        from cnequity.domain.membership import index_members_as_of
+
+        df = index_members_as_of(df, as_of_d)
 
     # Intraday datasets join on (symbol, trade_date) like the daily bars do: a
     # corporate action applies to a whole session, so every bar in a day shares

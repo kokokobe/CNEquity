@@ -100,7 +100,9 @@ cne config validate --config configs/cnequity.toml
 | `backfill`（ths_official） | 默认 **关**。它会改变湖里的内容，所以必须显式打开。持有凭证、启用源、允许它改数据是三个决定 |
 | `api_key`（ths_official） | 建议用环境变量 `HITHINK_FINANCE_API_KEY` 而非写进配置 |
 
-`cne serve` 的取数设置只改通达信、QMT 本地桥、东财、新浪日线、Baostock、北交所官网、同花顺页面和巨潮的 `enabled`，以及东财的 `push2_paused`。分钟线、分笔、期货开关和 `[universe] ingest` / `ingest_eligible_etfs` 也在那一页。确认前先列出差异，写入前备份；间隔、预算、熔断和凭据不动。环境变量 `CNE_PUSH2_PAUSED=1` 仍优先于配置里的暂停开关。
+`cne serve` 的取数设置只改通达信、QMT 本地桥、东财、新浪日线、Baostock、北交所官网、同花顺页面和巨潮的 `enabled`，以及东财的 `push2_paused`。分钟线、分笔、期货开关和 `[universe] ingest` / `ingest_listed_funds` / `ingest_eligible_etfs` 也在那一页。确认前先列出差异，写入前备份；间隔、预算、熔断和凭据不动。环境变量 `CNE_PUSH2_PAUSED=1` 仍优先于配置里的暂停开关。
+
+`cne serve` 启动后一直使用启动时的数据湖。直接编辑配置文件改了 `data.root`，要重启 serve 才会切换；在那之前，控制台每页顶部会对照显示配置文件里的新目录和当前仍在使用的目录，并给出重启命令。配置文件读不出来时会指出出错的行和列。这两种情况下页面照常浏览原来的湖，但不能从控制台启动任务、修改取数设置或定时任务，因为任务会按配置文件读到另一个湖。
 
 模板请求间隔（客户端保守设置，不是源方安全配额保证）：
 
@@ -196,10 +198,9 @@ cne config validate --config configs/cnequity.toml
 
 ST、停牌、CDR 和已退市的名字在任何取值下都会保留 —— 丢掉它们正是这个湖要避免的幸存者偏差。
 
-`instruments` 会返回 TDX 列出的全部代码，其中约四分之一是 ETF/LOF/基金行情代码：
-没有任何研究口径会选中它们，也没有哪个已配置的源能稳定提供它们。把它们放进日更
-会占掉四分之一的抓取量，用没人需要的代码触发东财和新浪的熔断，并把填不上的
-`symbol×session` 键留给覆盖门禁 —— 门禁随后拒绝为当天落盘。
+显式开启 `[universe].ingest_listed_funds = true` 后，日更按证券目录追加已上市 ETF/LOF，研究资格只用于筛选。已知上市前和退市后的日期不抓；未知上市日期仍尝试取数，并在逐证券覆盖报告中单独列出，不能据此声称完整。目录读取失败会报错，来源空响应保留为缺口。这个开关优先于旧的 `ingest_eligible_etfs`。旧开关仍只采集研究资格合格的 ETF，但资格目录失败、缺失或超过 14 天时现在会明确报错。
+
+没开基金采集时，全量公司行为扫描跳过 ETF/LOF。之后开启任一开关，日更的公司行为步骤会补扫从没扫过除权历史的基金，每次最多 500 只（全市场约 2200 只，分几天扫完）；新上市基金同样补扫一次。扫完前每次运行告警 `fund_history_unswept` 并列出部分代码，这期间这些基金的复权因子缺少较早的份额拆分。
 
 ## `[job.daily.waves]`
 
@@ -343,7 +344,7 @@ audit step 依赖 `compact`，所以它在**行已经进 curated 之后**才跑�
 | 键 | 默认 | 说明 |
 |----|------|------|
 | `negative_evidence_ttl_days` | `7` | 「源端此处为空」这类否定证据的有效期；设 `0` 则每次都重试缺失键。标的目录发生 revision 时，仍然会让在有效期内的证据失效 |
-| `deep_reconciliation_dow` | `6` | 每周做一次深度对账的星期（0=周一）。目前只有 `announcement_index` 声明它 |
+| `deep_reconciliation_dow` | `6` | 每周做一次深度对账的星期，1=周一 … 7=周日；`0` 关闭分层、每次都做深度对账。`announcement_index` 平时回看 7 天、深度日 30 天；`daily_bars` 平时只取新交易日（交易所整版行情和 TDX 批量报价），深度日在该星期当天或之后的第一个交易日逐只复核最近 5 个交易日 |
 
 公告可能延迟索引。每周深度对账用于补查较早窗口，减少日常重复请求，但也可能延后发现晚到的公告。严格 PIT 还检查湖内观察时间；延后采到的公告不能在更早的 `as_of` 中冒充已知。
 
@@ -391,15 +392,15 @@ audit step 依赖 `compact`，所以它在**行已经进 curated 之后**才跑�
 ```toml
 names = [
   "phase1_reference",
-  "phase2a_corporate_actions",
   "phase2c_daily_bars_backfill",
+  "phase2a_corporate_actions",
   "phase3_index_and_status",
   "phase4_finalize",
   "phase5_derive_and_publish",
 ]
 ```
 
-阶段 → step 映射见 `orchestrator/init_phases.py`。
+阶段 → step 映射见 `orchestrator/init_phases.py`。0.17.0 起日线阶段排在公司行为之前；原样保留旧默认顺序（公司行为在前）的配置自动按新顺序执行，改过的列表照写的顺序执行，已开始的 init 按它记录的顺序续跑。
 
 ## `[on_demand]`
 
@@ -454,6 +455,6 @@ cnequity.toml
 
 `[quality].publication_gate` 支持 `off`（默认）、`shadow`、`block`。它在普通 compact 发布前对整批候选作离线全量审计，比较已提交基线；block 模式拒绝新增或恶化的 error，审计异常也拒绝。问题按“检查项 + 数据集 + 范围（分区、字段、来源、日期等）”识别，行数、键数等度量变多才算恶化；文案或样本变化、问题减少都不算新增。报告的 `issue_changes` 分列新增、恶化、改善、未变和已消除。结构检查只读候选数据集的变更分区；跨数据集检查只在其输入含候选数据集时运行，其余检查结果前后相同，不重复计算。派生发布使用相同门禁。
 
-`cne repair` 子命令加 `--apply` 时始终执行阻断式候选审计；公司行为或因子修复还逐一比较受影响证券的因子/公司行为矛盾。拒绝发布时保留旧版本，并把候选移入 `_quarantine`。
+`cne repair` 子命令加 `--apply` 时始终执行阻断式结构审计。历史因子/公司行为矛盾单独写入非阻断诊断，不拒绝发布；无效因子数值、损坏文件和主键错误仍可阻断。拒绝发布时保留旧版本，并把候选移入 `_quarantine`。
 
 `[quality].audit_gate` 仍决定发布后运行状态，两者互不替代。全历史扫描有 I/O 成本，可先 shadow 后 block。详见 [产品边界](../architecture/overview.md)。

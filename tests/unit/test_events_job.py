@@ -188,6 +188,7 @@ def test_run_events_says_so_when_nothing_is_configured(config):
     assert "[job.events.groups]" in result.output
 
 
+@pytest.mark.usefixtures("chinese_output")
 def test_run_events_names_the_groups_it_knows(events_config):
     from click.testing import CliRunner
 
