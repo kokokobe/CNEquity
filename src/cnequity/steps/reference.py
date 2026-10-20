@@ -752,6 +752,23 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
             df = fetch_trading_calendar_qmt(start, end, config=config)
         except Exception as exc:
             logger.warning("QMT trading calendar failed; falling back to calendar seed: %s", exc)
+    if not df.is_empty() and df["trade_date"].min() > start:
+        # The bridge's trading-day history has limited depth, so its earliest
+        # evidenced session can sit years after the requested start. The seed
+        # owns the days before it; without this gap-fill those days would be
+        # left unlabelled and the coverage audits would see no calendar there.
+        seed = fetch_trading_calendar(
+            start,
+            df["trade_date"].min() - timedelta(days=1),
+            rate_limit=rl,
+            allow_mock=config.tdx_allow_mock,
+            curated_root=config.curated_root,
+            seed_path=seed_path if seed_path.exists() else None,
+        )
+        df = pl.concat(
+            [normalize_with_source(seed, source="exchange_calendar"), df],
+            how="vertical_relaxed",
+        )
     if df.is_empty():
         df = fetch_trading_calendar(
             start,

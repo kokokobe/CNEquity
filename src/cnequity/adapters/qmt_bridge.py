@@ -998,6 +998,12 @@ def fetch_trading_calendar_qmt(
     last_session = max(trading)
     if last_session < start:
         return pl.DataFrame()
+    first_session = min(trading)
+    # QMT's trading-day history has limited depth (~2 years). Days before the
+    # bridge's first reported session are unknown, not closed: claiming them as
+    # non-trading erased real sessions whenever the requested window reached
+    # past the bridge's depth. Emit only evidenced days and let the
+    # exchange-calendar seed answer the rest.
 
     # QMT returns sessions through the latest observed day only. Beyond that
     # its response is empty, not authoritative: treating future dates as closed
@@ -1020,7 +1026,7 @@ def fetch_trading_calendar_qmt(
             ),
             "source": SOURCE if current <= last_session else fallback_source,
         }
-        for ordinal in range(start.toordinal(), end.toordinal() + 1)
+        for ordinal in range(max(start, first_session).toordinal(), end.toordinal() + 1)
         for current in [date.fromordinal(ordinal)]
     ]
     frame = pl.DataFrame(rows)

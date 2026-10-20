@@ -605,7 +605,10 @@ def test_fetch_trading_calendar_qmt_falls_back_after_last_session():
         xtdata=_PartialTradingCalendarFakeXtData(),
     )
 
-    assert frame.height == 15
+    # 09-25..09-27 precede the fake bridge's earliest reported session, so the
+    # adapter leaves them for the seed path instead of labelling them closed.
+    assert frame.height == 12
+    assert frame["trade_date"].min() == date(2026, 9, 28)
     by_date = {row["trade_date"]: row for row in frame.iter_rows(named=True)}
     assert by_date[date(2026, 9, 30)]["is_trading"] is True
     assert by_date[date(2026, 9, 30)]["source"] == "qmt_bridge"
@@ -615,6 +618,31 @@ def test_fetch_trading_calendar_qmt_falls_back_after_last_session():
     assert by_date[date(2026, 10, 8)]["source"] == "qmt_bridge"
     assert by_date[date(2026, 10, 9)]["is_trading"] is True
     assert by_date[date(2026, 10, 9)]["source"] == "exchange_calendar"
+
+
+def test_fetch_trading_calendar_qmt_does_not_claim_days_before_its_depth():
+    """Days before the bridge's earliest reported session stay unclaimed.
+
+    QMT's trading-day history reaches back only ~2 years. A window starting
+    years earlier must not come back with those years labelled is_trading=False
+    — that erased real sessions when the calendar backfill followed bar history
+    to 2016. The seed path owns the days the bridge cannot speak for.
+    """
+    frame = fetch_trading_calendar_qmt(
+        date(2016, 1, 1),
+        date(2024, 7, 7),
+        config=None,
+        xtdata=_TradingCalendarFakeXtData(),
+    )
+    assert frame["trade_date"].min() == date(2024, 7, 1)
+    assert frame.filter(pl.col("trade_date") < date(2024, 7, 1)).is_empty()
+    assert frame.filter(pl.col("is_trading"))["trade_date"].to_list() == [
+        date(2024, 7, 1),
+        date(2024, 7, 2),
+        date(2024, 7, 3),
+        date(2024, 7, 4),
+        date(2024, 7, 5),
+    ]
 
 
 class _FinancialsFakeXtData:
