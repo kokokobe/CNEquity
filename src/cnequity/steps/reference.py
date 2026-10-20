@@ -766,8 +766,8 @@ def step_trading_calendar(config: Config, trade_date: date, run_id: str, context
             seed_path=seed_path if seed_path.exists() else None,
         )
         df = pl.concat(
-            [normalize_with_source(seed, source="exchange_calendar"), df],
-            how="vertical_relaxed",
+            [with_provenance(seed, source="exchange_calendar", data_version="v1"), df],
+            how="diagonal_relaxed",
         )
     if df.is_empty():
         df = fetch_trading_calendar(
