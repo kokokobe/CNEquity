@@ -910,3 +910,45 @@ def test_corporate_actions_backfill_prefers_clean_qmt_sweep(tmp_path, monkeypatc
     staged = list((cfg.staging_root / "corporate_actions").glob("**/*.parquet"))
     assert staged
     assert pl.read_parquet(staged[0])["source"].unique().to_list() == ["qmt_bridge"]
+
+
+class _RecordingFakeXtData:
+    """记录下载代码并按下载名返回数据的桩；用于验证 CSI 下载别名。"""
+
+    def __init__(self):
+        self.downloads: list[list[str]] = []
+
+    def download_history_data2(self, stock_list, period, **kwargs):
+        assert period == "1d"
+        self.downloads.append(list(stock_list))
+        return {"finished": len(stock_list), "total": len(stock_list)}
+
+    def get_local_data(self, *, stock_list, **kwargs):
+        return {
+            symbol: pd.DataFrame(
+                {
+                    "open": [10.0],
+                    "high": [11.0],
+                    "low": [9.0],
+                    "close": [10.0],
+                    "volume": [1000],
+                    "amount": [10.0],
+                },
+                index=pd.Index(["20240628"], name="date"),
+            )
+            for symbol in stock_list
+        }
+
+
+def test_fetch_index_bars_qmt_translates_csi_download_alias():
+    """000985.CSI 经 xtdata 的 SH 市场代码下载，输出行保持 canonical .CSI 命名。"""
+    xt = _RecordingFakeXtData()
+    frame = fetch_index_bars_qmt(
+        ["000985.CSI"],
+        date(2024, 6, 28),
+        date(2024, 6, 28),
+        config=None,
+        xtdata=xt,
+    )
+    assert xt.downloads == [["000985.SH"]]
+    assert frame["symbol"].to_list() == ["000985.CSI"]

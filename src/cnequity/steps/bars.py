@@ -5806,9 +5806,14 @@ def _validate_index_bar_coverage(
         )
 
 
+#: 指数抓取的 canonical 范围：TDX 覆盖的交易所指数 + 中证全指（仅 QMT 桥可服务，
+#: canonical 命名 .CSI；TDX 源不含它，缺失按缺口记录）。
+INDEX_SCOPE_SYMBOLS = [f"{code}.{exchange}" for code, exchange in INDEX_SYMBOLS] + ["000985.CSI"]
+
+
 def _index_bar_missing_keys(config: Config, df, start: date, end: date) -> list[tuple[str, date]]:
     """Record obligations independently of the valid rows available to publish."""
-    expected_symbols = {f"{code}.{exchange}" for code, exchange in INDEX_SYMBOLS}
+    expected_symbols = set(INDEX_SCOPE_SYMBOLS)
     sessions = list_trading_dates(config, start, end)
     if not sessions:
         sessions = [end]
@@ -5925,7 +5930,7 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
     _reject_unfinished_daily_bar_window(config, end)
     rl = config.tdx_rate_limit_spec()
     df, _ = _fetch_index_bars_with_priority(
-        [f"{code}.{exchange}" for code, exchange in INDEX_SYMBOLS],
+        list(INDEX_SCOPE_SYMBOLS),
         start,
         end,
         rate_limit=rl,

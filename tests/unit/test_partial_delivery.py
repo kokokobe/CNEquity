@@ -308,7 +308,7 @@ def test_request_before_history_floor_finishes_without_source_requests(tmp_path,
 
 
 def test_partial_index_bars_publish_without_advancing_complete_coverage(tmp_path, monkeypatch):
-    from cnequity.adapters.tdx_protocol.client import INDEX_SYMBOLS
+    from cnequity.steps.bars import INDEX_SCOPE_SYMBOLS
 
     cfg = Config(data_root=tmp_path / "data", publication_gate="block")
     cfg._backfill_start = cfg._backfill_end = DAY
@@ -332,7 +332,7 @@ def test_partial_index_bars_publish_without_advancing_complete_coverage(tmp_path
     store = RevisionStore(cfg.meta_root, cfg.curated_root)
     assert pl.read_parquet(list(store.current_root("index_bars").rglob("*.parquet"))).height == 1
     state = StateStore(cfg.meta_root).get_payload("index_bars")
-    assert len(state["outstanding_keys"]) == len(INDEX_SYMBOLS) - 1
+    assert len(state["outstanding_keys"]) == len(INDEX_SCOPE_SYMBOLS) - 1
     assert state["coverage_status"] == "incomplete"
     assert not state.get("complete_through") or state["complete_through"] < DAY.isoformat()
 

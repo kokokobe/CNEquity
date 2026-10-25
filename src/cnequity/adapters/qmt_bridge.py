@@ -163,6 +163,9 @@ _QMT_INDEX_SECTORS = {
     "上证100": "000132.SH",
     "中证全指": "000985.CSI",
 }
+#: 中证公司指数在 xtdata 行情挂 SH 市场；canonical 命名保持 .CSI。
+_INDEX_DOWNLOAD_ALIASES = {"000985.CSI": "000985.SH"}
+_INDEX_OUTPUT_ALIASES = {vendor: canonical for canonical, vendor in _INDEX_DOWNLOAD_ALIASES.items()}
 _INSTRUMENTS_OUTPUT_SCHEMA = {
     "symbol": pl.Utf8,
     "name": pl.Utf8,
@@ -682,9 +685,14 @@ def fetch_index_bars_qmt(
     xtdata: Any | None = None,
     metrics: dict[str, Any] | None = None,
 ) -> pl.DataFrame:
-    """Fetch index daily bars through the BigQMT bridge."""
-    return fetch_bars_qmt(
-        symbols,
+    """Fetch index daily bars through the BigQMT bridge.
+
+    中证公司指数（canonical 命名 .CSI，如中证全指 000985.CSI）在 xtdata
+    行情里挂 SH 市场：下载用 .SH 别名，返回行重命名回 canonical 命名。
+    """
+    translated = [_INDEX_DOWNLOAD_ALIASES.get(symbol, symbol) for symbol in symbols]
+    frame = fetch_bars_qmt(
+        translated,
         start,
         end,
         dataset="index_bars",
@@ -692,6 +700,11 @@ def fetch_index_bars_qmt(
         xtdata=xtdata,
         metrics=metrics,
     )
+    if not frame.is_empty():
+        frame = frame.with_columns(
+            pl.col("symbol").replace(_INDEX_OUTPUT_ALIASES, default=pl.col("symbol"))
+        )
+    return frame
 
 
 def fetch_minute_bars_qmt(

@@ -10,7 +10,11 @@ import pytest
 
 from cnequity.adapters.tdx_protocol.client import INDEX_SYMBOLS, TdxSourceError, fetch_index_bars
 from cnequity.config import Config
-from cnequity.steps.bars import _validate_index_bar_coverage, step_index_bars
+from cnequity.steps.bars import (
+    _index_bar_missing_keys,
+    _validate_index_bar_coverage,
+    step_index_bars,
+)
 
 
 @pytest.mark.parametrize("allow_partial", [False, True])
@@ -104,3 +108,11 @@ def test_step_index_bars_applies_finality_guard_before_fetch(config, monkeypatch
         step_index_bars(config, date(2026, 8, 10), "run-index-guard", {})
 
     assert events == ["guard"]
+
+
+def test_index_scope_includes_csi_all_share_index(tmp_path):
+    """中证全指 000985.CSI 属于指数抓取范围：覆盖检查按缺口记录，不静默略过。"""
+    cfg = Config(data_root=tmp_path / "data")
+    days = [date(2024, 6, 3)]
+    missing = _index_bar_missing_keys(cfg, pl.DataFrame(schema={"symbol": pl.Utf8, "trade_date": pl.Date}), days[0], days[-1])
+    assert ("000985.CSI", days[0]) in missing
