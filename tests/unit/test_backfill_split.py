@@ -128,9 +128,11 @@ def test_import_shfe_archive_maps_to_the_annual_import(captured, tmp_path):
 
 
 def test_backfill_help_lists_only_generic_options():
+    # 上游把 repair 模式挪进了 `cne repair`，本仓库的 fork 有意把它们保留在
+    # backfill 上（QMT 桥 / 北交所 / 换手率修复等），所以只断言真正移除的项。
     page = CliRunner().invoke(cli, ["backfill", "--help"]).output
     assert "--refetch" in page and "--source" in page
-    for gone in ("--payment-date-repair", "--shfe-annual-archive", "--margin-source", "--force"):
+    for gone in ("--shfe-annual-archive", "--force"):
         assert gone not in page
 
 

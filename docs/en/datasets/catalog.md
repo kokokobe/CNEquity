@@ -182,7 +182,7 @@ Registry source code: `domain/datasets.py` (`DatasetSpec`), `domain/schemas.py` 
 |--------|--------|------|------|------|------|------|
 | instruments | — (single-file merge) | symbol | by_date | — | tdx_protocol | EM fills list_date from the A-share and ETF/LOF clists separately; the published exchange ETF catalog fills missing fund listing dates; baostock backfills delisted stocks (`cne backfill instruments`); merge keeps delisted entries |
 | etf_profiles | as_of_date (yearly) | symbol, as_of_date | snapshot | — | exchange | SSE ETF subcategories, the SZSE ETF/fund catalog, and official index methodologies verified code by code; only records with sufficient evidence of a domestic equity index enter the research pool. Unknown categories stay unverified, and unobserved historical snapshots cannot be backfilled |
-| trading_calendar | trade_date | trade_date | by_date | ✓ | tdx_protocol | Fallback source: exchange CSV; seeded for 2016–2027 |
+| trading_calendar | trade_date | trade_date | by_date | ✓ | qmt_bridge | Local BigQMT bridge first when enabled; fallback source: exchange CSV; seeded for 2016–2027 |
 | trading_status | trade_date (monthly) | symbol, trade_date | by_date | ✓ | eastmoney | baostock ST backfill; derived suspensions are written to monthly partitions. `status` (normal/suspended/**delisted**) and `risk_warning` (ST/*ST) are two columns — the old single column let a suspension overwrite the ST flag; delisted rows are determined from `instruments` and marked `derived_delisted`. Old lakes are read compatibly; for the physical migration see [schema](schema.md#trading_status) |
 
 The daily Beijing instrument catalogue attempts to enrich listing dates from confirmed same-day CNINFO IPO events. Subscription, prospectus and forecast dates do not establish listing dates. If that source is unavailable, the roster and unknown dates remain with a warning; compaction preserves dates already established.
@@ -193,10 +193,10 @@ Each day the instrument catalogue asks Baostock, EastMoney and the exchanges onl
 
 | Dataset | Partition key | Primary key | Semantics | Watermark | Primary source | Notes |
 |--------|--------|------|------|------|------|------|
-| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | tdx_protocol | Tip gaps are routed from the EastMoney clist into curated; multi-day kline; BJ→sina; once explicitly enabled, only ETFs verified in the official catalog are appended, and other funds do not enter the default daily update; snapshot still stays in audit |
-| index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | tdx_protocol | |
-| minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 1m. **Optional**, off by default; scope configured in `[minute_bars]`; **the source has only 95 trading days** (see "History horizon" below); on-disk size grows with symbol count and window; required=false |
-| minute_bars_5m | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | tdx_protocol | 5m. Optional, as above; **491 trading days (about 2 years), the only intraday frequency with real history**; on-disk size grows with symbol count and window; required=false |
+| daily_bars | trade_date | symbol, trade_date | by_date | ✓ | qmt_bridge | Local BigQMT bridge first when enabled; TDX fills the gaps; tip gaps are routed from the EastMoney clist into curated; multi-day kline; BJ→sina; once explicitly enabled, only ETFs verified in the official catalog are appended, and other funds do not enter the default daily update; snapshot still stays in audit |
+| index_bars | trade_date | symbol, trade_date, frequency | by_date | ✓ | qmt_bridge | Local BigQMT bridge first when enabled; TDX fills the gaps |
+| minute_bars | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | qmt_bridge | 1m. **Optional**, off by default; scope configured in `[minute_bars]`; **the source has only 95 trading days** (see "History horizon" below); on-disk size grows with symbol count and window; gaps QMT cannot serve go to TDX; required=false |
+| minute_bars_5m | trade_date | symbol, trade_date, bar_time, frequency | by_date | ✓ | qmt_bridge | 5m. Optional, as above; **491 trading days (about 2 years), the only intraday frequency with real history**; on-disk size grows with symbol count and window; gaps QMT cannot serve go to TDX; required=false |
 | minute_bars_15m | trade_date | symbol, trade_date, bar_time, frequency | derived | ✓ | derived | 15m. **Not computed by default**; store it manually with `cne derive minute_bars_15m`; for a given stock on a given day, 1m is used if present, otherwise 5m, and `resampled_from` records which; required=false |
 | minute_bars_30m | trade_date | symbol, trade_date, bar_time, frequency | derived | ✓ | derived | 30m. Same as above |
 | minute_bars_60m | trade_date | symbol, trade_date, bar_time, frequency | derived | ✓ | derived | 60m. Same as above |
@@ -210,7 +210,7 @@ The two intraday datasets share one set of quality checks: duplicate primary key
 
 | Dataset | Partition key | Primary key | Semantics | Watermark | Primary source | Notes |
 |--------|--------|------|------|------|------|------|
-| corporate_actions | ex_date (yearly) | symbol, ex_date, action_type | by_date | ✓ | eastmoney (daily updates) | Backfill: tdx_protocol; for mixed granularity use `cne repair repartition` |
+| corporate_actions | ex_date (yearly) | symbol, ex_date, action_type | by_date | ✓ | qmt_bridge (backfill) | Daily updates still use the EastMoney date snapshot; TDX/repair sources fill gaps; for mixed granularity use `cne repair repartition` |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` filtering |
 | earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | Scheduled disclosure calendar (RPT_PUBLIC_BS_APPOIN); current-value semantics, not PIT: changes overwrite scheduled_date (first_scheduled_date keeps the first scheduled date, actual_date is filled in after disclosure); `cne backfill` covers all report periods from 2016 |
 
@@ -222,7 +222,7 @@ The two intraday datasets share one set of quality checks: duplicate primary key
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | Backfill: baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 | share_structure | change_date | symbol, change_date, announce_date | by_date PIT | — | eastmoney | Total shares / float / restricted / free float. **Scanned by change date, not by report period**: END_DATE is the share-change date, so requesting only quarter-end dates is not enough |
-| shareholder_counts | count_date | symbol, count_date, announce_date | by_date PIT | — | eastmoney | Number of shareholders and average holding per account, an input for ownership concentration. **Also disclosed at ten-day-period and month ends**: do not filter by quarter-end dates only |
+| shareholder_counts | count_date | symbol, count_date, announce_date | by_date PIT | — | eastmoney | Number of shareholders and average holding per account, an input for ownership concentration. **Also disclosed at ten-day-period and month ends**: do not filter by quarter-end dates only; when EastMoney is disabled, `qmt_bridge` can serve it (the per-holder average column is empty) |
 | top_holders | record_date | symbol, record_date, holder_scope, holder_rank, holder_name, announce_date | by_date PIT | — | eastmoney | One table, two scopes: `holder_scope=total` (top 10 shareholders) / `float` (top 10 float shareholders). Disclosure dates do not necessarily fall at quarter end |
 
 DMSK `NOTICE_DATE` may describe a later republication of comparative figures. LICO supplies the original disclosure date; without a matching LICO record the later date is retained. Daily ingestion preserves the republication and adds `source=eastmoney_backfill` only for items lacking an original-date vintage. Reconstructed values may be restated: default `load(..., as_of=...)` best-effort reads expose them with `pit_is_exact=false`; `pit_mode="strict"` excludes reconstructions and requires observation no later than the query date.
@@ -330,8 +330,8 @@ Futures and options contracts, per-contract market data and derived series, plus
 
 | Dataset | Primary source | Fallback source |
 |--------|------|------|
-| daily_bars | tdx_protocol | eastmoney |
-| corporate_actions | eastmoney | tdx_protocol |
+| daily_bars | qmt_bridge | tdx_protocol / eastmoney |
+| corporate_actions | eastmoney (daily updates) / qmt_bridge (backfill) | tdx_protocol |
 
 ## Checks against the publisher (authority checks)
 

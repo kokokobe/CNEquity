@@ -78,7 +78,7 @@ Sources counting lots can round a fund trade smaller than one lot down to zero. 
 | Item | Value |
 |------|-------|
 | Wave | `daily_bars` (Wave 1, depends on corporate_actions) |
-| Primary | tdx_protocol (unadjusted; main path for Shanghai and Shenzhen, BJ history through a dedicated market id 2 path) |
+| Primary | qmt_bridge (unadjusted; active when the local BigQMT bridge is enabled, TDX otherwise) |
 | Fallback / routing | Currently available exchange board snapshots and TDX batch quotes; gaps go to eastmoney clist/kline. For BJ, the current period prefers BSE and history prefers TDX, with Sina filling the remaining range; explicit small-range requests skip unrelated full-board scans |
 | Frequency | Daily incremental; full backfill at init; deep history is backfilled from THS by listing year (supported for both stocks and ETF/LOF) |
 | Primary key | (symbol, trade_date) |
@@ -342,6 +342,7 @@ Not in the daily waves. Cached in `meta/on_demand/`, optionally written to DuckD
 
 | Source | Protocol | MVP use | Fallback | Degradation strategy |
 |--------|----------|-----------|--------|---------|
+| qmt_bridge | local terminal bridge | daily_bars, index_bars, minute_bars, minute_bars_5m; trading_calendar; corporate_actions backfill; financial_statement_items; shareholder_counts (only when eastmoney is disabled) | tdx_protocol fills the gaps; FSI falls back to eastmoney | falls back to TDX per batch/gap when the bridge is unavailable or returns no rows; empty financial responses do not impersonate PIT; tick history covers only the latest trading day |
 | tdx_protocol | TCP | bars, instruments, calendar | eastmoney clist (tip route) / kline (multi-day) | tip gaps go into curated; snapshot used for diff |
 | sina | HTTP | hfq factors (qfq derived at query time) | — | Skip the security + quality finding |
 | bse | HTTP | BJ current-period daily bars, security roster and trading status | — | Current-period snapshots cannot be treated as history; filling amount into existing rows requires a per-row consistency check |
