@@ -11,6 +11,7 @@ import pytest
 from cnequity.adapters.tdx_protocol.client import INDEX_SYMBOLS, TdxSourceError, fetch_index_bars
 from cnequity.config import Config
 from cnequity.steps.bars import (
+    INDEX_SCOPE_SYMBOLS,
     _index_bar_missing_keys,
     _validate_index_bar_coverage,
     step_index_bars,
@@ -75,7 +76,9 @@ def test_index_bar_step_stages_valid_rows_and_records_interior_symbol_session_ga
     tmp_path, monkeypatch
 ):
     cfg = Config(data_root=tmp_path / "data")
-    symbols = [f"{code}.{exchange}" for code, exchange in INDEX_SYMBOLS]
+    # 本仓库 fork 的指数 canonical 范围含中证全指 000985.CSI（仅 QMT 桥可服务；
+    # TDX 源不含它，缺失按缺口记录），与 steps.bars.INDEX_SCOPE_SYMBOLS 保持一致。
+    symbols = list(INDEX_SCOPE_SYMBOLS)
     days = [date(2024, 6, 3), date(2024, 6, 4), date(2024, 6, 5)]
     rows = [
         {

@@ -1004,7 +1004,7 @@ msgstr "--bars 需要配合 --start"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--bj-amount-repair needs both --start and --end"
-msgstr ""
+msgstr "--bj-amount-repair 需要同时给 --start 和 --end"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--bse-tip-repair needs --symbols"
@@ -1126,7 +1126,7 @@ msgstr "--margin-source 只适用于 margin_trading"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--max-attempts must be at least 1"
-msgstr ""
+msgstr "--max-attempts 至少为 1"
 
 #: cnequity/cli/setup_cmds.py
 msgid "--minimize only applies to `cne config upgrade`"
@@ -1162,23 +1162,23 @@ msgstr "--profile delisted 只适用于 daily_bars"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--qmt-amount-repair cannot be combined with other amount repairs"
-msgstr ""
+msgstr "--qmt-amount-repair 不能与其它 amount repair 同时使用"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--qmt-amount-repair needs --symbols and --start/--end"
-msgstr ""
+msgstr "--qmt-amount-repair 需要 --symbols 和 --start/--end"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--qmt-amount-repair only applies to daily_bars"
-msgstr ""
+msgstr "--qmt-amount-repair 只适用于 daily_bars"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--qmt-bars-repair needs --symbols and --start/--end"
-msgstr ""
+msgstr "--qmt-bars-repair 需要 --symbols 和 --start/--end"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--qmt-bars-repair only applies to daily_bars"
-msgstr ""
+msgstr "--qmt-bars-repair 只适用于 daily_bars"
 
 #: cnequity/cli/quality_cmds.py
 msgid "--quality-only needs --full"
@@ -1264,11 +1264,11 @@ msgstr "--tdx-amount-repair 只适用于 daily_bars"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--tdx-volume-repair needs --symbols and --start/--end"
-msgstr ""
+msgstr "--tdx-volume-repair 需要 --symbols 和 --start/--end"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--tdx-volume-repair only applies to daily_bars"
-msgstr ""
+msgstr "--tdx-volume-repair 只适用于 daily_bars"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "--ths-repair only applies to corporate_actions"
@@ -2553,7 +2553,7 @@ msgstr "启用 / 更新"
 
 #: cnequity/serve/ops/settings.py
 msgid "Enable the local BigQMT terminal bridge. Daily bars, index bars, minute bars, the trading calendar, financials, corporate actions and adjustment factors prefer QMT; trade ticks, index constituents and shareholder counts only fall back to QMT when their primary source fails or is disabled. Falls back automatically when BigQMT is offline; bridge paths and terminal settings stay in the config file."
-msgstr ""
+msgstr "启用本地 BigQMT 终端桥。日线、指数、分钟线、交易日历、财务、公司行动和复权因子优先走 QMT；逐笔成交、指数成分和股东户数只在原源失败或关闭时用 QMT 补位。BigQMT 离线时自动回落，桥路径和终端参数仍在配置文件里。"
 
 #: cnequity/serve/ops/scheduler.py
 msgid "Enabling the closing catch-up needs the daily update enabled too."
@@ -3512,7 +3512,7 @@ msgstr "新文件加载后的设置与旧文件相同。"
 
 #: cnequity/serve/ops/settings.py
 msgid "Local QMT bridge"
-msgstr ""
+msgstr "QMT 本地桥"
 
 #: cnequity/cli/_shared.py
 #, python-brace-format
@@ -3788,7 +3788,7 @@ msgstr "与 sina 日线不是同一台主机，但共用同一个按账号计的
 
 #: cnequity/cli/backfill_cmds.py
 msgid "Note: --bj-amount-repair has been replaced by --tdx-amount-repair, which fills turnover only after checking open/high/low/close and volume, and covers Shanghai, Shenzhen and Beijing."
-msgstr ""
+msgstr "提示：--bj-amount-repair 已由 --tdx-amount-repair 取代，后者按开高低收与成交量核对后才补成交额，并覆盖沪深北。"
 
 #: cnequity/cli/run_cmds.py
 #, python-brace-format
@@ -6280,11 +6280,11 @@ msgstr "--bars 和 --runs 只能用一个"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "Use only one of --bj-amount-repair and --tdx-amount-repair"
-msgstr ""
+msgstr "--bj-amount-repair 与 --tdx-amount-repair 只能用一个"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "Use only one of --qmt-bars-repair and --qmt-amount-repair"
-msgstr ""
+msgstr "--qmt-bars-repair 与 --qmt-amount-repair 只能用一个"
 
 #: cnequity/cli/run_cmds.py
 msgid "Use only one of --run-id and --failed-groups"
@@ -6503,7 +6503,7 @@ msgstr "配合 --datasets：是否做最新交易日的标的截面校验。它�
 
 #: cnequity/cli/backfill_cmds.py
 msgid "With --eastmoney-date-repair: comma-separated ex-dates, YYYY-MM-DD."
-msgstr ""
+msgstr "配合 --eastmoney-date-repair：逗号分隔的除权日 YYYY-MM-DD。"
 
 #: cnequity/cli/schedule_cmds.py
 msgid "With --events-group: minutes between runs."
@@ -6519,11 +6519,11 @@ msgstr "限定了 --groups 就不能再用全湖范围的 --repair-gaps"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "With --outstanding only: after a key has missed this many attempts it is parked. Later --outstanding runs skip it by default, but it stays in the ledger."
-msgstr ""
+msgstr "仅 --outstanding：单个 key 累计未补齐达到该次数后进入 parked 状态。后续 --outstanding 默认跳过，但 key 仍留在台账里。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "With --outstanding only: ignore the attempt cap and include parked keys in this repair."
-msgstr ""
+msgstr "仅 --outstanding：忽略尝试上限，把已 parked 的 key 也纳入本次修复。"
 
 #: cnequity/cli/quality_cmds.py
 msgid "With --runs: cutoff date YYYY-MM-DD (inclusive)."
@@ -6543,7 +6543,7 @@ msgstr "配合 --stale-only：只重抓 snapshot 类数据集；历史类留给�
 
 #: cnequity/cli/backfill_cmds.py
 msgid "With --turnover-repair: review price conflicts using historical exchange prices, TDX and EastMoney; replace whole bars only with agreeing evidence, never splice exchange-wide turnover."
-msgstr ""
+msgstr "与 --turnover-repair 同用：以交易所历史日线、通达信和东财复查价格冲突，一致证据才整行替换；不拼接交易所汇总量额。"
 
 #: cnequity/cli/setup_cmds.py
 msgid "With action=create: overwrite an existing config file."
@@ -6646,7 +6646,7 @@ msgstr "申万 / 国证成分历史的 XLS·XLSX 解析"
 #: cnequity/cli/backfill_cmds.py
 #, python-brace-format
 msgid "[{dataset}] repairing {value} keys across {value2} symbols in {value3} monthly batches"
-msgstr ""
+msgstr "[{dataset}] 待试 {value} 个 key，涉及 {value2} 只标的；分 {value3} 个月度批次修复"
 
 #: cnequity/cli/backfill_cmds.py
 #, python-brace-format
@@ -6681,7 +6681,7 @@ msgstr "[{dataset}] {index}/{value} {month}：{value2} 只标的 {lo}..{hi}"
 #: cnequity/cli/backfill_cmds.py
 #, python-brace-format
 msgid "[{dataset}] {parked} keys have missed {limit} attempts; skipped this run but kept in the ledger (--retry-parked forces a retry)"
-msgstr ""
+msgstr "[{dataset}] {parked} 个 key 已累计 {limit} 次未补齐；本次跳过，key 仍在台账中（--retry-parked 可强制重试）"
 
 #: cnequity/cli/setup_cmds.py
 #, python-brace-format
@@ -6784,27 +6784,27 @@ msgstr "公司行为"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "corporate_actions only, for historical migration: fill historical dividends and ex-rights of delisted BSE symbols from THS."
-msgstr ""
+msgstr "仅 corporate_actions，历史迁移用：用同花顺补已退市北交所标的的历史分红除权。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "corporate_actions only, for historical migration: fill historical dividends and ex-rights of old BSE codes via the current 920xxx EastMoney codes."
-msgstr ""
+msgstr "仅 corporate_actions，历史迁移用：通过现行的 920xxx 东财代码补北交所老代码的历史分红除权。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "corporate_actions only: apply reviewed issuer announcements first, then match actual payment dates with Baostock; payment dates earlier than the ex-date are treated as unknown."
-msgstr ""
+msgstr "仅 corporate_actions：先应用已审发行人公告，再用 Baostock 匹配真实派息日；早于除息日的付款日视为未知。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "corporate_actions only: explicitly repair delisted Shanghai and Shenzhen symbols with Baostock."
-msgstr ""
+msgstr "仅 corporate_actions：用 Baostock 显式修复已退市的沪深标的。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "corporate_actions only: repair payment dates and reviewed bonus/transfer share terms using issuer implementation announcements only (reviewed list, CNINFO, BSE); unmatched events stay as gaps and Baostock is not queried."
-msgstr ""
+msgstr "仅 corporate_actions：只用发行人实施公告（已审清单、巨潮、北交所）修复付款日和已审送转条款；未匹配事件保留缺口，不请求 Baostock。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "corporate_actions only: request historical ex-rights rows from EastMoney day by day for the ex-dates given in --ex-dates. The primary source for the backfill path is TDX; only EastMoney's daily-update equality filter can reach rows before 2015-09-29."
-msgstr ""
+msgstr "仅 corporate_actions：按 --ex-dates 指定的除权日向东财逐日要历史除权行。回补路径的主源是 TDX，东财只有日更的等值过滤能取到 2015-09-29 以前的行。"
 
 #: cnequity/serve/ops/scheduler_backend.py
 msgid "cron paths cannot contain newlines or backslashes; use an ordinary path."
@@ -6846,31 +6846,31 @@ msgstr ""
 
 #: cnequity/cli/backfill_cmds.py
 msgid "daily_bars only, for historical migration: fill BJ turnover for existing current-period trading days from the BSE website without refetching Sina. Daily updates already use the BSE quote board as the primary current-period source for BJ."
-msgstr ""
+msgstr "仅 daily_bars，历史迁移用：用北交所官网补已有当期交易日的 BJ 成交额，不重抓 Sina。日更已以北交所行情板为 BJ 当期主源。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "daily_bars only, superseded by --tdx-amount-repair: fill BSE turnover that Sina never published from TDX; stored prices and volumes are never touched. Requires --start/--end."
-msgstr ""
+msgstr "仅 daily_bars，已由 --tdx-amount-repair 取代：从 TDX 补 Sina 从未发布过的北交所成交额，已存的价格和成交量一律不动。需要 --start/--end。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "daily_bars only: cross-check historical Shanghai, Shenzhen and Beijing rows filled from Sina against TDX, filling turnover only when OHLC match and the volume difference is under one lot; codes TDX lacks keep the Sina rows. Stored prices and volumes are never touched. Requires --start/--end."
-msgstr ""
+msgstr "仅 daily_bars：新浪补上的沪深北历史行与通达信一起核对，只在开高低收一致且成交量差小于一手时补成交额；通达信没有的代码保留新浪行。已存的价格和成交量一律不动。需要 --start/--end。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "daily_bars only: fill missing BSE daily bars from the BigQMT bridge; writes only keys missing from the curated lake; rows outside the listing window or with zero volume do not count as coverage. Requires --symbols and --start/--end."
-msgstr ""
+msgstr "仅 daily_bars：用 BigQMT 桥补缺失的北交所日线；只写入 curated 湖缺失的 keys，上市区间外或零成交量行不作为覆盖。需要 --symbols 和 --start/--end。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "daily_bars only: fill the turnover of Sina rows for delisted BSE names from the BigQMT bridge; fills only when open/high/low/close agree and the volume difference is under one lot; stored prices and volumes are never touched. Requires --symbols and --start/--end."
-msgstr ""
+msgstr "仅 daily_bars：用 BigQMT 桥补退市 BJ 的 Sina 行成交额；开高低收一致且成交量差小于一手时才补，已存价格和成交量不动。需要 --symbols 和 --start/--end。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "daily_bars only: re-read TDX and rewrite only the volume of stored TDX rows (fixes the decoding bug before 2026-09-17); prices must match, and turnover values under 64.5 yuan, which the same bug inflated, are rewritten too; adds no rows. Requires --symbols and --start/--end."
-msgstr ""
+msgstr "仅 daily_bars：重读 TDX，只改写已存 TDX 行的成交量（修 2026-09-17 前的解码错误）；价格须一致，64.5 元以下被放大的成交额一并改写；不新增行。需要 --symbols 和 --start/--end。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "daily_bars only: replace Shanghai/Shenzhen stock rows whose turnover is missing, zero or has misaligned volume/amount units with the whole same-day Baostock row; OHLC must agree within half a cent, otherwise or if unavailable the original values are kept. Requires --start/--end."
-msgstr ""
+msgstr "仅 daily_bars：成交额缺失、为 0 或量额单位错位的沪深股票行，用 Baostock 同日行整行替换；开高低收须在半分钱内一致，不一致或未提供的保留原值。需要 --start/--end。"
 
 #: cnequity/diagnostics/report.py
 #, python-format
@@ -7083,7 +7083,7 @@ msgstr "仅 margin_trading 的日期推进并发数。每个请求仍然走配�
 
 #: cnequity/cli/backfill_cmds.py
 msgid "margin_trading only: source to use for this backfill, without changing the config file or source rate limits."
-msgstr ""
+msgstr "仅 margin_trading：本次回填使用的来源，不修改配置文件或来源限速。"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "margin_trading sources are exchange and eastmoney"
@@ -7346,7 +7346,7 @@ msgstr "不支持"
 
 #: cnequity/cli/backfill_cmds.py
 msgid "valuation_metrics only: when the EastMoney snapshot is interrupted, fill the --start/--end window after EastMoney's last complete day and before today from the EastMoney datacenter valuation report; writes only when the whole market is retrieved."
-msgstr ""
+msgstr "仅 valuation_metrics：东财快照中断时，用东财 datacenter 估值报表补东财最后一个完整日之后、今天之前的 --start/--end 窗口；全市场取全才写入。"
 
 #: cnequity/diagnostics/source_health.py
 msgid "vantage must be 1–64 letters, digits, dots, underscores or hyphens, starting with a letter or digit"

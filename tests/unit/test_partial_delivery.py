@@ -470,7 +470,7 @@ def test_outstanding_repair_fails_only_when_it_filled_nothing(tmp_path, monkeypa
     cfg_path.write_text(f'[data]\nroot = "{(tmp_path / "data").as_posix()}"\n')
     monkeypatch.setattr(
         "cnequity.cli.backfill_cmds._repair_outstanding",
-        lambda cfg, dataset, workers: {
+        lambda cfg, dataset, workers, max_attempts=10, retry_parked=False: {
             "dataset": dataset,
             "status": "warning",
             "usable_result": usable,

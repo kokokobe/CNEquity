@@ -904,6 +904,9 @@ def test_corporate_actions_backfill_prefers_clean_qmt_sweep(tmp_path, monkeypatc
 
     monkeypatch.setattr(events, "fetch_corporate_actions_qmt", _qmt)
     monkeypatch.setattr(events, "fetch_corporate_actions", _must_not_call)
+    # upstream 0.19 起回填尾部用 _sweep_universe 判定 observed 窗口；空湖会退到
+    # TDX 拉名单（测试环境禁止出网），这里按 scoped 回填直接给出名单。
+    monkeypatch.setattr(events, "_sweep_universe", lambda config: ["600000.SH"])
     result = events.step_corporate_actions(cfg, date(2026, 12, 31), "qmt-run", {})
     assert requested == [["600000.SH"]]
     assert result["rows_written"] == 1
