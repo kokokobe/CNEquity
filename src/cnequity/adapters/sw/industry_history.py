@@ -21,6 +21,7 @@ import httpx
 import polars as pl
 
 from cnequity.domain.http_policy import record_cache_reuse, record_http_response
+from cnequity.domain.industry_levels import LEVEL_COLUMNS, sw_level_columns
 from cnequity.domain.rate_limit import source_request
 from cnequity.domain.symbols import format_symbol, infer_exchange_from_code, is_all_a_symbol
 from cnequity.file_lock import exclusive_lock
@@ -200,8 +201,15 @@ def _intervals_from_sheet(pdf, pd) -> pl.DataFrame:
 def expand_sw_industry_as_of(
     intervals: pl.DataFrame,
     as_of_dates: list[date],
+    delist_dates: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """Point-in-time expand: for each as_of, latest start_date <= as_of per symbol."""
+    """Point-in-time expand: for each as_of, latest start_date <= as_of per symbol.
+
+    The Shenwan file has start dates and no end dates, so a stock's last class
+    would otherwise follow it into every later month: 338 stocks were still
+    listed years after delisting. ``delist_dates`` (``[symbol, delist_date]``)
+    drops a stock from the month it delisted on.
+    """
     if not as_of_dates:
         return pl.DataFrame(
             schema={
@@ -209,6 +217,7 @@ def expand_sw_industry_as_of(
                 "classification_system": pl.Utf8,
                 "industry_code": pl.Utf8,
                 "industry_name": pl.Utf8,
+                **dict.fromkeys(LEVEL_COLUMNS, pl.Utf8),
                 "as_of_date": pl.Date,
             }
         )
@@ -226,7 +235,13 @@ def expand_sw_industry_as_of(
                 pl.col("industry_code").alias("industry_name"),
                 pl.lit(as_of).alias("as_of_date"),
             )
+            .with_columns(sw_level_columns())
         )
+        if delist_dates is not None:
+            snap = snap.join(
+                delist_dates.select("symbol", "delist_date"), on="symbol", how="left"
+            ).filter(pl.col("delist_date").is_null() | (pl.col("delist_date") > as_of))
+            snap = snap.drop("delist_date")
         if not snap.is_empty():
             frames.append(snap)
     if not frames:
@@ -236,6 +251,7 @@ def expand_sw_industry_as_of(
                 "classification_system": pl.Utf8,
                 "industry_code": pl.Utf8,
                 "industry_name": pl.Utf8,
+                **dict.fromkeys(LEVEL_COLUMNS, pl.Utf8),
                 "as_of_date": pl.Date,
             }
         )

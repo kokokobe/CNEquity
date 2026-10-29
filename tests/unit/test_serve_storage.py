@@ -12,8 +12,6 @@ from cnequity.cli.main import cli
 from cnequity.config import Config
 from cnequity.serve.app import create_app
 from cnequity.storage.lifecycle import LifecycleStore, digest
-from cnequity.storage.lifecycle.artifacts import ArtifactStore
-from cnequity.storage.lifecycle.experiments import ExperimentRetirement
 from cnequity.storage.revisions import RevisionStore
 
 
@@ -435,45 +433,36 @@ def test_mark_requires_confirmation_and_cannot_delete_before_grace(web):
     assert len(store.inspect()["objects"]) == 8
 
 
-@pytest.mark.usefixtures("chinese_output")
-def test_experiment_web_delete_keeps_archive_and_cli_is_blocked(web, tmp_path, monkeypatch):
-    client, cfg, store, _ = web
+def test_registered_experiments_from_older_versions_are_left_alone(web, tmp_path):
+    """Experiment retirement is gone; a registry that still lists one must load,
+    show no experiment row and offer no way to delete its directory."""
+    client, _, store, _ = web
     source = tmp_path / "cne-old"
     source.mkdir()
-    (source / "evidence").write_bytes(b"test evidence")
     value = store.registry()
-    info = source.stat()
     value["experiments"] = [
         {
             "object_id": "experiment/test",
             "path": str(source),
-            "directory_identity": [info.st_dev, info.st_ino],
             "status": "needs_classification",
             "references": [],
         }
     ]
+    value["holds"]["experiment/test"] = ["kept by an older version"]
     store._save(value)
-    artifacts = ArtifactStore(store)
-    artifacts.archive("experiment/test", tmp_path / "archives")
-    cleaner = ExperimentRetirement(store)
-    cleaner.apply(cleaner.plan()["plan_id"])
-    value = store.registry()
-    for p in value["experiment_pending"].values():
-        p["marked_at"] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
-        p["not_before"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-    store._save(value)
-    job = review(client, "experiments")
-    assert len(job["objects"]) == 1
-    monkeypatch.setattr("cnequity.cli.storage_cmds._cfg", lambda _: cfg)
-    result = CliRunner().invoke(
-        cli, ["storage", "experiment-apply", job["plan_id"], "--maintenance-window"]
+
+    report = store.inspect()
+    assert "experiments" not in report
+    assert "experiment/test" not in report["resource_holds"]
+    summary = client.get("/api/storage").json()
+    assert all(not o["object_id"].startswith("experiment/") for o in summary["objects"])
+    response = client.post(
+        "/api/storage/reviews",
+        headers=headers(client),
+        json={"kind": "experiments", "phase": "purge"},
     )
-    assert result.exit_code == 1 and "网页" in result.output
+    assert response.status_code == 422
     assert source.exists()
-    result = wait(client, confirm(client, job))
-    assert result["status"] == "complete", result
-    assert not source.exists()
-    assert artifacts.resolve(source / "evidence").read_bytes() == b"test evidence"
 
 
 def test_failed_review_does_not_leave_service_busy(web, monkeypatch):

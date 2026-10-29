@@ -30,7 +30,7 @@ def traded_status_evidence(
     exclusions, and never become derived trading rows.
     """
     context = read_context or ReadContext.capture(
-        config, ("daily_bars", "instruments", "trading_status"), {}
+        config, ("daily_bars", "instruments", "trading_status", "announcement_index"), {}
     )
     bars_root = read_root(config, "daily_bars", context)
     if not dataset_has_parquet(bars_root, committed=False):
@@ -184,7 +184,14 @@ def trading_state_coverage_findings(config: Config, end: date) -> list[dict]:
             if missing or report["excluded_rows"] or report["contradictory_rows"]
             else "info",
             "message": f"{missing} traded stock/ETF key(s) lack status, including pre-inception history; "
-            f"{report['risk_warning_unknown_rows']} lack ST evidence",
+            f"{report['risk_warning_unknown_rows']} lack ST evidence"
+            + (
+                f"; {report['excluded_rows']} key(s) are left out of the count ("
+                + ", ".join(f"{name}: {n}" for name, n in report["exclusions"].items())
+                + ")"
+                if report["excluded_rows"]
+                else ""
+            ),
             **report,
         }
     ]

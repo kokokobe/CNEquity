@@ -441,10 +441,6 @@ def _pagination_page_signature(batch: list[dict]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-class _NeedDateSplit(RuntimeError):
-    """Internal signal: this date interval cannot be walked safely as one."""
-
-
 def _pagination_total_records(data: dict, *, column: str, page: int) -> int | None:
     """Read optional record totals used to reconcile unique primary keys."""
     values: dict[str, int] = {}
@@ -1089,6 +1085,30 @@ def _fetch_page_slice(
     state = checkpoint or _empty_checkpoint(label, source_revision=source_revision)
     slices = state.setdefault("slices", {})
     filters = dict(filters or {})
+
+    def _child(sub_start: date, sub_end: date, sub_filters: Mapping[str, str]) -> list[dict]:
+        """Fetch a sub-slice one level deeper with this call's settings."""
+        return _fetch_page_slice(
+            client,
+            start=sub_start,
+            end=sub_end,
+            column=column,
+            label=label,
+            config=config,
+            metrics=metrics,
+            checkpoint=state,
+            checkpoint_path=checkpoint_path,
+            max_pages_per_slice=max_pages_per_slice,
+            depth=depth + 1,
+            refresh=refresh,
+            checkpoint_ttl_days=checkpoint_ttl_days,
+            source_revision=source_revision,
+            raw_archive=raw_archive,
+            run_id=run_id,
+            request_scope=request_scope,
+            filters=sub_filters,
+        )
+
     bucket_column = _bucket_column(column, filters)
     key = _checkpoint_key(bucket_column, start, end)
     record = slices.get(key)
@@ -1280,45 +1300,7 @@ def _fetch_page_slice(
                 raise RuntimeError(
                     f"CNINFO {label} pagination repeated/no-progress page for {column}"
                 )
-            return _fetch_page_slice(
-                client,
-                start=start,
-                end=mid,
-                column=column,
-                label=label,
-                config=config,
-                metrics=metrics,
-                checkpoint=state,
-                checkpoint_path=checkpoint_path,
-                max_pages_per_slice=max_pages_per_slice,
-                depth=depth + 1,
-                refresh=refresh,
-                checkpoint_ttl_days=checkpoint_ttl_days,
-                source_revision=source_revision,
-                raw_archive=raw_archive,
-                run_id=run_id,
-                request_scope=request_scope,
-                filters=filters,
-            ) + _fetch_page_slice(
-                client,
-                start=mid + timedelta(days=1),
-                end=end,
-                column=column,
-                label=label,
-                config=config,
-                metrics=metrics,
-                checkpoint=state,
-                checkpoint_path=checkpoint_path,
-                max_pages_per_slice=max_pages_per_slice,
-                depth=depth + 1,
-                refresh=refresh,
-                checkpoint_ttl_days=checkpoint_ttl_days,
-                source_revision=source_revision,
-                raw_archive=raw_archive,
-                run_id=run_id,
-                request_scope=request_scope,
-                filters=filters,
-            )
+            return _child(start, mid, filters) + _child(mid + timedelta(days=1), end, filters)
 
     if not isinstance(record, dict):
         record = {
@@ -1422,28 +1404,7 @@ def _fetch_page_slice(
                     bucket_rows: list[dict] = []
                     try:
                         for value in values:
-                            bucket_rows.extend(
-                                _fetch_page_slice(
-                                    client,
-                                    start=start,
-                                    end=end,
-                                    column=column,
-                                    label=label,
-                                    config=config,
-                                    metrics=metrics,
-                                    checkpoint=state,
-                                    checkpoint_path=checkpoint_path,
-                                    max_pages_per_slice=max_pages_per_slice,
-                                    depth=depth + 1,
-                                    refresh=refresh,
-                                    checkpoint_ttl_days=checkpoint_ttl_days,
-                                    source_revision=source_revision,
-                                    raw_archive=raw_archive,
-                                    run_id=run_id,
-                                    request_scope=request_scope,
-                                    filters={**filters, axis: value},
-                                )
-                            )
+                            bucket_rows.extend(_child(start, end, {**filters, axis: value}))
                         reconciled = _reconcile_partition_rows(
                             bucket_rows,
                             expected_total=authoritative_total,
@@ -1552,45 +1513,7 @@ def _fetch_page_slice(
         if metrics is not None:
             metrics["split_reasons"] = int(metrics.get("split_reasons", 0)) + 1
         mid = _midpoint(start, end)
-        return _fetch_page_slice(
-            client,
-            start=start,
-            end=mid,
-            column=column,
-            label=label,
-            config=config,
-            metrics=metrics,
-            checkpoint=state,
-            checkpoint_path=checkpoint_path,
-            max_pages_per_slice=max_pages_per_slice,
-            depth=depth + 1,
-            refresh=refresh,
-            checkpoint_ttl_days=checkpoint_ttl_days,
-            source_revision=source_revision,
-            raw_archive=raw_archive,
-            run_id=run_id,
-            request_scope=request_scope,
-            filters=filters,
-        ) + _fetch_page_slice(
-            client,
-            start=mid + timedelta(days=1),
-            end=end,
-            column=column,
-            label=label,
-            config=config,
-            metrics=metrics,
-            checkpoint=state,
-            checkpoint_path=checkpoint_path,
-            max_pages_per_slice=max_pages_per_slice,
-            depth=depth + 1,
-            refresh=refresh,
-            checkpoint_ttl_days=checkpoint_ttl_days,
-            source_revision=source_revision,
-            raw_archive=raw_archive,
-            run_id=run_id,
-            request_scope=request_scope,
-            filters=filters,
-        )
+        return _child(start, mid, filters) + _child(mid + timedelta(days=1), end, filters)
 
     while True:
         payload = {

@@ -747,3 +747,148 @@ def test_dataset_schema_contract():
     schema = dataset_schema("daily_bars")
     assert schema["trade_date"] == pl.Date
     assert "close" in schema
+
+
+def _write_daily(cfg: Config, day: date, *, close: float, volume: int) -> None:
+    root = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+    root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [day],
+            "open": [close],
+            "high": [close],
+            "low": [close],
+            "close": [close],
+            "volume": [volume],
+            "amount": [close * volume],
+            **_prov(),
+        }
+    ).write_parquet(root / "part-0.parquet")
+
+
+def _write_factor(cfg: Config, day: date, factor: float) -> None:
+    root = cfg.derived_root / "adj_factors" / f"trade_date={day.isoformat()}"
+    root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "trade_date": [day],
+            "adjust_type": ["hfq"],
+            "factor": [factor],
+            **_prov(),
+        }
+    ).write_parquet(root / "part-0.parquet")
+
+
+def test_zero_volume_gap_keeps_the_previous_hfq_factor(tmp_path, caplog):
+    """A suspended placeholder must not be published as raw-priced hfq.
+
+    The derive sometimes stops writing factors a few sessions after volume
+    hits zero. The last published factor still applies; a later resume factor
+    must not be pulled backwards onto the suspension.
+    """
+    import logging
+
+    cfg = Config(data_root=tmp_path / "lake")
+    _write_daily(cfg, date(2024, 6, 26), close=10.0, volume=1000)
+    _write_daily(cfg, date(2024, 6, 27), close=10.0, volume=0)
+    _write_daily(cfg, date(2024, 6, 28), close=11.0, volume=800)
+    _write_factor(cfg, date(2024, 6, 26), 2.0)
+    _write_factor(cfg, date(2024, 6, 28), 4.0)
+
+    with caplog.at_level(logging.WARNING):
+        df = load(
+            "daily_bars",
+            start="2024-06-26",
+            end="2024-06-28",
+            adjust="hfq",
+            config=cfg,
+        ).sort("trade_date")
+
+    assert "missing adj_factors" not in caplog.text
+    assert df["adj_is_exact"].to_list() == [True, True, True]
+    assert df["adj_close"].to_list() == pytest.approx([20.0, 20.0, 44.0])
+
+
+def test_suspended_gap_before_the_window_still_uses_the_last_factor(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    _write_daily(cfg, date(2024, 6, 26), close=10.0, volume=1000)
+    _write_daily(cfg, date(2024, 6, 27), close=10.0, volume=0)
+    _write_factor(cfg, date(2024, 6, 26), 2.5)
+
+    df = load(
+        "daily_bars",
+        start="2024-06-27",
+        end="2024-06-27",
+        adjust="hfq",
+        strict_adj=True,
+        config=cfg,
+    )
+
+    assert df["adj_is_exact"].to_list() == [True]
+    assert df["adj_close"].to_list() == pytest.approx([25.0])
+
+
+def test_traded_bar_without_a_factor_stays_inexact(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    _write_daily(cfg, date(2024, 6, 26), close=10.0, volume=1000)
+    _write_daily(cfg, date(2024, 6, 27), close=12.0, volume=50)
+    _write_factor(cfg, date(2024, 6, 26), 2.0)
+
+    df = load(
+        "daily_bars",
+        start="2024-06-26",
+        end="2024-06-27",
+        adjust="hfq",
+        config=cfg,
+    ).sort("trade_date")
+
+    assert df["adj_is_exact"].to_list() == [True, False]
+    assert df["adj_close"].to_list() == pytest.approx([20.0, 12.0])
+
+
+def test_qfq_prices_a_suspended_gap_like_hfq(tmp_path):
+    """Both modes read the same carried factor; qfq only rescales it."""
+    cfg = Config(data_root=tmp_path / "lake")
+    _write_daily(cfg, date(2024, 6, 26), close=10.0, volume=1000)
+    _write_daily(cfg, date(2024, 6, 27), close=10.0, volume=0)
+    _write_daily(cfg, date(2024, 6, 28), close=11.0, volume=800)
+    _write_factor(cfg, date(2024, 6, 26), 2.0)
+    _write_factor(cfg, date(2024, 6, 28), 4.0)
+
+    frames = {
+        adjust: load(
+            "daily_bars",
+            start="2024-06-26",
+            end="2024-06-28",
+            adjust=adjust,
+            strict_adj=True,
+            config=cfg,
+        ).sort("trade_date")
+        for adjust in ("hfq", "qfq")
+    }
+
+    assert frames["qfq"]["adj_is_exact"].to_list() == [True, True, True]
+    assert frames["qfq"]["adj_close"].to_list() == pytest.approx([5.0, 5.0, 11.0])
+    hfq = frames["hfq"]["adj_close"].to_list()
+    assert [price / 4.0 for price in hfq] == pytest.approx(frames["qfq"]["adj_close"].to_list())
+
+
+def test_qfq_window_inside_a_suspension_anchors_on_the_carried_factor(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake")
+    _write_daily(cfg, date(2024, 6, 26), close=10.0, volume=1000)
+    _write_daily(cfg, date(2024, 6, 27), close=10.0, volume=0)
+    _write_factor(cfg, date(2024, 6, 26), 2.5)
+
+    df = load(
+        "daily_bars",
+        start="2024-06-27",
+        end="2024-06-27",
+        adjust="qfq",
+        strict_adj=True,
+        config=cfg,
+    )
+
+    assert df["adj_is_exact"].to_list() == [True]
+    assert df["adj_close"].to_list() == pytest.approx([10.0])

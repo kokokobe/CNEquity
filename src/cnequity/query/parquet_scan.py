@@ -122,11 +122,6 @@ def partition_dir(root: Path, partition_col: str, value: str) -> Path:
     return root / f"{partition_col}={value}"
 
 
-def partition_containing(root: Path, partition_col: str, d: date) -> Partition | None:
-    """The existing partition holding *d*, whatever period it spans."""
-    return next((p for p in list_partitions(root, partition_col) if p.covers(d)), None)
-
-
 def list_hive_partition_dates(root: Path, partition_col: str) -> list[date]:
     """Period *start* dates of every partition, ascending.
 

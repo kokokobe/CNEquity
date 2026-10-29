@@ -11,7 +11,7 @@ session — a year of trading days that are not, in silence.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
@@ -38,18 +38,26 @@ def _calendar(tmp_path, last_trading_day: date) -> Config:
 
 
 def test_silent_while_inside_the_holiday_table(tmp_path):
-    from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
+    from cnequity.adapters.calendar.exchange_calendar import calendar_seed_end
 
-    inside = date.fromisoformat(max(CLOSED_DATES))
+    inside = calendar_seed_end()
     assert trading_calendar_horizon_findings(_calendar(tmp_path, inside), date(2026, 8, 7)) == []
 
 
-def test_fires_once_the_calendar_outruns_the_table(tmp_path):
-    from datetime import timedelta
-
+def test_sessions_after_the_last_holiday_are_not_beyond_the_table(tmp_path):
+    """The last closure of the table is 2027-10-07, but the seed covers the
+    rest of that year: the weekdays after it are real sessions."""
     from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 
-    table_end = date.fromisoformat(max(CLOSED_DATES))
+    after_last_closure = date.fromisoformat(max(CLOSED_DATES)) + timedelta(days=11)
+    cfg = _calendar(tmp_path, after_last_closure)
+    assert trading_calendar_horizon_findings(cfg, date(2026, 8, 7)) == []
+
+
+def test_fires_once_the_calendar_outruns_the_table(tmp_path):
+    from cnequity.adapters.calendar.exchange_calendar import calendar_seed_end
+
+    table_end = calendar_seed_end()
     beyond = table_end + timedelta(days=90)
     findings = trading_calendar_horizon_findings(_calendar(tmp_path, beyond), date(2026, 8, 7))
     assert len(findings) == 1

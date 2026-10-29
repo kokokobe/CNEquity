@@ -54,6 +54,10 @@ def _hot_symbol(sc: str) -> str | None:
     mkt, code = text[:2], text[2:].zfill(6)
     if mkt not in {"SH", "SZ", "BJ"} or len(code) != 6 or not code.isdigit():
         return None
+    # This endpoint labels Beijing entries as SZ (e.g. SZ920578). Keep the
+    # code's Beijing identity rather than dropping a member of the top 100.
+    if mkt == "SZ" and is_all_a_symbol(code, "BJ"):
+        mkt = "BJ"
     if not is_all_a_symbol(code, mkt):
         return None
     return format_symbol(code, mkt)
@@ -172,7 +176,9 @@ def fetch_hot_rank(
                 break
             page += 1
     if require_top_n and len(rows_by_symbol) < top_n:
-        raise RuntimeError(
+        from cnequity.orchestrator.outcomes import SourcePayloadError
+
+        raise SourcePayloadError(
             f"EastMoney hot rank returned only {len(rows_by_symbol)} unique A-share "
             f"symbols; expected {top_n}"
         )

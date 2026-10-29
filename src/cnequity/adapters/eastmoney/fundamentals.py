@@ -296,24 +296,6 @@ def _source_date(value: object) -> date | None:
         return None
 
 
-def _rows_for_notice_date(raw: list[dict], expected: date) -> list[dict]:
-    rows = [item for item in raw if _source_date(item.get("NOTICE_DATE")) == expected]
-    dropped = len(raw) - len(rows)
-    if dropped:
-        logger.warning(
-            "EastMoney financial statements dropped %d row(s) with invalid or "
-            "unexpected NOTICE_DATE for %s",
-            dropped,
-            expected.isoformat(),
-        )
-    if raw and not rows:
-        raise RuntimeError(
-            "EastMoney financial statement response contains no NOTICE_DATE row "
-            f"for {expected.isoformat()}"
-        )
-    return rows
-
-
 def _rows_for_notice_window(raw: list[dict], start: date, end: date) -> list[dict]:
     """Keep only rows disclosed in the requested rolling reconciliation window."""
     rows = [

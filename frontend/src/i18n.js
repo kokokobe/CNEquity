@@ -212,7 +212,8 @@ export function dsMarkup(id) {
 
 export function dsWithCode(id) {
   const name = ds(id);
-  return name === id ? String(id ?? "") : `${name} · ${id}`;
+  if (!name || name === id) return String(id ?? "");
+  return lang === "en" ? `${name} (${id})` : `${name}（${id}）`;
 }
 
 export function tierText(code, fallback = "") {

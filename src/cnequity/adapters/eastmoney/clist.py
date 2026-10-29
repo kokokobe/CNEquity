@@ -23,6 +23,16 @@ from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive
 logger = logging.getLogger(__name__)
 
 
+class EastMoneyClistError(RuntimeError):
+    """Keep the underlying failure category through pagination context."""
+
+    def __init__(self, message: str, *, cause: Exception | None):
+        from cnequity.orchestrator.outcomes import error_kind
+
+        super().__init__(message)
+        self.reason_code = error_kind(cause) if cause is not None else "execution_error"
+
+
 def _row_key(item: dict) -> tuple[str, str]:
     """Stable identity for one clist security row across page boundaries."""
     for field in ("f12", "SECURITY_CODE", "code"):
@@ -137,7 +147,9 @@ def _fetch_clist_page(
                 break
             if attempt + 1 < max_retries:
                 time.sleep(retry_backoff_seconds * (attempt + 1))
-    raise RuntimeError(f"EastMoney clist page {page} failed on {host}: {last_exc}") from last_exc
+    raise EastMoneyClistError(
+        f"EastMoney clist page {page} failed on {host}: {last_exc}", cause=last_exc
+    ) from last_exc
 
 
 def _clist_hosts(client: EastMoneyClient) -> tuple[str, ...]:
@@ -212,6 +224,7 @@ def _fetch_clist_pages_uncached(
     while True:
         if active_host is None:
             page_rows: list[dict] = []
+            last_exc: Exception | None = None
             for host in hosts:
                 try:
                     page_rows, page_total = _fetch_clist_page(
@@ -229,16 +242,18 @@ def _fetch_clist_pages_uncached(
                 except (RawArchiveError, host_guard.Push2BlockedError):
                     raise
                 except Exception as exc:
+                    last_exc = exc
                     logger.warning("EastMoney clist page %s failed on %s: %s", page, host, exc)
                     continue
                 active_host = host
                 break
             if active_host is None:
                 # Full-universe snapshot: don't persist a truncated page.
-                raise RuntimeError(
+                raise EastMoneyClistError(
                     f"EastMoney clist page {page} failed on all hosts "
-                    f"({len(rows_by_key)} rows fetched before failure)"
-                )
+                    f"({len(rows_by_key)} rows fetched before failure)",
+                    cause=last_exc,
+                ) from last_exc
         else:
             try:
                 page_rows, page_total = _fetch_clist_page(
@@ -295,9 +310,10 @@ def _fetch_clist_pages_uncached(
                             host_exc,
                         )
                 if not recovered:
-                    raise RuntimeError(
+                    raise EastMoneyClistError(
                         f"EastMoney clist page {page} failed on all hosts "
-                        f"({len(rows_by_key)} rows fetched before failure)"
+                        f"({len(rows_by_key)} rows fetched before failure)",
+                        cause=exc,
                     ) from exc
 
         if page_total is not None:

@@ -30,6 +30,7 @@ from cnequity.domain.schemas import with_provenance
 from cnequity.domain.symbols import (
     is_all_a_symbol,
     is_cdr_symbol,
+    is_etf_symbol,
     is_tdx_servable,
     parse_symbol,
 )
@@ -1215,6 +1216,23 @@ def step_trading_status(config: Config, trade_date: date, run_id: str, context: 
                     frames.append(result.rows.with_columns(pl.lit("exchange").alias("source")))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("trading_status: SH/SZ boards unavailable for %s: %s", day, exc)
+
+        # The equity boards above carry no ETF or LOF; EastMoney was the only
+        # feed that did, so without this every fund goes unanswered on an outage.
+        funds = [
+            sym for sym in sh_sz if is_etf_symbol(sym.rsplit(".", 1)[0], sym.rsplit(".", 1)[-1])
+        ]
+        if funds and config.sources.get("exchange", True):
+            from cnequity.adapters.exchange.trading_status import (
+                fetch_fund_trading_status_exchange,
+            )
+
+            try:
+                result = fetch_fund_trading_status_exchange(funds, day, config=config)
+                if not result.is_empty:
+                    frames.append(result.rows.with_columns(pl.lit("exchange").alias("source")))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("trading_status: fund boards unavailable for %s: %s", day, exc)
 
         if bj and config.sources.get("bse", True):
             from cnequity.adapters.bse.trading_status import fetch_trading_status_bse

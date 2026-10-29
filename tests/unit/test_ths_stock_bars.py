@@ -120,30 +120,6 @@ def test_stock_year_reused_across_windows_and_damaged_or_expired_cache_refetched
     assert len(calls) == 3
 
 
-def test_stock_and_index_year_caches_are_separate(tmp_path, monkeypatch):
-    from cnequity.adapters.ths import index_bars, stock_bars
-    from cnequity.config import Config
-
-    cfg = Config(data_root=tmp_path / "lake")
-    calls = []
-
-    def fake_get(url, *, config=None, timeout=20.0):
-        calls.append(url)
-        close = 3 if "/zs_" in url else 2
-        return f'cb({{"data":"20150105,1,3,1,{close},5,6"}});'
-
-    monkeypatch.setattr(index_bars, "_get", fake_get)
-    monkeypatch.setattr(stock_bars, "_get", fake_get)
-    window = (date(2015, 1, 5), date(2015, 1, 5))
-    for _ in range(2):
-        assert (
-            index_bars.fetch_index_bars_history("399001.SZ", *window, config=cfg)[0]["close"] == 3
-        )
-        assert stock_bars.fetch_stock_bars("399001.SZ", *window, config=cfg)[0]["close"] == 2
-    assert len(calls) == 2
-    assert len(list((cfg.meta_root / "source_cache" / "ths_year").glob("*.json"))) == 2
-
-
 def test_wrong_year_and_empty_kline_are_not_cached(tmp_path, monkeypatch):
     from cnequity.adapters.ths import stock_bars as mod
     from cnequity.config import Config
@@ -301,68 +277,6 @@ def test_seed_still_wins_inside_its_own_range(tmp_path):
     )
     row = cal.filter(pl.col("trade_date") == date(2024, 10, 1))
     assert not bool(row["is_trading"][0])
-
-
-def test_index_map_excludes_the_wrong_csi1000_series():
-    """000852.SH must stay out until a code is value-checked.
-
-    Both `399852` and `1B0852` return data, but it closes 2015 at 10614 against
-    中证1000's actual ~8378 and starts in 2005 though the index was published in
-    2014 — a different series wearing the code. A benchmark that is quietly wrong
-    corrupts every excess-return number computed against it, so absence is the
-    safer state.
-    """
-    from cnequity.adapters.ths.index_bars import INDEX_CODE_MAP
-
-    assert "000852.SH" not in INDEX_CODE_MAP
-    assert "399852" not in INDEX_CODE_MAP.values()
-    assert "1B0852" not in INDEX_CODE_MAP.values()
-
-
-def test_index_kline_rows_carry_frequency():
-    """`index_bars` keys on frequency; the adapter supplies it rather than
-    leaving each caller to remember."""
-    from cnequity.adapters.ths.index_bars import _parse_index_kline
-
-    rows = _parse_index_kline(
-        {
-            "data": (
-                "20151231,3700.00,3740.00,3690.00,3731.00,123456,9876543210.00;"
-                "20160104,nan,3740.00,3690.00,3731.00,123456,9876543210.00;"
-                "20160105,3700.00,3740.00,3690.00,3731.00,1e300,9876543210.00"
-            )
-        },
-        "000300.SH",
-    )
-    assert len(rows) == 1
-    assert rows[0]["frequency"] == "1d"
-    assert rows[0]["close"] == 3731.00
-
-
-def test_index_kline_drops_historical_weekend_rows():
-    from cnequity.adapters.ths.index_bars import _parse_index_kline
-
-    rows = _parse_index_kline(
-        {
-            "data": (
-                "19910405,121.07,121.73,120.50,121.10,100,1000;"
-                "19910406,121.10,121.20,120.90,121.00,100,1000;"
-                "19910408,121.11,121.11,120.80,121.05,100,1000"
-            )
-        },
-        "399001.SZ",
-    )
-
-    assert [row["trade_date"].isoformat() for row in rows] == ["1991-04-05", "1991-04-08"]
-
-
-def test_index_symbol_without_a_code_raises():
-    """An unmapped symbol is a caller error — silently fetching nothing would
-    read as 'this index has no history'."""
-    from cnequity.adapters.ths.index_bars import fetch_index_bars_history
-
-    with pytest.raises(KeyError, match="no 同花顺 index code"):
-        fetch_index_bars_history("000852.SH", date(2010, 1, 1), date(2010, 12, 31))
 
 
 def test_zero_turnover_on_a_traded_bar_is_unknown_not_zero():

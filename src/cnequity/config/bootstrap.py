@@ -45,7 +45,7 @@ def render_example_toml(
             return f"{match.group(1)}{escaped}{match.group(2)}"
 
         replaced = re.sub(
-            r'(?m)^(\[data\]\s*\nroot\s*=\s*")[^"]*(")',
+            r'(?m)^(\[data\]\s*\n(?:#[^\n]*\n)*root\s*=\s*")[^"]*(")',
             _patch_root,
             text,
             count=1,
@@ -70,26 +70,23 @@ def write_user_config(
     *,
     data_root: str | None = None,
     force: bool = False,
-    platform: str | None = None,
 ) -> Path:
-    """Write a user config file from the packaged example.
+    """Write a minimal user config: ``extends = "builtin"`` plus ``[data].root``.
 
-    When *data_root* is omitted, the template's ``./data/cnequity`` is
-    resolved to an absolute path so ``cne doctor`` is green on first run
-    (relative roots break under launchd/cron CWDs).
+    Everything else comes from the built-in defaults of the installed version
+    (`cnequity.config.layers`), including this platform's ``workers``. When
+    *data_root* is omitted, ``./data/cnequity`` is resolved to an absolute path
+    so the lake does not depend on where later commands run.
 
     Raises:
         FileExistsError: when ``path`` exists and ``force`` is false.
     """
+    from cnequity.config.minimize import render_minimal
+
     path = Path(path)
     if path.exists() and not force:
         raise FileExistsError(f"Config already exists: {path}. Re-run with --force to overwrite.")
     root = Path(data_root) if data_root is not None else Path("./data/cnequity")
-    # resolve + as_posix; render_example_toml still applies TOML escaping.
-    absolute_root = root.expanduser().resolve().as_posix()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        render_example_toml(data_root=absolute_root, platform=platform),
-        encoding="utf-8",
-    )
+    path.write_text(render_minimal(root.expanduser().resolve()), encoding="utf-8")
     return path

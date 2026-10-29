@@ -10,6 +10,7 @@
 | `meta/state/` | 更新水位与覆盖状态 |
 | `meta/quality/` | 质量检查与来源差异报告 |
 | `meta/raw/` | 原始响应归档 |
+| `meta/raw_storage.json` | 可选的外置原文位置登记；来源记录仍在 `meta/raw/`，快照会包含外置原文而不依赖本机路径 |
 | `meta/source_snapshots/` | 用于来源核验的快照 |
 | `meta/locks/` | 单次运行、发布和写入协调所用的锁 |
 | `locks/` | 调度脚本与操作页共用的调度锁。可用 `CNE_SCHEDULER_LOCK_DIR` 或 `CNE_LOCK_DIR` 改到别处 |

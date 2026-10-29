@@ -37,9 +37,9 @@ from cnequity.domain.datasets import (
     TIER_LABELS,
     TIERS,
     empty_freshness_label,
+    freshness_state,
     history_mode_for,
     is_dataset_enabled,
-    is_stale,
 )
 from cnequity.domain.market_time import is_session_final, shanghai_today
 from cnequity.domain.partitions import parse_partition
@@ -338,7 +338,7 @@ class LakeView:
         if not row["watermarked"]:
             return "n/a"
         mark = row["watermark"] or row["coverage_end"]
-        return "stale" if is_stale(row["dataset"], mark, anchor, self.config) else "fresh"
+        return freshness_state(row["dataset"], mark, anchor, self.config)
 
     def _rows(self) -> list[dict]:
         """One enriched dict per registered dataset."""
@@ -756,6 +756,47 @@ class LakeView:
             if conn is not None:
                 conn.close()
 
+    def _orphaned_runs(self) -> tuple[str, ...]:
+        """Runs the manifest still calls ``running`` whose process is gone.
+
+        The engine's own rule (a free run lock past a short grace), so a run
+        killed by SIGKILL, an OOM or a closed laptop reads as interrupted here
+        straight away rather than as running for ``batch_stale_seconds``.
+        Nothing is written: the next run reconciles the manifest itself.
+        """
+        import sqlite3
+
+        from cnequity.orchestrator.manifest import Manifest
+
+        path = self.config.manifest_path
+        if not path.exists():
+            return ()
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            orphans, _locked = Manifest.orphaned_running_runs(
+                conn,
+                stale_after_seconds=float(
+                    getattr(self.config, "batch_stale_seconds", 3600) or 3600
+                ),
+                locks_root=self.config.meta_root,
+            )
+        except (sqlite3.Error, ValueError, OSError):
+            return ()
+        finally:
+            if conn is not None:
+                conn.close()
+        return tuple(orphans)
+
+    @staticmethod
+    def _status_sql(orphans: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:
+        """The run status column as readers should see it, with its parameters."""
+        if not orphans:
+            return "status", ()
+        marks = ",".join("?" * len(orphans))
+        return f"(CASE WHEN run_id IN ({marks}) THEN 'interrupted' ELSE status END)", orphans
+
     def runs(
         self,
         *,
@@ -794,21 +835,22 @@ class LakeView:
             rows = self._decorate_runs(self._runs_by_id([row["run_id"] for row in page]))
             return len(chosen), rows, failed_daily
         chosen = tuple(dict.fromkeys(statuses or ()))
+        status, status_params = self._status_sql(self._orphaned_runs())
         where = ""
         bound: tuple[str, ...] = ()
         if chosen:
-            where = f" WHERE status IN ({','.join('?' * len(chosen))})"
-            bound = chosen
+            where = f" WHERE {status} IN ({','.join('?' * len(chosen))})"
+            bound = (*status_params, *chosen)
         counted = self._manifest_rows(
             f"SELECT COUNT(*) AS n FROM ingestion_runs{where}",
             bound,
         )
         total = int(counted[0]["n"]) if counted else 0
         runs = self._manifest_rows(
-            f"""SELECT run_id, job_name, status, started_at, finished_at,
+            f"""SELECT run_id, job_name, {status} AS status, started_at, finished_at,
                       rows_read, rows_written, error_message, metadata_json
                FROM ingestion_runs{where} ORDER BY started_at DESC LIMIT ? OFFSET ?""",
-            (*bound, limit, offset),
+            (*status_params, *bound, limit, offset),
         )
         return total, self._decorate_runs(runs), None
 
@@ -817,16 +859,21 @@ class LakeView:
         ignored = ",".join("?" * len(_NON_ATTEMPT_STATUSES))
         scoped = ",".join("?" * len(_STEP_SCOPED_JOBS))
         attention = ",".join("?" * len(_OPEN_ATTENTION_STATUSES))
+        status, status_params = self._status_sql(self._orphaned_runs())
         rows = self._manifest_rows(
             f"""
-            WITH scoped AS (
+            WITH effective AS (
+                SELECT run_id, job_name, {status} AS status, started_at, metadata_json
+                FROM ingestion_runs
+            ),
+            scoped AS (
                 SELECT run_id, job_name, status, started_at, metadata_json,
                        CASE
                            WHEN job_name IN ({scoped})
                            THEN COALESCE(json_extract(metadata_json, '$.planned_steps[0]'), '')
                            ELSE ''
                        END AS scope_key
-                FROM ingestion_runs
+                FROM effective
                 WHERE status NOT IN ({ignored})
             ),
             ranked AS (
@@ -842,7 +889,7 @@ class LakeView:
             WHERE rn = 1 AND status IN ({attention})
             ORDER BY started_at DESC, run_id DESC
             """,
-            (*_STEP_SCOPED_JOBS, *_NON_ATTEMPT_STATUSES, *_OPEN_ATTENTION_STATUSES),
+            (*status_params, *_STEP_SCOPED_JOBS, *_NON_ATTEMPT_STATUSES, *_OPEN_ATTENTION_STATUSES),
         )
         return [
             row for row in rows if row["job_name"] != "init" or self._init_failure_still_open(row)
@@ -905,11 +952,12 @@ class LakeView:
     def _runs_by_id(self, run_ids: list[str]) -> list[dict]:
         if not run_ids:
             return []
+        status, status_params = self._status_sql(self._orphaned_runs())
         rows = self._manifest_rows(
-            f"""SELECT run_id, job_name, status, started_at, finished_at,
+            f"""SELECT run_id, job_name, {status} AS status, started_at, finished_at,
                       rows_read, rows_written, error_message, metadata_json
                FROM ingestion_runs WHERE run_id IN ({",".join("?" * len(run_ids))})""",
-            tuple(run_ids),
+            (*status_params, *run_ids),
         )
         by_id = {row["run_id"]: row for row in rows}
         return [by_id[run_id] for run_id in run_ids if run_id in by_id]
@@ -986,11 +1034,13 @@ class LakeView:
         here shows the operator what the engine is about to conclude, before it
         does — a worker that died is otherwise indistinguishable from a slow one.
         """
+        orphans = self._orphaned_runs()
+        status, status_params = self._status_sql(orphans)
         rows = self._manifest_rows(
-            """SELECT run_id, job_name, status, started_at, finished_at,
+            f"""SELECT run_id, job_name, {status} AS status, started_at, finished_at,
                       rows_read, rows_written, error_message, metadata_json
                FROM ingestion_runs WHERE run_id = ?""",
-            (run_id,),
+            (*status_params, run_id),
         )
         if not rows:
             return None
@@ -1017,7 +1067,8 @@ class LakeView:
             except ValueError:
                 continue
             batch["silent_seconds"] = round(silent)
-            batch["stalled"] = silent >= threshold
+            # A batch of a run whose process is gone will never finish.
+            batch["stalled"] = silent >= threshold or run_id in orphans
         run["batches"] = batches
         run["stale_after_seconds"] = threshold
         run["launch_id"] = _launch_id(run.get("metadata_json"))
@@ -1046,7 +1097,11 @@ class LakeView:
                FROM ingestion_batches WHERE run_id = ?""",
             (run_id,),
         )
-        state = self._manifest_rows("SELECT status FROM ingestion_runs WHERE run_id = ?", (run_id,))
+        status, status_params = self._status_sql(self._orphaned_runs())
+        state = self._manifest_rows(
+            f"SELECT {status} AS status FROM ingestion_runs WHERE run_id = ?",
+            (*status_params, run_id),
+        )
         head = rows[0] if rows else {}
         return (
             "|".join(str(head.get(k, "")) for k in ("n", "f", "h", "w", "r", "s"))

@@ -12,6 +12,7 @@ from cnequity.domain.universe_profiles import (
     show_profile,
     show_universe_profile,
 )
+from cnequity.query.profile import ProfileError, load_profile
 from cnequity.query.reader import (
     dataset_schema,
     list_datasets,
@@ -30,7 +31,9 @@ __all__ = [
     "dataset_attempt",
     "list_datasets",
     "load",
+    "load_profile",
     "load_with_receipt",
+    "ProfileError",
     "ReadReceiptError",
     "ReadResult",
     "resolve_config",

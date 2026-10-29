@@ -926,7 +926,7 @@ def record_validated_ingest(
     key = _PASSIVE_PROBES.get((source, dataset))
     if key is None or rows <= 0:
         return
-    vantage = os.environ.get("CNE_SOURCE_VANTAGE", "local")
+    vantage = effective_vantage(config)
     validate_vantage(vantage)
     path = config.meta_root / "source_health" / "passive" / vantage / f"{key}.json"
     write_json_atomic(
@@ -1016,6 +1016,20 @@ def run_probe(probe: SourceProbe, config: Config) -> ProbeResult:
         logger.info("probe %s -> %s (%s)", probe.key, status.value, detail)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     return ProbeResult(**base, status=status.value, latency_ms=elapsed_ms, detail=detail)
+
+
+def effective_vantage(config=None, explicit: str | None = None) -> str:
+    """The egress label: ``--vantage``, then ``CNE_SOURCE_VANTAGE``, then the config, then ``local``.
+
+    Set ``[source_health] vantage`` once and every probe, passive health record
+    and scheduled maintenance run carries it; the environment variable stays for
+    a one-off run from another network.
+    """
+    if explicit:
+        return explicit
+    return (
+        os.environ.get("CNE_SOURCE_VANTAGE") or getattr(config, "source_vantage", None) or "local"
+    )
 
 
 def validate_vantage(vantage: str) -> None:

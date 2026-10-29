@@ -1,3 +1,5 @@
+import contextlib
+import threading
 from datetime import date
 
 import pytest
@@ -545,6 +547,78 @@ def test_daily_ingestion_lock_blocks_overlapping_runs(tmp_path, monkeypatch):
             pass
         else:
             raise AssertionError("expected RunLockError")
+
+
+@contextlib.contextmanager
+def _held_by_another_holder(meta_root, name):
+    """Hold *name* from another thread, which flock treats like another process."""
+    taken, release = threading.Event(), threading.Event()
+
+    def hold():
+        with run_lock(meta_root, name):
+            taken.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert taken.wait(5)
+    try:
+        yield
+    finally:
+        release.set()
+        holder.join(5)
+
+
+@pytest.mark.parametrize("job", ["daily:core", "events", "backfill", "retry"])
+def test_ingestion_refuses_to_run_beside_an_init(tmp_path, monkeypatch, job):
+    """`cne run daily` in a second terminal used to fetch and compact while
+    `cne init` was still building the lake; only the dashboard refused it."""
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    monkeypatch.setattr(engine, "_run_wave", lambda *a, **k: ([], 0, 0, False, False))
+    with _held_by_another_holder(cfg.meta_root, "init_job"):
+        with pytest.raises(RunLockError, match="An init is running"):
+            engine.run_job(job, date(2024, 6, 28), waves=[], backfill=True)
+    assert Manifest(cfg.manifest_path).latest_run() is None, "refused before recording a run"
+
+
+@pytest.mark.parametrize(
+    ("lock", "name"), [("daily_ingestion", "daily update"), ("events_ingestion", "event sweep")]
+)
+def test_init_refuses_to_start_beside_ingestion(tmp_path, monkeypatch, lock, name):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    monkeypatch.setattr(
+        engine, "_run_init_phases_locked", lambda *a, **k: pytest.fail("init must not start")
+    )
+    with _held_by_another_holder(cfg.meta_root, lock):
+        with pytest.raises(RunLockError, match=name):
+            engine.run_init_phases(date(2024, 6, 28))
+
+
+def test_retrying_an_init_takes_the_init_lock(tmp_path, monkeypatch):
+    """`cne run retry --run-id <init>` resumed without it, beside a live init."""
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    run_id = engine.manifest.start_run("init", {"phases": ["phase1_reference"]})
+    monkeypatch.setattr(
+        engine, "_resume_init_locked", lambda *a, **k: pytest.fail("resume must not start")
+    )
+    with _held_by_another_holder(cfg.meta_root, "init_job"):
+        with pytest.raises(RunLockError):
+            engine.resume_init(date(2024, 6, 28), run_id=run_id)
+
+
+def test_an_init_runs_its_own_phases_and_resume_under_one_lock(tmp_path, monkeypatch):
+    cfg = Config(data_root=tmp_path / "data")
+    init_data_layout(cfg)
+    engine = JobEngine(cfg)
+    run_id = engine.manifest.start_run("init", {"phases": ["phase1_reference"]})
+    monkeypatch.setattr(engine, "_resume_init_locked", lambda *a, **k: {"resumed": True})
+    assert engine.run_init_phases(date(2024, 6, 28), resume_run_id=run_id) == {"resumed": True}
 
 
 def test_reconcile_orphaned_runs_closes_stale_running(tmp_path):

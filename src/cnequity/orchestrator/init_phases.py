@@ -157,10 +157,6 @@ def step_batches(batches: list[Any], step: str) -> list[Any]:
     return [b for b in batches if b["dataset"] == step]
 
 
-def step_started(batches: list[Any], step: str) -> bool:
-    return bool(step_batches(batches, step))
-
-
 def step_succeeded(batches: list[Any], step: str) -> bool:
     rows = step_batches(batches, step)
     return bool(rows) and all(r["status"] in RESOLVED_BATCH_STATUSES for r in rows)
@@ -248,21 +244,6 @@ def pending_phases(phases: list[str], batches: list[Any]) -> list[str]:
         if not steps:
             continue
         if all(step_completed(batches, step) for step in steps):
-            continue
-        out.append(phase)
-    return out
-
-
-def phases_never_started(phases: list[str], batches: list[Any]) -> list[str]:
-    """Phases with no batch records yet (partial phases are left to retry)."""
-    out: list[str] = []
-    for phase in phases:
-        steps = INIT_PHASE_STEPS.get(phase, [])
-        if not steps:
-            continue
-        if all(step_succeeded(batches, step) for step in steps):
-            continue
-        if any(step_started(batches, step) for step in steps):
             continue
         out.append(phase)
     return out

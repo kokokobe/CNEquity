@@ -9,7 +9,6 @@ from cnequity.orchestrator.init_phases import (
     init_run_complete,
     needs_finalize,
     pending_phases,
-    phases_never_started,
     step_backfill,
     step_incomplete,
 )
@@ -55,17 +54,15 @@ def test_pending_phases_all_done():
     assert pending_phases(phases, batches) == []
 
 
-def test_phases_never_started_ignores_unknown_phase_and_partial_phase():
+def test_pending_phases_includes_partial_phase():
     phases = ["not_a_real_phase", "phase1_reference"]
     batches = [{"dataset": "instruments", "status": "success"}]
-    # instruments started (success) but trading_calendar never did → phase is
-    # "partial", not "never started" — left alone so retry resumes just it.
-    assert phases_never_started(phases, batches) == []
+    assert pending_phases(phases, batches) == ["phase1_reference"]
 
 
-def test_phases_never_started_fully_untouched_phase():
+def test_pending_phases_includes_fully_untouched_phase():
     phases = ["phase1_reference"]
-    assert phases_never_started(phases, []) == ["phase1_reference"]
+    assert pending_phases(phases, []) == ["phase1_reference"]
 
 
 def test_needs_finalize_false_when_finalize_not_requested():

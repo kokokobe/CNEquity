@@ -447,6 +447,18 @@ def test_a_usable_init_that_still_owes_a_step_is_partial():
     assert last_json('noise {"a": 1} tail {"status": "failed"}')["status"] == "failed"
 
 
+def test_api_docs_open_in_first_time_setup(tmp_path, monkeypatch):
+    """The setup banner prints the /api/docs link; it answered 409 until a lake existed."""
+    monkeypatch.delenv("CNE_CONFIG", raising=False)
+    client = TestClient(
+        create_app(None, setup=True, config_path=tmp_path / "cnequity.toml"),
+        base_url="http://127.0.0.1",
+    )
+    assert client.get("/api/docs").status_code == 200
+    assert client.get("/api/openapi.json").status_code == 200
+    assert client.get("/api/health").status_code == 409
+
+
 def test_setup_wizard_writes_config_without_starting_uvicorn(tmp_path, monkeypatch):
     monkeypatch.delenv("CNE_CONFIG", raising=False)
     target = tmp_path / "cnequity.toml"

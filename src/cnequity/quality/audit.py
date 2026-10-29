@@ -344,7 +344,9 @@ def _collect_lake_findings(
             mixed = check_mixed_partition_granularity(ds, pcol, root)
             if mixed is not None:
                 findings.append(mixed)
-            fragmented = check_partition_fragmentation(ds, pcol, root)
+            # A demo or sample lake holds a handful of symbols, so near-empty
+            # day partitions are by construction, not a layout problem.
+            fragmented = None if demo_lake else check_partition_fragmentation(ds, pcol, root)
             if fragmented is not None:
                 findings.append(fragmented)
 

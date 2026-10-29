@@ -49,7 +49,7 @@ def load(
 | `all_vintages` | True 时返回 `as_of` 前的**全部**版本（研究财报修订用）；截面选股勿开，会重复计同一事实 |
 | `pit_mode` | PIT 证据模式：省略或传 `None` 默认为 `best_effort`，保留在 `as_of` 之后采集的历史回填，并返回 `pit_is_exact=False`；公告及已知可用/发布时间仍受截止日约束。`strict` 排除 reconstructed 回填，只返回湖在截止日已有的证据 |
 | `include_otc` | 默认 False：`daily_bars`、`adj_factors` 排除北交所证券进入交易所市场之前的场外报价；设为 True 保留这些报价。交易所起点取上市日和 2020-07-27 中的较晚者 |
-| `config` / `data_root` | 湖位置；默认读 `configs/cnequity.toml` |
+| `config` / `data_root` | 湖位置；省略时按 `CNE_CONFIG` → 当前目录的 `configs/cnequity.toml` → 用户级配置查找 |
 | `profile` / `universe_profile` | 版本化股票池策略，二者为别名；官方研究画像自动启用严格证据校验 |
 | `revision` | revision 数字或 ID 固定主数据集；也支持按数据集映射。单个数字不固定因子或股票池依赖 |
 | `revision_map` | 固定各依赖数据集的 retained revision；显式缺失版本抛 `RevisionConsistencyError`，不退回 latest |
@@ -112,6 +112,46 @@ PIT 模式/质量、请求窗口与实际行的日期边界。`receipt_id` 是�
 `strict_adj` 和 `adj_is_exact` 仅描述因子覆盖，不能证明历史因子正确。`load_with_receipt()` 的 `adjustment` 摘要提供所读版本的来源与非阻断历史诊断；无诊断时标为未评估。
 
 `ReaderError`（`ValueError` 子类）：未知数据集、无数据、strict_adj 失败等。
+
+## load_profile()
+
+一次取多只证券、多个截至日、多个字段在当时能知道的值，返回长表，每行是 `(symbol, as_of, field)`。
+每个源数据集只读一次，按证券做截至日连接，所以多加截至日只多一次连接。
+
+```python
+from datetime import date
+from cnequity.query import load_profile
+
+p = load_profile(
+    ["listed", "status.trading", "status.st", "shares.total", "holders.count",
+     "fsi:net_profit", "industry.sw.l1", "industry.eastmoney.l3"],
+    symbols=["600519.SH"],
+    as_of_dates=[date(2024, 4, 30)],
+    pit_mode="best_effort",   # 或 "strict"
+)
+```
+
+| 字段 | 来源 | 说明 |
+|---|---|---|
+| `listed` | instruments | 截至日在上市期内为 1 |
+| `status.trading` / `status.st` | trading_status | 截至日及之前最近一行；ST 为空表示未知，不是“非 ST” |
+| `shares.total` / `shares.float` / `shares.free_float` | share_structure | 变动日和公告日都过了才可知 |
+| `holders.count` | shareholder_counts | 公告后可知 |
+| `fsi:<item_code>` | financial_statement_items | 截至日可见的最新报告期；`value_str` 为报告期，`field_date` 为期末日 |
+| `industry.<sw\|eastmoney>.l<1\|2\|3>` | industry_members | 截至日及之前最近快照中该层级的行业代码，`label` 为名称 |
+
+返回列：`value_num`、`value_str`、`label`、`field_date`（值描述的日期）、`visible_from`（最早可知日）、`source`、
+`pit_quality`（`strict` 一手来源且本湖在截至日前已观察到；`reconstructed` 按公告日可知但事后补录；`snapshot_only` 只有快照日）、
+`age_days`、`missing_reason`。
+
+`missing_reason`：`before_listing`、`after_delisting`、`outside_coverage`（截至日早于该数据集最早记录）、`not_yet_published`、
+`value_unknown`（有记录但值未知，如派生状态行的 ST）、`no_pit_evidence`（只在 `strict` 下）、`no_record`；
+值比该字段的时效上限更旧时照常返回值并标 `stale`。上市期外不返回任何值。
+
+`pit_mode="published"` 只认记录了发布时间（`available_at`）的值，公告日和入湖日都不算；同时不早于值生效的日期
+（如股本变动日）。`cutoff=time(15)` 表示发布时间须在截至日北京时间 15:00 之前，否则从下一天起才可见；不给则整天都算。
+行业快照没有发布时间，在该模式下为 `no_pit_evidence`；上市与交易状态是当日事实，各模式相同。
+`canonical=True` 先把每行换到当日实际生效的代码（同 `canonicalize_dated_identifiers`）；`data_root`、`revision_map` 传给每次读取。
 
 ## scan()
 
@@ -192,6 +232,22 @@ def dataset_schema(dataset: str) -> dict[str, pl.DataType]
 ```
 
 返回 `domain/schemas.py` 中注册的 Polars 类型映射。
+
+## 证券代码延续
+
+模块：`cnequity.domain.security_identifiers`。这是公开的读取契约，下游（如 EquityLab 的回测账本和研究样本）直接导入；删除或改名须先经弃用周期。
+
+```python
+from cnequity.domain.security_identifiers import (
+    canonical_symbol,
+    canonicalize_dated_identifiers,
+    identifier_aliases,
+    identifier_changes,
+    transitions_on,
+)
+```
+
+注册表只收录生效日和换股比例都有存档公告佐证的代码变更；不能按相近的价格或名称推断变更。`canonicalize_dated_identifiers(frame, date_col=..., key_columns=...)` 把带日期的行改回当日有效的代码，同一业务键同时有原生行和厂商回溯行时保留原生行。下游可以对模块源文件取哈希，作为冻结样本的身份，因此修改注册表会让这些样本失效。
 
 ## 配置解析
 

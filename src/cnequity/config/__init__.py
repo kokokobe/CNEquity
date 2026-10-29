@@ -6,6 +6,7 @@ from cnequity.config.bootstrap import (
 )
 from cnequity.config.loader import (
     Config,
+    EventSchedule,
     FailoverDatasetSpec,
     ScheduleGroup,
     WaveConfig,
@@ -15,6 +16,7 @@ from cnequity.config.loader import (
 
 __all__ = [
     "Config",
+    "EventSchedule",
     "DEFAULT_USER_CONFIG",
     "FailoverDatasetSpec",
     "ScheduleGroup",

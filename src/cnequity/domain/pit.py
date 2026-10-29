@@ -216,7 +216,13 @@ def _date_expr(df: pl.DataFrame, column: str) -> pl.Expr:
     if dtype == pl.Date:
         return expr
     if isinstance(dtype, pl.Datetime):
-        return expr.dt.date()
+        # ``as_of`` is a Shanghai business date, so an instant must be dated in
+        # Shanghai too. Dating it in UTC let a row available from T+1 00:00
+        # Shanghai (T 16:00 UTC) pass an ``as_of=T`` cutoff. A timezone-less
+        # timestamp is UTC, as in ``_as_datetime_expr``.
+        if dtype.time_zone is None:
+            expr = expr.dt.replace_time_zone("UTC")
+        return expr.dt.convert_time_zone("Asia/Shanghai").dt.date()
     if dtype == pl.String or dtype == pl.Utf8:
         return expr.str.to_date(strict=False)
     return expr.cast(pl.Date, strict=False)

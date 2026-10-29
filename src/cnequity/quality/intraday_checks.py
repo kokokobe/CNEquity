@@ -63,6 +63,8 @@ RECONCILE_MIN_SYMBOL_DAYS = 20
 # sources (cnequity.domain.units). Comparing minute 股 against v1 手 would
 # report a 100× break that is really just an un-migrated partition.
 DAILY_BARS_SHARES_VERSION = "v2"
+#: A-share board lot; TDX volumes are whole lots before conversion to 股.
+LOT_SHARES = 100
 
 
 def _scan_intraday(config: Config, dataset: str, start: date, end: date) -> pl.LazyFrame | None:
@@ -218,6 +220,7 @@ def daily_reconciliation_findings(
         .agg(
             pl.col("volume").sum().alias("minute_volume"),
             pl.col("amount").sum().alias("minute_amount"),
+            (pl.col("volume") > 0).sum().alias("traded_bars"),
         )
         .filter(pl.col("minute_volume") > 0)
     )
@@ -261,9 +264,17 @@ def daily_reconciliation_findings(
             # A healthy market-wide median can hide a completely wrong
             # security. Apply the existing tolerance to individual sessions
             # too, without claiming which of the two sources is at fault.
-            outliers = joined.filter(
-                (pl.col(column) < RECONCILE_LOW) | (pl.col(column) > RECONCILE_HIGH)
-            ).sort("symbol", "trade_date")
+            off = (pl.col(column) < RECONCILE_LOW) | (pl.col(column) > RECONCILE_HIGH)
+            if label == "volume":
+                # TDX counts whole 100-share lots: a session total truncates
+                # odd lots and each minute bar rounds its own, so a thin LOF
+                # trading 391 shares shows 300 daily and 400 by minute while
+                # both amounts agree to the fen. Only a gap beyond that
+                # rounding says anything about the bars.
+                off &= (pl.col("minute_volume") - pl.col("daily_volume")).abs() > (
+                    LOT_SHARES * (pl.col("traded_bars") + 1)
+                )
+            outliers = joined.filter(off).sort("symbol", "trade_date")
             if not outliers.is_empty():
                 findings.append(
                     {

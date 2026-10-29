@@ -9,7 +9,10 @@ loses data — what the schedule runs:
   appended to the same-named group's ``steps``;
 * a daily or events group this config lacks entirely is copied from the
   example, comments included, to the end of the file;
-* a step the example schedules only in a wave goes into the same-named wave.
+* a step the example schedules only in a wave goes into the same-named wave;
+* a relative ``[data].root`` that only resolves the old way — against the
+  working directory rather than the config's own directory — is replaced by
+  the absolute path it has been naming, so the lake does not move.
 
 Missing keys are left alone on purpose: they already take the built-in
 default, and writing that default into the file would pin it against later
@@ -35,8 +38,9 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - Python 3.10
     import tomli as tomllib  # type: ignore
 
-from cnequity.config.bootstrap import example_toml_text
+from cnequity.config.bootstrap import _toml_escape, example_toml_text
 from cnequity.config.drift import _group_tables, _scheduled_steps, missing_group_steps
+from cnequity.config.layers import effective_raw
 
 _HEADER = re.compile(r"^\s*\[")
 
@@ -48,11 +52,13 @@ class UpgradePlan:
     added_steps: dict[str, list[str]] = field(default_factory=dict)
     added_groups: list[str] = field(default_factory=list)
     manual_steps: list[str] = field(default_factory=list)
+    #: ``(written, absolute)`` when a relative ``[data].root`` is pinned.
+    pinned_root: tuple[str, str] | None = None
     text: str = ""
 
     @property
     def changed(self) -> bool:
-        return bool(self.added_steps or self.added_groups)
+        return bool(self.added_steps or self.added_groups or self.pinned_root)
 
 
 def _key_pattern(path: str) -> str:
@@ -143,6 +149,34 @@ def _append_to_steps(text: str, table: str, steps: list[str]) -> str | None:
     return text[:offset] + new_body + text[offset + len(body) :]
 
 
+def _pin_root(text: str, absolute: str) -> str | None:
+    """Replace ``root = "..."`` in ``[data]`` with *absolute*; None when it cannot be found."""
+    lines = text.splitlines(keepends=True)
+    span = _table_span(lines, "data")
+    if span is None:
+        return None
+    key = re.compile(r"""^(\s*root\s*=\s*)(["'])[^"'\n]*\2(.*)$""", re.S)
+    for i in range(span[0] + 1, span[1]):
+        match = key.match(lines[i])
+        if match:
+            # The lexical path the loader has been using, not a resolved one:
+            # following a symlink here would name the same lake differently.
+            value = _toml_escape(Path(absolute).as_posix())
+            lines[i] = f'{match.group(1)}"{value}"{match.group(3)}'
+            return "".join(lines)
+    return None
+
+
+def _legacy_root(config_path: Path, mine: dict) -> tuple[str, str] | None:
+    from cnequity.config.loader import legacy_relative_root
+
+    written = (mine.get("data") or {}).get("root")
+    if not isinstance(written, str):
+        return None
+    legacy = legacy_relative_root(Path(written).expanduser(), config_path.resolve().parent)
+    return (written, str(legacy)) if legacy is not None else None
+
+
 def _example_section(example: str, table: str) -> str:
     """``[table]`` from the example with its leading comment block, trailing comments trimmed."""
     lines = example.splitlines()
@@ -172,6 +206,8 @@ def _expected(mine: dict, theirs: dict, plan: UpgradePlan) -> dict:
         _, scope, _, name = table.split(".")
         groups = out.setdefault("job", {}).setdefault(scope, {}).setdefault("groups", {})
         groups[name] = copy.deepcopy(theirs["job"][scope]["groups"][name])
+    if plan.pinned_root is not None:
+        out["data"]["root"] = Path(plan.pinned_root[1]).as_posix()
     return out
 
 
@@ -182,18 +218,22 @@ def plan_upgrade(config_path: Path | str) -> UpgradePlan:
     example = example_toml_text()
     theirs = tomllib.loads(example)
     plan = UpgradePlan(text=text)
+    # What the config schedules, opt-outs included: for an `extends = "builtin"`
+    # config that is the defaults plus its overrides, so only a full `steps =`
+    # override can be missing anything. The text edits still go to *mine*.
+    view = effective_raw(mine, apply_opt_outs=False)
 
-    mine_groups = _group_tables(mine)
+    mine_groups = _group_tables(view)
     for table in _group_tables(theirs):
         if table not in mine_groups:
             plan.added_groups.append(table)
-    for table, steps in missing_group_steps(mine, theirs).items():
+    for table, steps in missing_group_steps(view, theirs).items():
         plan.added_steps[table] = list(steps)
 
     # Wave-only steps: scheduled by no group of the example either.
     placed = {step for steps in _group_tables(theirs).values() for step in steps}
-    unscheduled = sorted(_scheduled_steps(theirs) - _scheduled_steps(mine) - placed)
-    mine_waves = {w.get("name") for w in mine.get("job", {}).get("daily", {}).get("waves", [])}
+    unscheduled = sorted(_scheduled_steps(theirs) - _scheduled_steps(view) - placed)
+    mine_waves = {w.get("name") for w in view.get("job", {}).get("daily", {}).get("waves", [])}
     for step in unscheduled:
         wave = next(
             (
@@ -224,10 +264,20 @@ def plan_upgrade(config_path: Path | str) -> UpgradePlan:
             + sections
         )
 
+    legacy = _legacy_root(Path(config_path), mine)
+    if legacy is not None:
+        pinned = _pin_root(plan.text, legacy[1])
+        if pinned is None:
+            plan.manual_steps.append("[data].root")
+        else:
+            plan.text, plan.pinned_root = pinned, legacy
+
     if plan.changed and tomllib.loads(plan.text) != _expected(mine, theirs, plan):
         # The text edit did not mean what the plan says; never write it.
         plan.manual_steps.extend(step for steps in plan.added_steps.values() for step in steps)
         plan.manual_steps.extend(plan.added_groups)
-        plan.added_steps, plan.added_groups, plan.text = {}, [], text
+        if plan.pinned_root is not None:
+            plan.manual_steps.append("[data].root")
+        plan.added_steps, plan.added_groups, plan.pinned_root, plan.text = {}, [], None, text
     plan.manual_steps = sorted(set(plan.manual_steps))
     return plan

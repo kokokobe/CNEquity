@@ -103,30 +103,6 @@ def _rss_bytes() -> int:
     return value if os.sys.platform == "darwin" else value * 1024
 
 
-def finish_metrics(metrics: Mapping[str, Any], started: float) -> dict[str, Any]:
-    """Finalize a metrics mapping without mutating a caller-owned object."""
-
-    out = deepcopy(dict(metrics))
-    out["elapsed_seconds"] = round(max(0.0, time.perf_counter() - started), 6)
-    out["peak_memory_bytes"] = max(int(out.get("peak_memory_bytes", 0) or 0), _rss_bytes())
-    for key in COUNTER_KEYS:
-        try:
-            value = int(out.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            value = 0
-        out[key] = max(0, value)
-    for key in ("request_seconds", "concurrency_wait_seconds", "throughput_requests_per_second"):
-        try:
-            out[key] = max(0.0, float(out.get(key, 0.0) or 0.0))
-        except (TypeError, ValueError):
-            out[key] = 0.0
-    try:
-        out["concurrency_peak"] = max(0, int(out.get("concurrency_peak", 0) or 0))
-    except (TypeError, ValueError):
-        out["concurrency_peak"] = 0
-    return out
-
-
 def add_metrics(target: dict[str, Any], source: Mapping[str, Any] | None) -> None:
     """Accumulate counters and stage records from *source* into *target*."""
 

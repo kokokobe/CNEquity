@@ -6,10 +6,9 @@ Path: `scripts/`
 |---|---|
 | `scripts/scheduler/` | Scheduling: daily / event stream / catch-up pipelines, health notifications, metadata backup, launchd templates and installation (rerun `install_scheduler.sh` after changing paths, since installed jobs reference absolute paths) |
 | `scripts/` | Operations tools: backfill acceptance, delisted catalog rebuild, catch-up runs, survivorship bias measurement |
-| `scripts/migrations/` | One-off data migrations and partition rewrites, run according to the version notes |
 | `scripts/dev/` | Repository maintenance: docs sync (`sync_*`), release checks, offline benchmarks and end-to-end checks, probes |
 
-These scripts need a source checkout and are not installed with the PyPI package. With the installed package only, schedule `cne run daily` once a day (it includes all daily groups and the event stream); in the repository, `daily_pipeline.sh` is the main entry point for the daily update.
+These scripts need a source checkout and are not installed with the PyPI package. For scheduled updates use `cne schedule install` (it ships with the package and works on every platform); `scripts/scheduler/` is deprecated and will be removed once the packaged timer covers what it does.
 
 > The scripts below target **self-hosted machines/VPS** (including macOS launchd and server backfills). Open-source contributors only need
 > the CLI (`cne init` / `run`); scheduling and alerting are optional and not the only way to deploy.
@@ -118,7 +117,7 @@ The gate and the scheduler share the same variable, so the two never disagree. D
 "not knowing who fetches it" is not the same as "another host fetches it".
 
 > The partition fragmentation / mixed granularity checks in the full-lake audit only change after a repartition,
-> so they were moved to the weekly run as well. After running `scripts/migrations/repartition.py` manually,
+> so they were moved to the weekly run as well. After running `cne repair repartition` manually,
 > run `cne audit --full` right away to double-check instead of waiting for Saturday.
 
 ### backup_meta.sh
@@ -211,42 +210,22 @@ It refuses to run if any active ingestion run is detected; the catalog before th
 
 Formerly `cne delisted discover / reconcile / repair / coverage`.
 
-## One-off migrations
-
-### repartition.py
+## Partition rewrites (`cne repair repartition`)
 
 Rewrites historical partitions into the period configured in `DatasetSpec.partition_granularity`
 (see [partition granularity](../architecture/lake-layout.md#day-to-day-management)). Without arguments it only lists the datasets awaiting a rewrite,
 so the listing form can be run at any time.
 
 ```bash
-python scripts/migrations/repartition.py                  # datasets awaiting a rewrite
-python scripts/migrations/repartition.py --all --dry-run  # preview the impact first
-python scripts/migrations/repartition.py trading_calendar # a single dataset
+cne repair repartition                          # datasets awaiting a rewrite
+cne repair repartition --all                    # preview the impact first
+cne repair repartition trading_calendar --apply # a single dataset
 ```
 
 The read path resolves the layout from the directory shape, so changing the granularity itself **does not need** a migration; this only gathers up fragmented files. Writes first build a temporary directory,
 write each partition and check the total row count, then swap it in with a single rename, so a crash midway leaves the original data untouched; repeated runs are idempotent.
 
-Formerly `cne repartition`. What triggers it is a change of registry granularity under an existing lake — that is a migration, not routine operations.
-
-### migrate_daily_bars_volume_v2.py
-
-Rewrites all of curated `daily_bars.volume` to "shares" and bumps `data_version` from `v1` to `v2`.
-
-Before the fix, this column mixed two units: `tdx_protocol` / `sina` wrote lots, `ths` / `baostock`
-wrote shares, exactly 100 times apart. Existing rows were wrong under either convention and could only be rewritten. For the unit contract and migration requirements, see
-[Schema contract · volume units](../datasets/schema.md).
-
-```bash
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --dry-run
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
-```
-
-- `--dry-run` (the default) only counts and writes nothing; `--apply` **rewrites curated in place**, so run `backup_meta.sh` and back up curated first.
-- Idempotent: rows already at `v2` are skipped, and after an interruption you can simply resume.
-- `fetched_at` is not restamped — the column that records this reinterpretation is `data_version`.
-- Afterwards, run `cne audit` to confirm there is no `daily_bars_volume_unit` finding.
+It used to be the repository script `scripts/migrations/repartition.py` (earlier `cne repartition`); it now ships with the package, previews by default, and rewrites only with `--apply`. What triggers it is a change of registry granularity under an existing lake, not routine operations. One-off data migrations for lakes written by older versions are `cne migrate`'s job.
 
 ## Tests and smoke runs
 

@@ -351,6 +351,17 @@ def test_real_timer_child_logs_and_marks_once_without_web(scheduler, monkeypatch
     assert record["scheduled"] == {"job": "daily", "session": session.isoformat()}
     assert "中文" in Path(record["logs"]["err"]).read_text(encoding="utf-8")
     assert marker_path(config.meta_root, "daily", session).exists()
+    # Maintenance follows the day's run before the catch-up gets its turn.
+    after = tick(config)
+    assert after["jobs"][0]["job"] == "maintain", after
+    deadline = time.monotonic() + 20
+    while (
+        service.get_job(after["jobs"][0]["job_id"])["state"] in {"starting", "running"}
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.05)
+    assert service.get_job(after["jobs"][0]["job_id"])["state"] == "complete"
+    assert marker_path(config.meta_root, "maintain", session).exists()
     late = tick(config)
     assert late["jobs"][0]["job"] == "stale", late
     deadline = time.monotonic() + 20

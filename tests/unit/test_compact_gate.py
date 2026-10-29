@@ -5,7 +5,7 @@ import polars as pl
 
 import cnequity.steps  # noqa: F401
 from cnequity.config import Config, FailoverDatasetSpec
-from cnequity.orchestrator.compact_gate import compact_allowed, datasets_with_incomplete_batches
+from cnequity.orchestrator.compact_gate import compact_allowed
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.steps.finalize import step_audit, step_compact
 from cnequity.storage import StagingWriter
@@ -349,7 +349,7 @@ def test_audit_emits_compact_skipped_warning(tmp_path):
     assert warnings[0]["incomplete_batches"] == 2
 
 
-def test_datasets_with_incomplete_batches_and_compact_allowed_without_liveness_refresh(tmp_path):
+def test_compact_allowed_without_liveness_refresh(tmp_path):
     cfg = Config(data_root=tmp_path / "data")
     manifest = Manifest(cfg.manifest_path)
     run_id = "run-gate-2"
@@ -357,9 +357,6 @@ def test_datasets_with_incomplete_batches_and_compact_allowed_without_liveness_r
     manifest.finish_batch(run_id, "batch-fail", "failed", error_message="boom")
     manifest.start_batch(run_id, "batch-ok", "index_bars", "index_bars")
     manifest.finish_batch(run_id, "batch-ok", "success", rows_written=1)
-
-    incomplete = datasets_with_incomplete_batches(manifest, run_id)
-    assert incomplete == frozenset({"daily_bars"})
 
     # stale_after_seconds=None skips the liveness refresh branch entirely.
     allowed, count = compact_allowed(manifest, run_id, "daily_bars")

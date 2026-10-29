@@ -4,7 +4,9 @@ A prior-session contract remains expected until an authoritative reference
 ends its life. Missing rows cannot create their own expiry evidence. Calendar
 sessions and exchange boundaries are checked independently of dense watermarks;
 without a full live universe, no missing known keys means unverified, not full
-market completeness (ADR-0017).
+market completeness (ADR-0017). The exchange's official contract file for the
+session itself is that universe: an exchange with one, and no contract on it
+missing, is proven complete.
 """
 
 from __future__ import annotations
@@ -114,14 +116,20 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
         )
         ends = _last_trade_dates(config, dataset)
         reference_live: dict[str, set[str]] = {}
+        # Exchanges whose official contract file for the tip session itself was
+        # archived: that file names every contract live that day, which is the
+        # complete universe the carried-forward set alone cannot give.
+        referenced: set[str] = set()
         reference_root = config.meta_root / "derivatives" / "references"
+        wanted_kind = "future" if kind == "futures" else "option"
         for path in reference_root.glob(f"*/{tip}*.parquet"):
             ref = pl.read_parquet(path)
             if {"kind", "list_date", "last_trade_date", "symbol"} <= set(ref.columns):
-                live = ref.filter(
-                    (pl.col("kind") == ("future" if kind == "futures" else "option"))
-                    & (pl.col("list_date") <= tip)
-                    & (pl.col("last_trade_date") >= tip)
+                of_kind = ref.filter(pl.col("kind") == wanted_kind)
+                if not of_kind.is_empty():
+                    referenced.add(path.parent.name)
+                live = of_kind.filter(
+                    (pl.col("list_date") <= tip) & (pl.col("last_trade_date") >= tip)
                 )
                 reference_live.setdefault(path.parent.name, set()).update(live["symbol"].to_list())
         before = pairs.filter(pl.col("trade_date") == previous)
@@ -129,6 +137,7 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
         expected: set[str] = set()
         per_exchange: dict[str, list[int]] = {}
         unverifiable: list[str] = []
+        unproven: list[str] = []
         missing_exchanges: list[str] = []
         for exchange in expected_exchanges(config, kind, tip):
             if exchange in VENDOR_ROUTED and getattr(config, "futures_dce_route", "sina") == "sina":
@@ -142,8 +151,10 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
             if tip_rows.is_empty():
                 missing_exchanges.append(exchange)
             rows = before.filter(pl.col("exchange").is_in(list(members(exchange))))
-            if rows.is_empty():
-                unverifiable.append(exchange)
+            if exchange not in referenced:
+                # Without the day's official list, contracts listed that day
+                # are outside what the previous session can predict.
+                unproven.append(exchange)
             live = {
                 symbol
                 for symbol in rows["symbol"].to_list()
@@ -176,10 +187,20 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
     owed = owed_sessions(config, dataset, tip)
     missing = sorted(expected - observed)
     covered = len(expected) - len(missing)
+    if missing or missing_exchanges:
+        state = "incomplete"
+    elif unproven:
+        state = "unverified"
+    else:
+        # Every exchange that can be proven has its official list for the day
+        # and every contract on it has a bar. A vendor route that cannot be
+        # proven is reported beside the result (`unverifiable_exchanges`) as a
+        # property of the source, not counted as a failure of the data.
+        state = "complete"
     return {
         "dataset": dataset,
         "heading": HEADING,
-        "state": "incomplete" if missing or missing_exchanges else "unverified",
+        "state": state,
         "date": tip,
         "covered": covered,
         "expected": len(expected),
@@ -190,9 +211,11 @@ def derivative_tip_scope(config: Config, dataset: str) -> dict | None:
         "noun": N_("listed contracts"),
         "unverifiable_exchanges": unverifiable,
         "missing_exchanges": missing_exchanges,
+        "unproven_exchanges": unproven,
         "message": (
-            "previous-session contract coverage check; without a complete list of "
-            "contracts live that day, newly listed contracts cannot be proven complete"
+            "previous-session contract coverage check; without the official list of "
+            f"contracts live that day ({', '.join(unproven)}), newly listed contracts "
+            "cannot be proven complete"
         ),
         "exchanges": per_exchange,
         "coverage": bars.group_by(["exchange", "product"])

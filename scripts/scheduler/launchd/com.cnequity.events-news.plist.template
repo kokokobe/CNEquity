@@ -40,6 +40,17 @@
   <dict>
     <key>CNE_EVENTS_GROUP</key>
     <string>news_wire</string>
+    <!-- StartInterval fires on an exact period; the wrapper adds a random
+         0..N second start offset so the upstream does not see a metronome. -->
+    <key>CNE_EVENTS_JITTER_SEC</key>
+    <string>120</string>
+    <!-- Overnight (Beijing 01:00-06:59) the wire is nearly idle: tick hourly
+         instead of every 15 minutes. Each sweep resumes from the newest item
+         held, so nothing is skipped. Empty the value to turn this off. -->
+    <key>CNE_EVENTS_QUIET_HOURS</key>
+    <string>1-7</string>
+    <key>CNE_EVENTS_QUIET_GAP_SEC</key>
+    <string>3600</string>
     <key>CNE_SOURCE_VANTAGE</key>
     <string>__SOURCE_VANTAGE__</string>
   </dict>

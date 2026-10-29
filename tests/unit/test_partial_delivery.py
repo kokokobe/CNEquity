@@ -99,12 +99,16 @@ def test_empty_source_backfill_cli_finishes_with_truthful_fallback(tmp_path, mon
             str(cfg_path),
         ],
     )
-    assert result.exit_code == 0, result.output
+    # Every source failed and nothing was written: the payload stays truthful,
+    # and the backfill exits 1 because it filled none of the range it was asked for.
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)
     assert payload["status"] == "degraded"
     assert payload["execution_status"] == "completed"
     assert payload["coverage_status"] == "partial"
     assert payload["usable_result"] is False
+    assert "fetched nothing usable" in result.stderr
+    assert "✓" not in result.stderr
     assert payload["publication_status"] == "none"
     assert payload["results"][0]["status"] == "warning"
     fallback = payload["fallback"][0]
@@ -445,3 +449,36 @@ def test_program_and_storage_errors_still_fail(tmp_path, monkeypatch, error):
     assert result["status"] == "failed"
     assert result["execution_status"] == "failed"
     assert result["fallback"] == []
+
+
+@pytest.mark.parametrize("dataset", ["fund_flow", "market_breadth"])
+def test_fallback_guidance_is_english_unless_chinese_is_chosen(tmp_path, monkeypatch, dataset):
+    """The action and history note were Chinese literals in an English-source CLI."""
+    import re
+
+    cfg = Config(data_root=tmp_path / "data")
+    _entries(monkeypatch, {dataset: StepEntry(fn=_outage, group="core")})
+    result = _backfill_once(cfg, dataset)
+    option = result["fallback"][0]
+
+    assert not re.search(r"[一-鿿]", option["action"] + option["history_note"])
+
+
+@pytest.mark.parametrize(("usable", "code"), [(False, 1), (True, 0)])
+def test_outstanding_repair_fails_only_when_it_filled_nothing(tmp_path, monkeypatch, usable, code):
+    cfg_path = tmp_path / "cnequity.toml"
+    cfg_path.write_text(f'[data]\nroot = "{(tmp_path / "data").as_posix()}"\n')
+    monkeypatch.setattr(
+        "cnequity.cli.backfill_cmds._repair_outstanding",
+        lambda cfg, dataset, workers: {
+            "dataset": dataset,
+            "status": "warning",
+            "usable_result": usable,
+            "outstanding": {"filled": int(usable), "still_owed": 3},
+        },
+    )
+    result = CliRunner().invoke(
+        cli, ["backfill", "daily_bars", "--outstanding", "--config", str(cfg_path)]
+    )
+    assert result.exit_code == code, result.output
+    assert ("fetched nothing usable" in result.stderr) is not usable

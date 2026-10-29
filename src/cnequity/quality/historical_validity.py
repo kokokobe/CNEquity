@@ -351,7 +351,8 @@ def historical_universe_validity(
                         f"{counts.get('invalid_delist_date', 0)} invalid delist dates"
                     ),
                     "remediation": (
-                        "Run `scripts/delisted_ops.py coverage` for samples, then complete discovery and "
+                        "`cne delisted status` shows the current counts; from a source checkout, run "
+                        "`scripts/delisted_ops.py coverage` for samples, then complete discovery and "
                         "repair the reported catalogue, bars, or instruments gaps."
                     ),
                 }

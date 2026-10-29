@@ -167,24 +167,11 @@ jobs:
           npm run check
 
       - name: Test
-        # bash: PowerShell has been seen to surface leftover process-pool
-        # atexit as exit 1 after a fully green pytest session.
+        # tests/conftest.py handles Windows atexit noise only after a fully
+        # successful session. Preserve pytest's exit code here so interruption
+        # or an internal error cannot pass on a partial "N passed" summary.
         shell: bash
-        run: |
-          set +e
-          pytest tests/unit -q | tee pytest-out.txt
-          code=${PIPESTATUS[0]}
-          # This may only mask the post-session atexit noise described above —
-          # never a real result. The previous predicate missed errored tests
-          # entirely: pytest reports a blown-up fixture as "1 passed, 1 error"
-          # with exit 1, which matched "passed" and none of the negative
-          # patterns, so the job went green with a broken test suite.
-          if grep -Eq '[0-9]+ passed' pytest-out.txt \
-            && ! grep -Eq '^(FAILED|ERROR) ' pytest-out.txt \
-            && ! grep -Eq '[0-9]+ (failed|error)' pytest-out.txt; then
-            exit 0
-          fi
-          exit "$code"
+        run: pytest tests/unit -q
 
   # macOS is a supported runtime and also the platform used by the bundled
   # launchd runbook.  Keep one current interpreter here to exercise native

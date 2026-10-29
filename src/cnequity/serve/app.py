@@ -581,6 +581,9 @@ def create_app(
             or path.startswith("/api/ops")
             or path.startswith("/api/setup")
             or path.startswith("/api/stream/ops")
+            # The API description reads no lake, and first-time setup prints
+            # this link in its banner: it must open before there is one.
+            or path in {"/api/docs", "/api/openapi.json"}
         )
         if unguarded:
             response = await call_next(request)

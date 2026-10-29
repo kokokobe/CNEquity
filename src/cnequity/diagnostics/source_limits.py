@@ -6,9 +6,10 @@ import json
 import math
 import sqlite3
 import time
+from contextlib import closing
 from urllib.parse import quote
 
-from cnequity.adapters.eastmoney import host_guard
+from cnequity.adapters.eastmoney import host_guard, news_pause
 from cnequity.diagnostics.source_health import PROBES
 from cnequity.domain.datasets import DATASETS
 from cnequity.domain.http_policy import cooldown_status, source_family
@@ -150,7 +151,7 @@ def _latest_run_metrics(config) -> dict | None:
         return None
     try:
         uri = f"file:{quote(str(path), safe='/')}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
             row = conn.execute(
                 "SELECT run_id, metadata_json FROM ingestion_runs ORDER BY started_at DESC LIMIT 1"
             ).fetchone()
@@ -238,7 +239,10 @@ def build_source_limits(config) -> dict:
     return {
         "rate_limit_root": str(config.rate_limit_root),
         "sources": sources,
-        "eastmoney": {name: guard[name] for name in ("vendor", "push2", "datacenter")},
+        "eastmoney": {
+            **{name: guard[name] for name in ("vendor", "push2", "datacenter")},
+            "news": news_pause.status(config),
+        },
         "baostock": baostock_status(config),
         "latest_run_metrics": _latest_run_metrics(config),
         "outstanding": outstanding,

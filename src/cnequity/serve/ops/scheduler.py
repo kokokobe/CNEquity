@@ -55,7 +55,11 @@ def settings(config) -> dict:
         or not all(isinstance(item, str) for item in value["backup_datasets"])
     ):
         raise OpsError(_("The automatic backup settings are invalid; set them again."))
-    if value.get("events") and not isinstance(value.get("events_group"), str):
+    if (
+        value.get("events")
+        and not getattr(config, "event_schedules", None)
+        and not isinstance(value.get("events_group"), str)
+    ):
         raise OpsError(_("The scheduled event groups are invalid; set them again."))
     language = value.get("language")
     if language is not None and normalize_language(language) is None:
@@ -198,6 +202,18 @@ class ScheduleService:
             "events_group": state.get("events_group"),
             "events_interval_minutes": state.get("events_interval_minutes", 60),
             "events_groups": sorted(config.events_groups),
+            # [[job.events.schedules]] from the config; when present they replace
+            # the single group and interval above, and the page shows them read-only.
+            "event_schedules": [
+                {
+                    "group": spec.group,
+                    "every_minutes": spec.every_minutes,
+                    "jitter_seconds": spec.jitter_seconds,
+                    "quiet_hours": spec.quiet_hours,
+                    "quiet_every_minutes": spec.quiet_every_minutes,
+                }
+                for spec in config.event_schedules
+            ],
             "daily_packs": list(state.get("daily_packs") or []),
             "enabled": enabled,
             "timer_health": timer_health,
@@ -252,7 +268,7 @@ class ScheduleService:
             or not 1 <= events_interval_minutes <= 1440
         ):
             raise OpsError(_("The event-stream interval must be 1–1440 minutes."))
-        if events and events_group not in config.events_groups:
+        if events and not config.event_schedules and events_group not in config.events_groups:
             raise OpsError(_("Select valid event groups."))
         datasets = sorted(set(backup_datasets or []))
         backup_root = backup_root or str(Path(config.meta_root) / "snapshots")

@@ -892,3 +892,24 @@ def test_enumerated_glossary_rejects_ambiguous_or_conflicting_meanings(definitio
     text = TEXT.replace("单位：元 币种：人民币", "单位：元")
     with pytest.raises(ValueError):
         parse_annual_text("释义\n" + definition + "\n第二节 公司简介\n" + text, "600519.SH", 2016)
+
+
+def test_a_label_wrapped_inside_its_bracket_takes_its_tail_from_the_next_line():
+    """600301.SH 2022: 所有者权益（或股东权 / 益）合计, amounts on the first line."""
+    wrapped = TEXT.replace(
+        "所有者权益合计 60.00 60.00\n",
+        "所有者权益（或股东权 60.00 60.00\n益）合计\n",
+    )
+    values = {
+        r["item_code"]: r["item_value"]
+        for r in parse_annual_text(wrapped, "600519.SH", 2016)
+        if r["statement_type"] == "balance"
+    }
+    assert values["total_equity"] == 60
+    # A wrap whose next line carries amounts is a different row, not a tail.
+    other = TEXT.replace(
+        "所有者权益合计 60.00 60.00\n", "所有者权益（或股东权 60.00 60.00\n存货 5.00 4.00\n"
+    )
+    assert "total_equity" not in {
+        r["item_code"] for r in parse_annual_text(other, "600519.SH", 2016)
+    }

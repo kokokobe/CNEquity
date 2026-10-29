@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import uuid
 from collections.abc import Callable, Iterable
@@ -679,59 +678,14 @@ def instrument_metadata(config: Config) -> pl.DataFrame:
     return out
 
 
-def _row_fingerprint(rows: Iterable[dict]) -> str:
-    """Hash canonical JSON rows without materializing the full JSON array.
-
-    Preserve the existing negative-evidence identity byte for byte, including
-    date formatting, key ordering and JSON escaping.
-    """
-    digest = hashlib.sha256()
-    digest.update(b"[")
-    separator = b""
-    for row in rows:
-        normalized = {
-            column: (value.isoformat() if isinstance(value, date) else value)
-            for column, value in row.items()
-        }
-        digest.update(separator)
-        digest.update(
-            json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str).encode()
-        )
-        separator = b","
-    digest.update(b"]")
-    return digest.hexdigest()
-
-
-def _instrument_identity(config: Config, metadata: pl.DataFrame | None = None) -> dict:
-    """Build a revision and content identity, including direct/legacy writes."""
-    state = StateStore(config.meta_root)
-    revision = state.get_revision("instruments")
-    frame = metadata if metadata is not None else instrument_metadata(config)
-    rows = iter(())
-    if frame is not None and not frame.is_empty() and "symbol" in frame.columns:
-        columns = [
-            column
-            for column in ("symbol", "list_date", "delist_date", "asset_type")
-            if column in frame.columns
-        ]
-        rows = frame.select(columns).sort("symbol").iter_rows(named=True)
-    instrument_digest = _row_fingerprint(rows)
-
-    # Direct writes and legacy lakes must still invalidate an absence claim
-    # when status changes, so the revision alone is not enough. Hashing every
-    # status row through JSON was: ~85s per call over the whole history,
-    # three calls per daily_bars run. The committed files' paths, sizes and
-    # modification times change whenever any row does, for a few stat calls.
-    return {
-        "instruments_revision": revision,
-        "instruments_fingerprint": instrument_digest,
-        "trading_status_revision": state.get_revision("trading_status"),
-        "trading_status_files": _status_files_identity(config),
-    }
-
-
 def _status_files_identity(config: Config) -> str:
-    """Digest of the committed trading_status files as they sit on disk."""
+    """Digest of the committed trading_status files as they sit on disk.
+
+    Direct writes and legacy lakes must still invalidate a status-derived
+    absence claim, so the revision alone is not enough. Hashing every status
+    row was ~85s per call; paths, sizes and modification times change whenever
+    any row does, for a few stat calls.
+    """
     from cnequity.storage.read_context import read_root
 
     root = read_root(config, "trading_status", None)
@@ -759,19 +713,20 @@ def load_negative_evidence(
     metadata: pl.DataFrame | None = None,
     now: datetime | None = None,
 ) -> list[dict]:
-    """Return current negative records for a dataset under its identity."""
+    """Return current negative records whose own identity still holds.
+
+    Read-only apart from expiry: a claim whose basis changed is left out, not
+    deleted, so ``cne check`` reading the cache cannot rewrite it.
+    """
     store = StateStore(config.meta_root)
     # No absence claims means no identity can affect the routing decision.
     # Check live entries first, avoiding a full trading-status scan on the
-    # normal empty-cache path. Re-read with identity before returning evidence.
-    if not store.get_negative_evidence(dataset, now=now):
+    # normal empty-cache path.
+    live = store.get_negative_evidence(dataset, now=now)
+    if not live:
         return []
-    identity = _negative_evidence_identity(config, dataset, metadata)
-    return store.get_negative_evidence(
-        dataset,
-        identity=identity,
-        now=now,
-    )
+    identity = _NegativeEvidenceIdentity(config, dataset, metadata)
+    return [item for item in live if item.get("identity") == identity.of(item)]
 
 
 def record_negative_evidence(
@@ -802,25 +757,79 @@ def record_negative_evidence(
         }
         for symbol in unique
     ]
+    identity = _NegativeEvidenceIdentity(config, dataset, metadata)
+    for entry in entries:
+        entry["identity"] = identity.of(entry)
     StateStore(config.meta_root).record_negative_evidence(
         dataset,
         entries,
         ttl_days=negative_evidence_ttl_days(config, dataset),
-        identity=_negative_evidence_identity(config, dataset, metadata),
         now=now,
     )
 
 
-def _negative_evidence_identity(
-    config: Config, dataset: str, metadata: pl.DataFrame | None
-) -> dict:
-    identity = _instrument_identity(config, metadata)
-    if dataset == "daily_bars":
-        # Before v2, EastMoney data:null could contribute an empty-source vote;
-        # before v3, unsupported fund codes could supply a Baostock empty vote.
-        # Old votes cannot certify absence after the response contract changes.
-        identity["source_response_contract"] = 3
-    return identity
+class _NegativeEvidenceIdentity:
+    """What one absence claim rests on, so only a change to that voids it.
+
+    The identity used to be the whole instruments table plus every committed
+    trading_status file. The same run's compact republishes trading_status
+    seconds after daily_bars certifies its source-empty symbols, and almost
+    every day lists or delists something somewhere, so no claim outlived its
+    run: `cne check` reported certified names as unexplained gaps and the next
+    run asked every vendor again (2026-10-23: 000016.SZ on its delisting day,
+    001381.SZ before its IPO).
+
+    A source-empty or not-yet-listed claim is about the vendors' answers for
+    one code, so it holds while that code's listing span holds. Only a claim
+    derived from status still follows the committed status files.
+    """
+
+    def __init__(self, config: Config, dataset: str, metadata: pl.DataFrame | None) -> None:
+        self._config = config
+        self._dataset = dataset
+        self._metadata = metadata
+        self._spans: dict[str, list] | None = None
+        self._status: dict | None = None
+
+    def of(self, entry: dict) -> dict:
+        symbol = str(entry.get("symbol", "")).strip().upper()
+        identity: dict = {"instrument": self._span(symbol)}
+        if entry.get("reason") == "verified_no_data":
+            identity["status"] = self._status_identity()
+        if self._dataset == "daily_bars":
+            # Before v2, EastMoney data:null could contribute an empty-source vote;
+            # before v3, unsupported fund codes could supply a Baostock empty vote.
+            # Old votes cannot certify absence after the response contract changes.
+            identity["source_response_contract"] = 3
+        return identity
+
+    def _span(self, symbol: str) -> list | None:
+        if self._spans is None:
+            frame = (
+                self._metadata if self._metadata is not None else instrument_metadata(self._config)
+            )
+            self._spans = {}
+            if frame is not None and not frame.is_empty() and "symbol" in frame.columns:
+                for row in frame.iter_rows(named=True):
+                    self._spans[str(row["symbol"]).strip().upper()] = [
+                        value.isoformat() if isinstance(value, date) else value
+                        for value in (
+                            row.get("list_date"),
+                            row.get("delist_date"),
+                            row.get("asset_type"),
+                        )
+                    ]
+        return self._spans.get(symbol)
+
+    def _status_identity(self) -> dict:
+        if self._status is None:
+            self._status = {
+                "trading_status_revision": StateStore(self._config.meta_root).get_revision(
+                    "trading_status"
+                ),
+                "trading_status_files": _status_files_identity(self._config),
+            }
+        return self._status
 
 
 def negative_evidence_covers(

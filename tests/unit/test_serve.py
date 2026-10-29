@@ -936,6 +936,45 @@ def test_runs_list_names_each_batch_failure(config):
     assert page["failed_daily_groups"] is None
 
 
+def test_a_run_whose_process_is_gone_reads_as_interrupted(config):
+    """A killed run is not "running" for the next hour.
+
+    The engine's liveness signal is the run lock the kernel frees when the
+    process dies; serve judged by heartbeat age alone, so a SIGKILLed init sat
+    under "Running" on the runs page while `cne status` already called it
+    orphaned.
+    """
+    from cnequity.orchestrator.manifest import Manifest
+    from cnequity.orchestrator.run_lock import run_lock
+    from cnequity.serve.lake import LakeView
+
+    manifest = Manifest(config.manifest_path)
+    dead = manifest.start_run("daily:core")
+    alive = manifest.start_run("daily:capital")
+    manifest.start_batch(dead, "b1", "daily_bars", "daily_bars")
+    old = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    _stamp_run(config.manifest_path, dead, old)
+    _stamp_run(config.manifest_path, alive, old)
+    import sqlite3
+
+    with sqlite3.connect(config.manifest_path) as conn:
+        conn.execute("UPDATE ingestion_batches SET started_at = ?, heartbeat_at = ?", (old, old))
+
+    view = LakeView(config)
+    with run_lock(config.meta_root, alive):
+        _total, rows, _ = view.runs(limit=10)
+        statuses = {row["run_id"]: row["status"] for row in rows}
+        assert statuses == {dead: "interrupted", alive: "running"}
+        assert view.runs(statuses=("running",))[0] == 1
+        assert view.runs(statuses=("interrupted",))[0] == 1
+        assert [row["run_id"] for row in view.runs(open_only=True)[1]] == [dead]
+        detail = view.run_detail(dead)
+        assert detail["status"] == "interrupted"
+        assert detail["batches"][0]["stalled"] is True
+    # Read-only: the manifest itself still waits for the next run to reconcile it.
+    assert manifest.get_run(dead)["status"] == "running"
+
+
 def _stamp_run(path, run_id: str, started: str) -> None:
     import sqlite3
 

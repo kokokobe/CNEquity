@@ -119,10 +119,10 @@ def _repair_locked(config: Config, dataset: str, *, apply: bool) -> dict:
     assert partition_col is not None
     granularity = granularity_for_dataset(dataset)
     store = RevisionStore(config.meta_root, config.curated_root, config.derived_root)
-    store.ensure_current(dataset)
-    base = store.current_root(dataset)
+    base = store.repair_base(dataset, register=apply)
     report: dict = {"dataset": dataset, "applied": False, "misplaced_files": []}
     if base is None:
+        report["note"] = f"no {dataset} data; nothing to repair"
         return report
     files = sorted(base.rglob("*.parquet"))
     relatives = [path.relative_to(base) for path in files]

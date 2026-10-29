@@ -4,13 +4,41 @@
 
 | 任务 | 入口 |
 |---|---|
-| 仅使用 PyPI 包 | 系统调度器每天（含周末）调用一次 `cne run daily`：交易日跑全部日更组，每天跑事件流 |
-| 使用仓库运维脚本 | 下方安装调度；脚本额外处理门禁、通知和元数据备份 |
+| 定时更新 | `cne schedule install`：每个交易日日更，然后维护（审计、门禁、元数据备份），见[安装调度](#install-schedule) |
 | 临时失败 | [排障](troubleshooting.md)，先确定失败 run / 批次，再按范围重试 |
 | 扩大历史 | [初始化与续跑](../getting-started/initialization.md)，回填先审阅 `--plan` |
 
 
-## 组件一览
+## 安装调度 {#install-schedule}
+
+```bash
+cne schedule install        # 确认后为当前用户注册定时任务
+cne schedule status         # 是否已安装、是否在运行、最近一次检查
+cne schedule remove         # 停用并注销；正在运行的任务继续
+```
+
+定时任务属于当前用户：macOS 用 launchd，Linux 用 crontab，Windows 用任务计划程序。它每分钟检查一次；每个交易日过了 `[job.daily] run_at`（北京时间）跑 `cne run daily`，跑完再跑 `cne run maintain`；过了 `[job.stale] run_at` 只重试当天缺的快照数据。一个交易日只算一次：过了 `run_at` 就跑，直到下一个交易日 09:15 开盘前都算这一天；本机时区、夏令时都不影响，电脑睡着时不跑，醒来后的下一次检查会补上。
+
+`--pack` 只更新所选研究包的调度组（不含事件流）；`--events` 按配置的 [`[[job.events.schedules]]`](../getting-started/configuration.md#event-schedules) 跑事件流（可写多条，每条有自己的间隔、随机延迟和静默时段）；配置没写计划时，`--events-group` 另按 `--events-every` 分钟间隔跑一个事件组；`--no-stale` 不装收尾补抓。没有给出的选项保留现有设置，所以在命令行安装不会撤掉面板里设置的备份或事件流。这和 `cne serve` 操作页管理的是同一个定时任务，两边都能查看和修改。检测到旧的 `scripts/scheduler` launchd 任务时会提示先卸载，否则同一个湖会更新两遍。
+
+### 日更之后的维护（`cne run maintain`） {#maintain}
+
+定时任务在每个交易日的日更之后跑一次 `cne run maintain`，手工也可以运行：
+
+1. 最近收盘交易日各日更组的运行结果：`[job.maintenance] gate_groups`（默认 `core`）失败立即判失败；其他组失败只报告，连续失败 `soft_fail_max_days`（默认 3）个交易日后判失败，计数在 `meta/state/soft_streak/`，旧脚本的计数会被沿用；
+2. 运行审计；`[job.maintenance] full_audit_weekday`（默认周六）改为全湖审计 `audit --full --quality-only`，它读全部 Parquet，大湖可能要几个小时；
+3. 新鲜度门禁 `status --datasets --gate`，只对定时日更实际跑的调度组判失败（`--groups` 可改）；
+4. 源探针 `sources probe --stale-only`（带上 `[source_health] vantage` 出口标签）与 `sources slo`；
+5. 最近 20 个交易日的运行证据 `verify --runs --days 20`；
+6. 元数据备份：manifest 数据库（用 SQLite 备份接口取一致副本）、增量状态、修订与来源收据、质量结论，写成 `meta-<时间>.tar.gz`，放在 `[job.maintenance] backup_dir`（默认 `{data.root}/backups`），按 `backup_retention_days` / `backup_retention_count` 轮换；
+7. `cne run clean` 的过期文件预览。
+
+核心组失败、其他组连续失败达到上限、审计、新鲜度门禁或备份失败时退出 1；源探针和运行证据的问题只报告，不判失败。macOS 上定时任务加 `--notify`，有问题时弹出桌面通知。
+
+## 旧版仓库脚本（已弃用） {#legacy-scripts}
+
+`scripts/scheduler/` 只在源码 checkout 里有，已弃用；打包定时任务覆盖它的全部功能并在真实湖上验证之后才会移除，移除前在更新日志中预告。迁移：先运行 `scripts/scheduler/uninstall_scheduler.sh` 卸载 launchd 任务（cron 里的条目手工删掉），再运行 `cne schedule install`。`backup_meta.sh` 已改为调用与 `cne run maintain` 相同的备份代码。
+
 
 | 能力 | 脚本 | 作用 |
 |------|------|------|
@@ -23,7 +51,7 @@
 
 脚本使用仓库 `.venv/bin/cne`，路径相对仓库根目录自解析。
 
-## 安装调度
+### 安装 launchd 任务（旧版）
 
 ```bash
 cd /path/to/cnequity
@@ -97,7 +125,7 @@ macOS 使用当前用户的 launchd，Windows 使用当前登录用户的任务�
 
 日更与补抓时间保存在原配置的 `[job.daily] run_at` / `[job.stale] run_at`，首次改动前保存 `.schedule.bak`，其他设置和注释保留。备份和事件流设置随湖保存；备份不自动删除旧副本，需关注存储空间。暂停阻止后续自动执行，已经启动的任务在任务详情里另行取消。即使系统任务因权限变化无法删除，暂停设置仍能阻止随包入口继续取数；页面会提示手动核对系统任务。
 
-Web 只管理自己创建的系统任务，不接管已有 launchd 脚本或其他 cron / Windows 任务。迁移前核对并停用重复入口。Web 日更执行 `cne run daily`，每日备份执行所选数据集的 `cne snapshot create`，独立事件流执行所选组的 `cne run events`。仓库脚本的额外健康通知、元数据 tar 归档仍由原调度负责，Web 不自动附加这些脚本。系统任务固定使用创建时的 Python 环境、工作目录及配置路径；移动环境后重新设置，数据源所需配置也须在无人值守环境中可用。
+Web 只管理自己创建的系统任务，不接管已有 launchd 脚本或其他 cron / Windows 任务。迁移前核对并停用重复入口。Web 日更执行 `cne run daily`，之后执行 `cne run maintain`（审计、门禁、元数据备份），每日备份执行所选数据集的 `cne snapshot create`，独立事件流执行所选组的 `cne run events`。命令行用 `cne schedule install|status|remove` 管理的是同一个任务。系统任务固定使用创建时的 Python 环境、工作目录及配置路径；移动环境后重新设置，数据源所需配置也须在无人值守环境中可用。
 
 **Linux cron（手动配置方案）**：
 

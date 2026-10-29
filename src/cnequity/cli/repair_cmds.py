@@ -7,7 +7,12 @@ import json
 import click
 
 from cnequity.cli._root import cli
-from cnequity.cli._shared import _cfg, config_option
+from cnequity.cli._shared import (
+    _cfg,
+    comma_option,
+    comma_values,
+    config_option,
+)
 from cnequity.i18n import N_, _
 
 
@@ -15,42 +20,95 @@ def _emit(value: dict) -> None:
     click.echo(json.dumps(value, indent=2, ensure_ascii=False, default=str))
 
 
+@cli.command("migrate")
+@config_option
+@click.option(
+    "--apply",
+    is_flag=True,
+    help=N_("Run the owed migrations and record each result in meta/state/lake.json."),
+)
+@comma_option(
+    "--only",
+    "only",
+    help=N_(
+        "Comma-separated migration ids; runs them even when already recorded. "
+        "Default: every migration this lake still owes."
+    ),
+)
+@click.option("--json", "as_json", is_flag=True, help=N_("Output machine-readable JSON."))
+def migrate(config_path: str, apply: bool, only: str | None, as_json: bool):
+    """Preview, or with --apply run, the one-off fixes this lake still owes.
+
+    
+    A release that fixes a writer can leave rows the old writer stored. Each such fix is a
+    migration; meta/state/lake.json records the version that built the lake (it owes nothing
+    introduced earlier) and every migration it has applied or found nothing to do.
+    A preview reports how many rows each would change. --apply runs them in order: each takes the
+    lake lock, publishes through the repair gate and keeps the previous revision readable.
+
+    """
+    from cnequity.storage.migrations import MIGRATIONS, affected, owed, read_lake, record
+
+    cfg = _cfg(config_path)
+    by_id = {m.id: m for m in MIGRATIONS}
+    only = comma_values(only, "--only")
+    if only:
+        unknown = sorted(set(only) - set(by_id))
+        if unknown:
+            raise click.BadParameter(
+                _("unknown migration(s): {names}; known: {known}").format(
+                    names=", ".join(unknown), known=", ".join(by_id)
+                ),
+                param_hint="--only",
+            )
+        chosen = [m for m in MIGRATIONS if m.id in only]
+    else:
+        chosen = owed(cfg)
+    results: list[dict] = []
+    failed = False
+    if not chosen and not as_json:
+        created = read_lake(cfg).get("created_with")
+        click.echo(
+            _(
+                "Nothing owed: the lake was built by {version}, or every migration is recorded."
+            ).format(version=created)
+            if created
+            else _("Nothing owed: every migration is recorded in meta/state/lake.json.")
+        )
+        return
+    for migration in chosen:
+        if not as_json:
+            note = " (" + _("reads") + f" {_(migration.reads)})" if migration.reads else ""
+            click.echo(f"--- {migration.id}: {_(migration.title)}{note}", err=True)
+        try:
+            report = migration.apply(cfg, apply=apply)
+        except Exception as exc:  # noqa: BLE001 — report it and stop; later ones may depend on it
+            failed = True
+            results.append({"id": migration.id, "error": f"{type(exc).__name__}: {exc}"})
+            if not as_json:
+                click.echo(_("  failed: {exc}").format(exc=exc), err=True)
+            break
+        count = affected(report)
+        if apply:
+            record(cfg, migration, report)
+        results.append({"id": migration.id, "affected": count, "report": report})
+        if not as_json:
+            if apply:
+                line = _("  applied: {count} row(s)") if count else _("  nothing to do; recorded")
+            else:
+                line = _("  would change {count} row(s)") if count else _("  nothing to do")
+            click.echo(line.format(count=count), err=True)
+    if as_json:
+        click.echo(json.dumps({"applied": apply, "migrations": results}, default=str, indent=2))
+    elif not apply and not failed:
+        click.echo(_("Preview only. Run `cne migrate --apply` to apply and record them."))
+    if failed:
+        raise SystemExit(1)
+
+
 @cli.group()
 def repair():
     """Repair stored data: previews by default; --apply verifies, publishes, and keeps the old version."""
-
-
-@repair.command("missing-values")
-@click.argument("dataset", type=click.Choice(["valuation_metrics", "index_constituents"]))
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_(
-        "Replace missing-value zero placeholders with nulls and publish a retained revision; preview only by default."
-    ),
-)
-def missing_values(dataset: str, config_path: str, apply: bool):
-    """Fix valuation zero placeholders and index weights missing from EastMoney and CNI, keeping the old version."""
-    from cnequity.storage.repairs.missing_values import repair_missing_values
-
-    _emit(repair_missing_values(_cfg(config_path), dataset, apply=apply))
-
-
-@repair.command("financial-announcements")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_(
-        "Append explicitly marked original-disclosure reconstructions; preview only by default."
-    ),
-)
-def financial_announcements(config_path: str, apply: bool):
-    """Add financial-statement reconstructions based on LICO original disclosure dates, keeping the actually disclosed version and the old lake version."""
-    from cnequity.storage.repairs.financial_announcements import repair_financial_announcements
-
-    _emit(repair_financial_announcements(_cfg(config_path), apply=apply))
 
 
 @repair.command("fund-volume")
@@ -85,7 +143,7 @@ def fund_volume(config_path: str, apply: bool, refresh_sources: bool, max_symbol
 
 @repair.command("financial-originals")
 @config_option
-@click.option("--symbols", help=N_("Comma-separated stock symbols."))
+@comma_option("--symbols", help=N_("Comma-separated stock symbols."))
 @click.option(
     "--all-stocks", is_flag=True, help=N_("Use the lake stock catalogue; choose this or --symbols.")
 )
@@ -163,22 +221,6 @@ def financial_originals(
         raise click.ClickException(str(exc)) from exc
 
 
-@repair.command("daily-bar-coverage")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_(
-        "Retire BSE session debts and proven pre-listing debts using committed data; preview by default."
-    ),
-)
-def daily_bar_coverage(config_path: str, apply: bool):
-    """Re-check Beijing whole-day and pre-listing debts, clearing them only on committed, non-contradictory evidence."""
-    from cnequity.storage.repairs.daily_bar_coverage import repair_daily_bar_coverage
-
-    _emit(repair_daily_bar_coverage(_cfg(config_path), apply=apply))
-
-
 @repair.command("fund-no-print")
 @config_option
 @click.option(
@@ -214,22 +256,6 @@ def fund_no_print(config_path: str, apply: bool, refresh_sources: bool, max_sess
     )
 
 
-@repair.command("fund-factors")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_(
-        "Publish corrected factors from recorded split and transfer terms, retaining the old revision; preview by default."
-    ),
-)
-def fund_factors(config_path: str, apply: bool):
-    """Add the share conversions ETF/LOF factors missed, keeping other sources' steps and the cash-dividend basis."""
-    from cnequity.storage.repairs.fund_factors import repair_fund_factors
-
-    _emit(repair_fund_factors(_cfg(config_path), apply=apply))
-
-
 @repair.command("adj-factors")
 @config_option
 @click.option(
@@ -244,7 +270,7 @@ def fund_factors(config_path: str, apply: bool):
     is_flag=True,
     help=N_("Fetch independent factor evidence; uses local caches only by default."),
 )
-@click.option(
+@comma_option(
     "--symbols",
     default=None,
     help=N_("Comma-separated symbols; checks historical issues in bounded batches by default."),
@@ -293,25 +319,9 @@ def adj_factors(config_path, apply, refresh_sources, symbols, start, end, max_sy
         raise click.ClickException(str(exc)) from exc
 
 
-@repair.command("fund-listing-dates")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_(
-        "Archive exchange directories and publish missing fund listing dates; preview by default."
-    ),
-)
-def fund_listing_dates(config_path: str, apply: bool):
-    """Fill listing dates from the exchanges' current ETF/LOF directories; previewing also queries the sources."""
-    from cnequity.storage.repairs.fund_listing_dates import repair_fund_listing_dates
-
-    _emit(repair_fund_listing_dates(_cfg(config_path), apply=apply))
-
-
 @repair.command("index-snapshots")
 @config_option
-@click.option(
+@comma_option(
     "--indices",
     default=None,
     help=N_(
@@ -452,27 +462,6 @@ def layout(dataset: str, config_path: str, apply: bool):
         raise click.ClickException(str(exc)) from exc
 
 
-@repair.command("valuation-basis")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_("Write and publish a new version; by default only prints the plan."),
-)
-def valuation_basis(config_path: str, apply: bool):
-    """Unify the P/E and market-cap bases of valuation_metrics.
-
-    \b
-    push2 dynamic P/E moves into pe_dynamic; Baostock float market cap is converted from the average-price basis to the close basis,
-    with values that cannot be checked kept as they are and marked as the vwap basis; total market cap is rebuilt from the total shares in
-    effect that day in share_structure, and rows with no share record keep the year-end share estimate and are marked. Rows that already have a basis are not recomputed.
-
-    """
-    from cnequity.storage.repairs.valuation_basis import repair_valuation_basis
-
-    _emit(repair_valuation_basis(_cfg(config_path), apply=apply))
-
-
 @repair.command("corporate-action-gaps")
 @config_option
 @click.option(
@@ -493,100 +482,10 @@ def corporate_action_gaps(config_path: str, apply: bool):
     """
     from cnequity.storage.repairs.corporate_action_gaps import repair_corporate_action_gaps
 
-    _emit(repair_corporate_action_gaps(_cfg(config_path), apply=apply))
-
-
-@repair.command("orphan-symbols")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_("Publish a new version after verification; by default only prints the plan."),
-)
-def orphan_symbols(config_path: str, apply: bool):
-    """Delete rows in adj_factors and corporate_actions for securities that never appear in daily_bars.
-
-    \b
-    These rows have no prices to adjust: quotes of off-exchange funds (519xxx) that once came in as NAV series were cleaned up,
-    but their factors and dividends stayed; listed funds whose quotes are not collected are among them too. They only ever get reported as factor and corporate-action conflicts.
-    Each dataset publishes a new version, and old versions are kept and readable by version.
-
-    """
-    from cnequity.storage.repairs.orphan_symbols import repair_orphan_symbols
-
-    _emit(repair_orphan_symbols(_cfg(config_path), apply=apply))
-
-
-@repair.command("stale-suspensions")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_("Publish a new version after verification; by default only prints the plan."),
-)
-def stale_suspensions(config_path: str, apply: bool):
-    """Delete inferred suspensions that actual trading bars contradict (rows from the derived_bar_gap source in trading_status).
-
-    \b
-    These rows are inferred from missing daily bars; when a run missed quotes, the gap was recorded as a suspension by mistake.
-    Once the quotes are filled, a bar with trades on the same day proves the row wrong. Suspension records from independent sources are unaffected.
-
-    """
-    from cnequity.storage.repairs.orphan_symbols import repair_stale_derived_suspensions
-
-    _emit(repair_stale_derived_suspensions(_cfg(config_path), apply=apply))
-
-
-@repair.command("status-outages")
-@config_option
-@click.option("--start", required=True, help=N_("Window start (YYYY-MM-DD)."))
-@click.option("--end", required=True, help=N_("Window end (YYYY-MM-DD)."))
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_("Publish a new version after verification; by default only prints the plan."),
-)
-def status_outages(config_path: str, start: str, end: str, apply: bool):
-    """Rebuild the trading_status cache rows (eastmoney_cached) from the EastMoney outage by the current rules.
-
-    \b
-    The old rules reused rows the cache wrote itself; a long holiday expired the cache and recorded securities without records as suspended.
-    All cache rows in the window are deleted; on exchanges whose primary source did not answer that day, securities with no other record reuse
-    the latest first-hand record within the previous 5 sessions, keeping its original fetch time, while Baostock history and suspensions inferred from
-    daily-bar gaps still take precedence. Securities with no first-hand record get no row.
-
-    """
-    from datetime import date
-
-    from cnequity.storage.repairs.status_outages import repair_status_outages
-
     try:
-        window = date.fromisoformat(start), date.fromisoformat(end)
-    except ValueError as exc:
-        raise click.BadParameter(str(exc)) from exc
-    _emit(repair_status_outages(_cfg(config_path), start=window[0], end=window[1], apply=apply))
-
-
-@repair.command("status-listing-window")
-@config_option
-@click.option(
-    "--apply",
-    is_flag=True,
-    help=N_("Publish a new version after verification; by default only prints the plan."),
-)
-def status_listing_window(config_path: str, apply: bool):
-    """Delete trading_status rows that fall before a security's listing date, or that no delisting record supports.
-
-    \b
-    An old merge once inferred new securities with no daily bars yet as delisted, and the status step then wrote derived_delisted for their
-    first few sessions after listing; EastMoney also reports codes not yet listed as trading normally.
-    A derived_delisted row is kept only while the current instruments still records a delisting date no earlier than the listing date and no later
-    than the row; rows before the listing date are always deleted, unless daily bars show trades before the listing date. No rows are added.
-
-    """
-    from cnequity.storage.repairs.status_listing_window import repair_status_listing_window
-
-    _emit(repair_status_listing_window(_cfg(config_path), apply=apply))
+        _emit(repair_corporate_action_gaps(_cfg(config_path), apply=apply))
+    except (ValueError, RuntimeError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @repair.command("status-traded")
@@ -609,11 +508,12 @@ def status_listing_window(config_path: str, apply: bool):
     help=N_("Publish a new version after verification; by default only prints the plan."),
 )
 def status_traded(config_path: str, start, end, apply: bool):
-    """Fill missing status keys from actual trading bars, leaving ST unknown.
+    """Fill missing status keys from actual trading bars, leaving stock ST unknown.
 
     \b
     Only fills stock/ETF keys within known listing periods that have volume above zero and no status row, with source derived_traded.
-    Does not overwrite existing status, does not read days without trades as suspensions, and does not create ST coverage evidence.
+    ETF/fund rows are written not-ST, since ST does not apply to funds; earlier fund rows written as unknown are corrected.
+    Does not overwrite other status rows, does not read days without trades as suspensions, and does not create ST coverage evidence.
     The default preview writes nothing; --apply re-checks the current version, then publishes, keeping the old version.
 
     """
@@ -624,24 +524,51 @@ def status_traded(config_path: str, start, end, apply: bool):
     _emit(repair_status_traded(_cfg(config_path), start=start.date(), end=end.date(), apply=apply))
 
 
-@repair.command("misdated-valuation")
+@repair.command("repartition")
+@click.argument("dataset", required=False)
 @config_option
+@click.option("--all", "do_all", is_flag=True, help=N_("Every dataset whose layout needs it."))
 @click.option(
-    "--apply",
-    is_flag=True,
-    help=N_(
-        "Fetch from the EastMoney datacenter and publish a new version; by default only prints the plan offline."
-    ),
+    "--apply", is_flag=True, help=N_("Rewrite and swap the partitions; by default only previews.")
 )
-def misdated_valuation(config_path: str, apply: bool):
-    """Replace push2 snapshot rows in valuation_metrics stamped with the wrong session.
+def repartition(dataset: str | None, config_path: str, do_all: bool, apply: bool):
+    """Rewrite a dataset's partitions at its registered granularity.
 
     \b
-    push2 snapshots carry no date and only describe the latest closed session at fetch time. Rows whose session at fetch time
-    disagrees with the date on the row are deleted with --apply and replaced in the same version with valuations EastMoney datacenter
-    publishes by date; keys datacenter lacks no longer keep the wrong row.
+    Without a dataset or --all it lists what is out of layout. With one it previews the effect
+    (files, partitions, size); --apply rewrites under the lake lock and swaps the dataset root.
+    Reads work whatever span the directories have, so this reclaims space and file opens rather
+    than fixing correctness: the audit points here when a granularity change left an old layout.
 
     """
-    from cnequity.storage.repairs.valuation_snapshots import repair_misdated_valuation
+    from cnequity.storage.repairs.repartition import (
+        RepartitionError,
+        repartition_candidates,
+        repartition_dataset,
+    )
 
-    _emit(repair_misdated_valuation(_cfg(config_path), apply=apply))
+    if dataset and do_all:
+        raise click.UsageError(_("Give a dataset or --all, not both."))
+    cfg = _cfg(config_path)
+    candidates = repartition_candidates(cfg)
+    if not dataset and not do_all:
+        _emit({"needs_repartition": candidates})
+        return
+    results = []
+    for name in [dataset.lower()] if dataset else candidates:
+        try:
+            res = repartition_dataset(cfg, name, dry_run=not apply)
+        except RepartitionError as exc:
+            raise click.ClickException(str(exc)) from exc
+        results.append(
+            {
+                "dataset": res.dataset,
+                "changed": res.changed,
+                "rows": res.rows,
+                "files": f"{res.files_before} -> {res.files_after}",
+                "partitions": f"{res.partitions_before} -> {res.partitions_after}",
+                "mb": f"{res.bytes_before / 1e6:.1f} -> {res.bytes_after / 1e6:.1f}",
+                "mb_saved": round(res.bytes_saved / 1e6, 1),
+            }
+        )
+    _emit({"applied": apply, "results": results})

@@ -42,6 +42,7 @@ __all__ = [
     "EXCHANGES",
     "EXCHANGE_NAMES",
     "SINGLE_SIDED_SINCE",
+    "PUBLISHED_FUTURES_ANOMALIES",
     "UNPUBLISHED_FUTURES_SESSIONS",
     "WAN_YUAN",
     "CountingBasisError",
@@ -79,9 +80,22 @@ CFFEX_INDEX_UNDERLYINGS: dict[str, str] = {
 #: Trading sessions an exchange's own futures archive has no file for. Each was
 #: checked by hand (2026-09-26): the day answers 404 while the sessions either
 #: side answer 200, and SHFE's retired ``data/dailydata/kx`` path is gone for
-#: every day. No backfill can fill these, so completeness checks excuse them.
+#: every day. CZCE's ``exchange/{y}/datadaily`` archive likewise 404s on three
+#: 2010 sessions every other exchange traded (rechecked 2026-10-24; its old
+#: ``jyxx/hq`` pages only answer 412). No backfill can fill these, so
+#: completeness checks excuse them.
 UNPUBLISHED_FUTURES_SESSIONS: dict[str, frozenset[date]] = {
     "SHF": frozenset({date(2004, 6, 25), date(2007, 6, 4)}),
+    "CZC": frozenset({date(2010, 6, 21), date(2010, 7, 1), date(2010, 8, 13)}),
+}
+
+#: Rows an exchange's own file publishes in a form no bar can take. They stay
+#: quarantined, but refetching serves the same bytes, so they must not hold the
+#: session in debt. Keyed by session, not route: the SHFE and INE files both
+#: carry INE contracts. INE kx20210728.dat: LU2108 traded one lot at 3180
+#: (turnover 3.18 万元) yet carries CLOSEPRICE 3450, its settlement price.
+PUBLISHED_FUTURES_ANOMALIES: dict[date, frozenset[str]] = {
+    date(2021, 7, 28): frozenset({"LU2108.INE"}),
 }
 
 #: First session counted on one side at SHFE, INE, DCE and CZCE.

@@ -49,6 +49,30 @@ def _symbols_without_bars(curated_root: Path, symbols: list[str]) -> set[str]:
     return set(symbols) - set(seen)
 
 
+def _last_bar_before(curated_root: Path, symbol: str, first_missing: date) -> date | None:
+    """The last session *symbol* was still listed, judged from its own bars.
+
+    ``delist_date`` is the last listed day: the date of the final bar, halt
+    placeholders included. Stamping the snapshot that confirmed the absence
+    instead ran late by the confirmation streak and any listing lag:
+    601059.SH, 摘牌 on 2026-10-19 after a halt from 10-15, got 10-20 rather
+    than 10-16, and 43 of 232 stock delistings since 2020 were 1-4 days late.
+    """
+    from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
+
+    root = curated_root / "daily_bars"
+    if not dataset_has_parquet(root):
+        return None
+    last = (
+        scan_parquet_root(root, partition_col="trade_date", symbols=[symbol])
+        .filter(pl.col("trade_date") < first_missing)
+        .select(pl.col("trade_date").max())
+        .collect()
+        .item()
+    )
+    return last
+
+
 def _absence_state_path(curated_root: Path) -> Path:
     return curated_root.parent / "meta" / "instruments_absence_streak.json"
 
@@ -218,10 +242,14 @@ def compact_instruments(
                 count = int(prior.get("count", 0)) + 1
                 absence_state[symbol] = {
                     "count": count,
+                    "first_missing": prior.get("first_missing") or trade_date.isoformat(),
                     "last_missing": trade_date.isoformat(),
                 }
                 if count >= ABSENT_DELIST_CONFIRMATIONS:
-                    inferred[symbol] = trade_date
+                    first_missing = date.fromisoformat(absence_state[symbol]["first_missing"])
+                    inferred[symbol] = (
+                        _last_bar_before(curated_root, symbol, first_missing) or trade_date
+                    )
                     absence_state.pop(symbol, None)
                 else:
                     pending += 1

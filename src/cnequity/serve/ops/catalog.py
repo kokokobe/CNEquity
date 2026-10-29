@@ -250,6 +250,26 @@ def _ops() -> tuple[OpSpec, ...]:
             result="run_json",
         ),
         OpSpec(
+            id="daily.maintain",
+            title=N_("Run maintenance"),
+            summary=N_(
+                "After the day's update: run audit, freshness gate, source probes, run evidence, metadata backup and expiry preview."
+            ),
+            group=N_("Catch-up and recovery"),
+            command=("run", "maintain"),
+            params=(
+                Param(
+                    "notify",
+                    "bool",
+                    N_("Desktop notification on problems (macOS)"),
+                    flag="--notify",
+                ),
+            ),
+            lock_class="ingest-daily",
+            # Exit 1 is findings (stale data, audit errors), not a failed command.
+            result="gate",
+        ),
+        OpSpec(
             id="events.run",
             title=N_("Run event streams"),
             summary=N_(

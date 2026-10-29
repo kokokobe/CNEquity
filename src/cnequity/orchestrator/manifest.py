@@ -961,7 +961,8 @@ class Manifest:
             "stale_to_failed": stale_to_failed,
         }
 
-    def _run_activity_at(self, conn: sqlite3.Connection, run_id: str, started_at: str) -> datetime:
+    @classmethod
+    def _run_activity_at(cls, conn: sqlite3.Connection, run_id: str, started_at: str) -> datetime:
         """Latest evidence the run's owner was alive: any batch timestamp.
 
         Every batch counts, not just the unfinished ones. A phase that ends
@@ -983,7 +984,7 @@ class Manifest:
             (run_id,),
         )
         for row in cur:
-            batch_activity = self._latest_timestamp(
+            batch_activity = cls._latest_timestamp(
                 row, ("heartbeat_at", "started_at", "finished_at")
             )
             if batch_activity is not None and batch_activity > activity:
@@ -1004,6 +1005,41 @@ class Manifest:
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(seconds=stale_after_seconds)
         return cutoff, max(cutoff, now - timedelta(seconds=max(0.0, unlocked_grace_seconds)))
+
+    @classmethod
+    def orphaned_running_runs(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        stale_after_seconds: float,
+        locks_root: Path | None = None,
+        unlocked_grace_seconds: float = UNLOCKED_RUN_GRACE_SECONDS,
+    ) -> tuple[list[str], int]:
+        """``(orphaned run ids, runs skipped because their lock is held)``.
+
+        The one rule every reader applies to a ``running`` row: reconcile
+        closes these, `cne status` counts them, and `cne serve` shows them as
+        interrupted. Takes a connection so a read-only caller can pass its own.
+        """
+        from cnequity.orchestrator.run_lock import is_run_locked
+
+        cutoff, unlocked_cutoff = cls._orphan_deadlines(stale_after_seconds, unlocked_grace_seconds)
+        orphans: list[str] = []
+        skipped_locked = 0
+        rows = list(
+            conn.execute("SELECT run_id, started_at FROM ingestion_runs WHERE status = 'running'")
+        )
+        for row in rows:
+            run_id = row["run_id"]
+            deadline = cutoff
+            if locks_root is not None:
+                if is_run_locked(locks_root, run_id):
+                    skipped_locked += 1
+                    continue
+                deadline = unlocked_cutoff
+            if cls._run_activity_at(conn, run_id, row["started_at"]) <= deadline:
+                orphans.append(run_id)
+        return orphans, skipped_locked
 
     def reconcile_orphaned_runs(
         self,
@@ -1028,32 +1064,15 @@ class Manifest:
         long-lived job that still heartbeats is not mistaken for a crash.
         Updates are idempotent (``WHERE status=…``).
         """
-        from cnequity.orchestrator.run_lock import is_run_locked
-
-        cutoff, unlocked_cutoff = self._orphan_deadlines(
-            stale_after_seconds, unlocked_grace_seconds
-        )
         runs_closed = 0
         batches_closed = 0
-        skipped_locked = 0
         with self._connect() as conn:
-            cur = conn.execute(
-                "SELECT run_id, started_at FROM ingestion_runs WHERE status = 'running'"
+            orphan_run_ids, skipped_locked = self.orphaned_running_runs(
+                conn,
+                stale_after_seconds=stale_after_seconds,
+                locks_root=locks_root,
+                unlocked_grace_seconds=unlocked_grace_seconds,
             )
-            candidates = list(cur)
-            orphan_run_ids: list[str] = []
-            for row in candidates:
-                run_id = row["run_id"]
-                deadline = cutoff
-                if locks_root is not None:
-                    if is_run_locked(locks_root, run_id):
-                        skipped_locked += 1
-                        continue
-                    deadline = unlocked_cutoff
-                activity = self._run_activity_at(conn, run_id, row["started_at"])
-                if activity > deadline:
-                    continue
-                orphan_run_ids.append(run_id)
             now = _utcnow()
             for run_id in orphan_run_ids:
                 run_cur = conn.execute(
@@ -1104,24 +1123,14 @@ class Manifest:
         from the one the next run will act on is how an operator ends up
         arguing with the tool about whether a crash happened.
         """
-        from cnequity.orchestrator.run_lock import is_run_locked
-
-        cutoff, unlocked_cutoff = self._orphan_deadlines(
-            stale_after_seconds, unlocked_grace_seconds
-        )
-        n = 0
         with self._connect() as conn:
-            for row in conn.execute(
-                "SELECT run_id, started_at FROM ingestion_runs WHERE status = 'running'"
-            ):
-                deadline = cutoff
-                if locks_root is not None:
-                    if is_run_locked(locks_root, row["run_id"]):
-                        continue
-                    deadline = unlocked_cutoff
-                if self._run_activity_at(conn, row["run_id"], row["started_at"]) <= deadline:
-                    n += 1
-        return n
+            orphans, _locked = self.orphaned_running_runs(
+                conn,
+                stale_after_seconds=stale_after_seconds,
+                locks_root=locks_root,
+                unlocked_grace_seconds=unlocked_grace_seconds,
+            )
+        return len(orphans)
 
     def mark_stale_running_batches_failed(self, run_id: str, *, stale_after_seconds: float) -> int:
         """Backward-compatible alias: full running→stale→failed promotion."""

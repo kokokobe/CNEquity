@@ -310,7 +310,7 @@ def _sweep_sector_bars(
                 "code": "sector_bars_sweep_incomplete",
                 "message": (
                     f"{len(failed)}/{attempted} board(s) failed the 同花顺 sweep; "
-                    "re-run `cne backfill sector_bars --retry-failed` to resume."
+                    "re-run `cne backfill sector_bars` to resume."
                 ),
             }
         ]

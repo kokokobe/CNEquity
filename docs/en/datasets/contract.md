@@ -58,7 +58,7 @@ Each dataset record contains:
   cutoff date; best-effort may keep backfilled current values but returns `pit_is_exact=False`.
 - `pit_storage_columns` are the optional bitemporal columns: `available_at`,
   `source_published_at`, `observed_at`, `revision_id`. Old files missing these columns have them filled on read,
-  so they do not become unreadable; `scripts/migrations/migrate_pit_vintages.py` can add them idempotently with dry-run/apply.
+  so they do not become unreadable and need no migration.
 - `unit_contract`: the canonical units for prices, share counts, amounts, ratios and other numeric values; tables without a special numeric
   convention use `canonical`.
 - `schema` / `columns`, `primary_key` / `primary_keys`: compatibility aliases for the same fact.

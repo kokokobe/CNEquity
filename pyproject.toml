@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cnequity"
-version = "0.17.1"
+version = "0.20.0"
 description = "Open, self-hosted financial data infrastructure for China markets, starting with A-shares"
 # Short PyPI page (absolute links only). GitHub keeps README.md / README.en.md.
 readme = "README.pypi.md"
@@ -14,6 +14,9 @@ license-files = ["LICENSE*", "NOTICE"]
 authors = [{ name = "CNEquity Contributors" }]
 keywords = [
   "a-share",
+  "ashare",
+  "astock",
+  "china-stock",
   "china-stocks",
   "china-equity",
   "data-lake",
@@ -23,7 +26,12 @@ keywords = [
   "polars",
   "parquet",
   "quantitative-finance",
+  "quant",
+  "backtesting",
   "market-data",
+  "akshare",
+  "tushare",
+  "baostock",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -45,7 +53,7 @@ classifiers = [
 # in config with no package behind it, degrading silently on a scheduled run.
 dependencies = [
   "click>=8.1",
-  "duckdb>=1.0",
+  "duckdb>=1.5",
   # The 0.25 floor existed only so mootdx (httpx>=0.25,<0.26) could co-resolve.
   # mootdx is gone — the TDX client is vendored — so nothing caps httpx now and
   # the floor just marks the oldest release with the Client() options we use.
@@ -136,7 +144,7 @@ where = ["src"]
 # Versioned dataset contracts are release governance artifacts, not runtime
 # Python modules.  Ship the contract alongside the installed policy so an
 # offline consumer can retain the exact contract used by a release.
-"share/cnequity/contracts" = ["contracts/v0.10.0.json", "contracts/v0.11.0.json", "contracts/v0.11.1.json", "contracts/v0.12.0.json", "contracts/v0.13.0.json", "contracts/v0.14.0.json", "contracts/v0.14.1.json", "contracts/v0.15.0.json", "contracts/v0.16.0.json", "contracts/v0.17.0.json", "contracts/v0.17.1.json"]
+"share/cnequity/contracts" = ["contracts/v0.10.0.json", "contracts/v0.11.0.json", "contracts/v0.11.1.json", "contracts/v0.12.0.json", "contracts/v0.13.0.json", "contracts/v0.14.0.json", "contracts/v0.14.1.json", "contracts/v0.15.0.json", "contracts/v0.16.0.json", "contracts/v0.17.0.json", "contracts/v0.17.1.json", "contracts/v0.18.0.json", "contracts/v0.19.0.json", "contracts/v0.20.0.json"]
 
 [tool.setuptools.package-data]
 cnequity = [
@@ -220,7 +228,7 @@ known-first-party = ["cnequity"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Network probes (EastMoney schema contracts, etc.) run only with `-m network`.
+# Network probes run only with `-m network`.
 # Random order is opt-in (`-p randomly`): CI runs one shuffled pass to catch
 # tests that only pass after another test has set shared state.
 addopts = "-ra -m 'not network' -p no:randomly"

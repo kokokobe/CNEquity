@@ -14,8 +14,14 @@ from typing import Any
 
 from cnequity.config import Config
 
-_SECRET_FIELDS = frozenset({"tushare_token", "eastmoney_proxy", "_rate_limiters"})
+#: Fingerprinted as "configured or not" under these older payload names.
+_LEGACY_SECRET_KEYS = {
+    "tushare_token": "tushare_configured",
+    "eastmoney_proxy": "eastmoney_proxy_configured",
+}
 _LOCATION_FIELDS = frozenset({"data_root", "config_path", "duckdb_path"})
+#: Runtime plumbing and diagnostics, not data-affecting settings.
+_NOT_DATA_FIELDS = frozenset({"_rate_limiters", "inline_credentials"})
 
 
 def _json_value(value: Any) -> Any:
@@ -36,13 +42,16 @@ def config_fingerprint(config: Config) -> str:
     for item in fields(config):
         name = item.name
         value = getattr(config, name)
-        if name in _SECRET_FIELDS:
-            if name == "tushare_token":
-                payload["tushare_configured"] = bool(value)
-            elif name == "eastmoney_proxy":
-                payload["eastmoney_proxy_configured"] = bool(value)
+        if name in _NOT_DATA_FIELDS or name in _LOCATION_FIELDS:
             continue
-        if name in _LOCATION_FIELDS:
+        if name in _LEGACY_SECRET_KEYS:
+            payload[_LEGACY_SECRET_KEYS[name]] = bool(value)
+            continue
+        if not item.repr:
+            # Any field hidden from repr is a credential: hash whether it is
+            # set, never its value, so rotating a key keeps the fingerprint.
+            # None stays None, which keeps fingerprints of unset keys unchanged.
+            payload[name] = "configured" if value else None
             continue
         payload[name] = _json_value(value)
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

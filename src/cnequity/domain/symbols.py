@@ -218,19 +218,6 @@ def is_subscription_placeholder(name: str | None, symbol: str | None = None) -> 
     return any(stripped.endswith(marker) for marker in SUBSCRIPTION_PLACEHOLDER_NAMES)
 
 
-def normalize_market_code(code: str, market: str) -> tuple[str, str]:
-    market = market.lower()
-    if market in ("sh", "1"):
-        exchange = "SH"
-    elif market in ("sz", "0"):
-        exchange = "SZ"
-    elif market in ("bj", "2"):
-        exchange = "BJ"
-    else:
-        exchange = market.upper()
-    return code.zfill(6), exchange
-
-
 # Ingest scope policies for `[universe].ingest`.  These bound what the daily
 # fetch asks the vendors for; they are NOT the research selection universe
 # (see `domain/universe_profiles.py`), and they deliberately keep ST,

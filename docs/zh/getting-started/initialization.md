@@ -8,7 +8,7 @@
 cne init
 ```
 
-默认配置 `configs/cnequity.toml` 不存在时，`cne init` 会先按随包示例生成它（与 `cne config create` 相同：写入绝对 `data.root`，macOS / Windows 默认 `workers=1`），再开始初始化。想先改数据目录等设置，可以先运行 `cne config create --data-root /path/to/lake`，修改后再 `cne init`。显式传入的 `--config` 或 `CNE_CONFIG` 指向不存在的文件时不会自动生成，避免拼写错误建出新湖。已有配置升级后运行 `cne config upgrade` 补上新的调度 step。
+找不到配置时（当前目录没有 `configs/cnequity.toml`，也没有用户级 `~/.config/cnequity/config.toml`），`cne init` 会先按随包示例生成用户级配置（与 `cne config create` 相同：写入绝对 `data.root`，macOS / Windows 默认 `workers=1`），再开始初始化。想先改数据目录等设置，可以先运行 `cne config create --data-root /path/to/lake`，修改后再 `cne init`。显式传入的 `--config` 或 `CNE_CONFIG` 指向不存在的文件时不会自动生成，避免拼写错误建出新湖。已有配置升级后运行 `cne config upgrade` 补上新的调度 step。
 
 连不上数据源时先运行 `cne doctor`（离线体检），再看[排障指南](../operations/troubleshooting.md)。
 

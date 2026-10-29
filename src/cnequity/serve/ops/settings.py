@@ -334,8 +334,12 @@ def _lookup(raw: dict, spec: Setting):
 
 
 def read_values(text: str) -> dict[str, Any]:
+    from cnequity.config.layers import effective_raw
+
     try:
-        raw = tomllib.loads(text)
+        # What the lake runs with: an `extends = "builtin"` config leaves most
+        # values to the defaults, and the page must show those, not its own.
+        raw = effective_raw(tomllib.loads(text))
     except ValueError as exc:
         raise OpsError(_("The config file cannot be parsed; fix the TOML first.")) from exc
     found: dict[str, Any] = {}

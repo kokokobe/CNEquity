@@ -117,3 +117,20 @@ def test_the_latest_vintage_is_the_one_checked(tmp_path):
     ]
     cfg = _lake(tmp_path, restated + first)
     assert balance_sheet_identity_findings(cfg) == []
+
+
+def test_two_sources_are_not_mixed_into_one_sheet(tmp_path):
+    """600301.SH 2022Q4: the filing as published and the vendors' restatement."""
+    original = [
+        {**row, "source": "cninfo_original"}
+        for row in _rows("600301.SH", "2022Q4", 466.0, 128.0, 338.0)
+        if row["item_code"] != "total_equity"  # one item the filing did not yield
+    ]
+    restated = _rows("600301.SH", "2022Q4", 6640.0, 3289.0, 3351.0)
+    cfg = _lake(tmp_path, original + restated)
+    assert balance_sheet_identity_findings(cfg) == []
+
+    broken = _rows("600301.SH", "2022Q4", 6640.0, 3289.0, 100.0)
+    cfg = _lake(tmp_path / "b", original + broken)
+    (finding,) = balance_sheet_identity_findings(cfg)
+    assert finding["rows"] == 1 and finding["sample"][0]["source"] == "eastmoney"

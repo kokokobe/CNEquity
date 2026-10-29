@@ -378,13 +378,13 @@ def test_margin_source_override_is_one_run_only_and_dataset_scoped(monkeypatch):
     )
 
     runner = CliRunner()
-    result = runner.invoke(cli, _backfill_argv("margin_trading", "--margin-source", "exchange"))
+    result = runner.invoke(cli, _backfill_argv("margin_trading", "--source", "exchange"))
     assert result.exit_code == 0, result.output
     assert cfg.margin_trading_source == "exchange"
 
-    invalid = runner.invoke(cli, _backfill_argv("daily_bars", "--margin-source", "exchange"))
+    invalid = runner.invoke(cli, _backfill_argv("daily_bars", "--source", "exchange"))
     assert invalid.exit_code != 0
-    assert "只适用于 margin_trading" in invalid.output
+    assert "只支持 margin_trading" in invalid.output
 
 
 @pytest.mark.usefixtures("chinese_output")
@@ -402,35 +402,11 @@ def test_bse_tip_repair_requires_one_session_and_symbols(tmp_path, monkeypatch):
     from click.testing import CliRunner
 
     runner = CliRunner()
-    missing_symbols = runner.invoke(
-        cli,
-        _backfill_argv(
-            "daily_bars",
-            "--start",
-            "2026-08-21",
-            "--end",
-            "2026-08-21",
-            "--bse-tip-repair",
-        ),
-    )
+    # `cne repair bse-tip-turnover` takes one --date, so the window is one session
+    # by construction; the symbols are still required.
+    missing_symbols = runner.invoke(cli, ["repair", "bse-tip-turnover", "--date", "2026-08-21"])
     assert missing_symbols.exit_code != 0
-    assert "需要 --symbols" in missing_symbols.output
-
-    different_days = runner.invoke(
-        cli,
-        _backfill_argv(
-            "daily_bars",
-            "--start",
-            "2026-08-20",
-            "--end",
-            "2026-08-21",
-            "--symbols",
-            "920000.BJ",
-            "--bse-tip-repair",
-        ),
-    )
-    assert different_days.exit_code != 0
-    assert "显式给出同一天的 --start 和 --end" in different_days.output
+    assert "--symbols" in missing_symbols.output
 
 
 def test_symbols_flag_points_each_dataset_at_its_own_config_block():

@@ -101,6 +101,21 @@ def repair_frame(frame: pl.DataFrame, bars: pl.DataFrame, shares: pl.DataFrame) 
     return out.select(columns)
 
 
+def _rows_changed(original: pl.DataFrame, repaired: pl.DataFrame) -> int:
+    """Repaired rows with no identical row in *original*, ignoring observation times."""
+    columns = sorted(set(repaired.columns) & set(original.columns) - {"fetched_at", "observed_at"})
+    if not columns:
+        return repaired.height
+    try:
+        before = original.select(columns).cast(repaired.select(columns).schema)
+    except pl.exceptions.PolarsError:
+        return repaired.height
+    # Row hashes carry no nulls, so a plain anti-join matches across polars versions.
+    seen = before.hash_rows().unique().to_frame("row")
+    after = repaired.select(columns).hash_rows().to_frame("row")
+    return after.join(seen, on="row", how="anti").height
+
+
 def repair_valuation_basis(config: Config, *, apply: bool = False) -> dict:
     """Plan (default) or publish the basis repair of ``valuation_metrics``."""
     with lake_mutation_lock(config.meta_root, blocking=True):
@@ -109,10 +124,17 @@ def repair_valuation_basis(config: Config, *, apply: bool = False) -> dict:
 
 def _repair_locked(config: Config, *, apply: bool) -> dict:
     store = RevisionStore(config.meta_root, config.curated_root, config.derived_root)
-    store.ensure_current(_DATASET)
-    base = store.current_root(_DATASET)
-    report: dict = {"dataset": _DATASET, "applied": False, "rows": 0, "partitions_changed": 0}
+    base = store.repair_base(_DATASET, register=apply)
+    # ``rows`` is every row the repair read; ``rows_changed`` is how many of them it rewrites.
+    report: dict = {
+        "dataset": _DATASET,
+        "applied": False,
+        "rows": 0,
+        "rows_changed": 0,
+        "partitions_changed": 0,
+    }
     if base is None:
+        report["note"] = f"no {_DATASET} data; nothing to repair"
         return report
     by_partition: dict[str, list[Path]] = {}
     for path in sorted(base.rglob("*.parquet")):
@@ -159,6 +181,7 @@ def _repair_locked(config: Config, *, apply: bool) -> dict:
             if _business_equal(original, repaired):
                 continue
             report["partitions_changed"] += 1
+            report["rows_changed"] += _rows_changed(original, repaired)
             if apply:
                 changed.append(
                     writer.write_partition(

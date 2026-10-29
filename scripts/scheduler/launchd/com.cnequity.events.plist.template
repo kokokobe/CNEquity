@@ -47,6 +47,8 @@
 
   <key>EnvironmentVariables</key>
   <dict>
+    <key>CNE_EVENTS_JITTER_SEC</key>
+    <string>300</string>
     <key>CNE_SOURCE_VANTAGE</key>
     <string>__SOURCE_VANTAGE__</string>
   </dict>

@@ -182,3 +182,21 @@ def test_sw_client_uses_that_context(monkeypatch):
     assert seen["verify"] is sw.sw_ssl_context()
     assert seen["timeout"] == 7.0
     assert seen["follow_redirects"] is True
+
+
+def test_expand_drops_a_stock_from_the_month_it_delisted():
+    """The file has no end dates; without delistings a stock's class outlives it."""
+    intervals = pl.DataFrame(
+        {
+            "symbol": ["000406.SZ", "600000.SH"],
+            "start_date": [date(2000, 1, 1), date(2000, 1, 1)],
+            "industry_code": ["210101", "480101"],
+        }
+    )
+    delisted = pl.DataFrame({"symbol": ["000406.SZ"], "delist_date": [date(2006, 4, 21)]})
+    days = [date(2006, 3, 31), date(2006, 4, 21), date(2021, 7, 30)]
+    out = sw.expand_sw_industry_as_of(intervals, days, delisted)
+    held = {(r["symbol"], r["as_of_date"]) for r in out.iter_rows(named=True)}
+    assert ("000406.SZ", date(2006, 3, 31)) in held
+    assert not any(s == "000406.SZ" and d >= date(2006, 4, 21) for s, d in held)
+    assert ("600000.SH", date(2021, 7, 30)) in held

@@ -28,7 +28,7 @@ The server refuses to start without data. Ask the user which they want:
   cne init
   ```
 
-  This writes `configs/cnequity.toml` in the current directory.
+  This writes the per-user config `~/.config/cnequity/config.toml` (or `configs/cnequity.toml` when the current directory already has one).
 
 `cne init` prints the absolute path of the config it wrote. Use that path below.
 

@@ -58,8 +58,7 @@ cne contract diff meta/old-contract.json meta/dataset-contract.json
   vintage；best-effort 可保留回填现值，但返回 `pit_is_exact=False`。
 - `pit_storage_columns` 是可选双时态列：`available_at`、
   `source_published_at`、`observed_at`、`revision_id`。旧文件缺列由读侧补齐，
-  不因此变成不可读；`scripts/migrations/migrate_pit_vintages.py` 可用 dry-run/apply
-  幂等补列。
+  不因此变成不可读，不需要迁移。
 - `unit_contract`：价格、股数、金额、比例等数值的规范单位；没有特殊数值
   口径的表使用 `canonical`。
 - `schema` / `columns`、`primary_key` / `primary_keys`：同一事实的兼容别名。

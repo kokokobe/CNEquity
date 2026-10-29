@@ -3,22 +3,56 @@
 Config file format: TOML. The template ships with the package in `cnequity.config.templates`; the repository copy is `configs/cnequity.example.toml`.
 
 ```bash
-cne config create                              # Recommended: writes configs/cnequity.toml
+cne config create                              # Recommended: writes the per-user ~/.config/cnequity/config.toml
  # Optional on first creation: cne config create --data-root /data/cnequity
-cne config validate --config configs/cnequity.toml
+cne config path                                # Shows the config in effect, why it was chosen, and its data root
+cne config show                                # Prints the full effective configuration, marking what the file sets
+cne config validate
 ```
 
-Loading and validation: `cnequity.config.loader`. Personal files are not part of the open-source default config; see [Upgrades and feedback](installation.md#upgrades-and-compatibility). `--config` takes precedence over the environment variable `CNE_CONFIG`; otherwise `configs/cnequity.toml` in the current directory is used. `cne config create` writes an absolute `data.root` by default; a hand-written relative path is still resolved against the process working directory.
+Loading and validation: `cnequity.config.loader`. Personal files are not part of the open-source default config; see [Upgrades and feedback](installation.md#upgrades-and-compatibility). Config lookup order: explicit `--config` → `CNE_CONFIG` → `configs/cnequity.toml` in the current directory → the per-user `~/.config/cnequity/config.toml` (honours `XDG_CONFIG_HOME`; `%APPDATA%\cnequity\config.toml` on Windows). The CLI, `load()`, MCP and the scheduled tasks share this rule, so a command run from any directory reaches the same lake. `cne config create` writes an absolute `data.root` by default; a hand-written relative path (`data.root`, `duckdb.path`) resolves against **the config file's directory**. A relative path written for the old working-directory rule keeps working, with a warning, while only its old location exists; `cne config upgrade` pins it to the absolute path.
 
-This page is organized by config section. For first use, you usually only need to confirm `[data].root`, then enable minute bars, trade ticks or [derivatives](../recipes/derivatives.md) as needed. Defaults in the tables refer to the bundled template; constructing `Config()` directly and the platform generator may give different results, so `cne config diff` and the actual config are authoritative.
+This page is organized by config section. For first use, you usually only need to confirm `[data].root`, then enable minute bars, trade ticks or [derivatives](../recipes/derivatives.md) as needed. Defaults in the tables refer to the bundled template, which is what an `extends = "builtin"` config inherits; constructing `Config()` directly may give different results, so `cne config show` is authoritative.
 
 When multiple processes/data lakes share one egress, use `CNE_RATE_LIMIT_ROOT` to unify HTTP/TDX rate limiting and shared cooldowns. For source protection, CLI network boundaries and order of use, see the [fetch guide](../operations/fetch-policy.md).
+
+## Extending the built-in defaults (`extends = "builtin"`) {#extends-builtin}
+
+The config written by `cne config create` and by a first `cne init` is a few lines long:
+
+```toml
+extends = "builtin"
+
+[data]
+root = "/abs/path/to/lake"
+```
+
+Every other setting comes from the built-in defaults of the installed version (the bundled template, adjusted for this platform, e.g. `workers = 1` on macOS / Windows). The file holds only the settings you want to change; after an upgrade, the new version's settings and schedule steps apply directly, with no `cne config upgrade`.
+
+- Tables merge key by key, recursively (inline tables too); any other value (scalars, arrays, arrays of tables such as `[[failover.datasets]]`) replaces the default whole.
+- `[data].root` never comes from the defaults and must be written in the file.
+- Schedule groups (`[job.daily.groups.*]`, `[job.events.groups.*]`) accept `steps_add`, `steps_remove` and `enabled = false`, so swapping one step does not freeze the rest of the group:
+
+```toml
+[job.daily.groups.capital]
+steps_remove = ["fund_flow"]
+steps_add = ["fund_flow_ths"]
+
+[job.daily.groups.research]
+enabled = false
+```
+
+Step order inside a group does not affect execution: the engine orders steps by dependency, finalize order and name. Writing `steps = [...]` still replaces the whole group; when it shadows a step a new version adds by default, `cne config diff` reports it.
+
+`cne config show` prints the full effective configuration, marks which values come from the file, and masks credentials; `cne config show --defaults` prints every setting with its explanation.
+
+A full config without `extends` keeps working as before: missing keys fall back to built-in values in the code, and an upgrade needs `cne config upgrade` to add schedule steps. `cne config upgrade --minimize` rewrites it once into the extending form: keys equal to their default are dropped, schedule group differences become `steps_add` / `steps_remove`, default schedule groups the config lacks become `enabled = false`, and `data.root` is written as the absolute path it resolves to now. Before rewriting it lists every setting whose behaviour changes on loading (keys the old config lacked and the defaults now supply); `--dry-run` only previews, and the original is backed up.
 
 ## `[data]`
 
 | Key | Type | Default | Description |
 |----|------|------|------|
-| `root` | string | `./data/cnequity` | Data lake root directory; **an absolute path is recommended in production** |
+| `root` | string | `./data/cnequity` | Data lake root directory; a relative path resolves against the config file's directory; **an absolute path is recommended in production** |
 
 Derived paths (computed automatically in code, no config needed):
 
@@ -76,12 +110,12 @@ Main sources and request channels in the template:
 | `ths_official` | **THS official API (keyed)**, see [`cne ths-official`](../reference/cli.md#cne-ths-official) |
 | `sw` / `cni` | Shenwan historical industry and CNI historical constituent files; default interval 1 second, a single request in flight |
 | `futures_exchange` | Futures exchange files, with per-host rate limiting and caching |
-| `tushare` | Optional Tushare Pro: BJ historical ST evidence (`stock_st`). Requires a token; **prefer the environment variable `TUSHARE_TOKEN`**, and do not put credentials in the config |
+| `tushare` | Optional Tushare Pro: BJ historical ST evidence (`stock_st`). Requires a token: the environment variable `TUSHARE_TOKEN` or `token_file`; do not put credentials in the config |
 
 
 | Key | Description |
 |----|------|
-| `enabled` | An explicit false blocks the source and its sub-channels at the HTTP request boundary. When the whole section is omitted, the default behavior of the various legacy paths is not entirely consistent; in production, use the full template and write `enabled = false` for sources you do not use, rather than expressing "off" by deleting the section |
+| `enabled` | An explicit false blocks the source and its sub-channels at the HTTP request boundary. When the whole section is omitted, the default behavior of the various legacy paths is not entirely consistent; write `enabled = false` for sources you do not use (in a config that extends the defaults too), rather than expressing "off" by deleting the section |
 | `min_interval_seconds` | Cross-process request interval; must be a non-negative finite number. 0 disables the fixed interval but not the rejection cooldown. It waits outside the lock and rechecks the shared time on waking; before the actual request it also acquires a concurrency slot |
 | `js_runtime` (ths) | Optional. Path to Deno used to generate the THS `hexin-v` token; if unset, it searches `PATH` and common install locations. The token script runs in Deno **with no permissions at all** (no file read/write, no network, no environment variables). Without Deno, the THS fund-flow fallback fails and is logged, without affecting other data |
 | `ths_data` (rate-limit channel) | THS data center pages (fund-flow fallback) default to 3 seconds per page and share 1 concurrency slot with other THS pages; adjust with `[sources.ths_data] min_interval_seconds` |
@@ -92,13 +126,14 @@ Main sources and request channels in the template:
 | `push2_shared_snapshot` (eastmoney) | On by default. instruments, valuation_metrics, fund_flow and the clist quote fallback share one full-market pagination (fetching the union of fields), reused from after the close until the next day's open |
 | `push2_min_interval_seconds` / `push2_max_concurrency` (eastmoney) | Default 4.0 seconds / 1. A separate rate-limit channel for push2, not shared with datacenter |
 | `datacenter_breaker` / `datacenter_breaker_strikes` (eastmoney) | Default on / 3. After 3 consecutive datacenter rejections (403 / 429 / 5xx, connection refused/reset/dropped), it is disabled for the day; read timeouts do not count; if “请求过于频繁” (too many requests) persists after backoff, it is disabled immediately |
+| `news_breaker` / `news_breaker_strikes` (eastmoney) | Default on / 3. After 3 consecutive fast-news sweeps are refused (403 / 429 / shared cooldown), the lane (handshake + list host) is closed until the next local day; a dead proxy or a read timeout does not count, and one success resets the count |
 | `datacenter_daily_budget` (eastmoney) | Default 0: count only, no cap (the count is in `CNE_RATE_LIMIT_ROOT/eastmoney_guard.json`, by default this lake's `meta/rate_limits/`). Set a cap based on measured usage |
 | `daily_budget` (eastmoney) | Default 0: count only; when set, it enforces a shared daily cap on push2 and datacenter requests from the same egress, so that the vendor does not receive too many requests in total even when neither exceeds its own cap. The shared ledger lives in `CNE_RATE_LIMIT_ROOT`. |
 | `datacenter_min_interval_seconds` / `datacenter_max_concurrency` (eastmoney) | Default 1.0 seconds / 2. A separate rate-limit channel for datacenter; other EastMoney hosts still follow `min_interval_seconds` and `source_concurrency.eastmoney` |
 | `batch_size` / `batch_rest_seconds` (baostock) | Extra batch cooldown for full-market backfills. The 50,000 requests/day cap, single connection and blacklist freeze duration are hard-coded and cannot be raised through config |
 | `verify` (ths_official) | **On** by default. It may only write `meta/source_snapshots` and findings and never touches curated rows, so it is safe to leave on if you have a key |
 | `backfill` (ths_official) | **Off** by default. It changes the lake's contents, so it must be turned on explicitly. Holding credentials, enabling the source and allowing it to modify data are three separate decisions |
-| `api_key` (ths_official) | Prefer the environment variable `HITHINK_FINANCE_API_KEY` over writing it into the config |
+| `api_key` / `api_key_file` (ths_official) | Prefer the environment variable `HITHINK_FINANCE_API_KEY` or `api_key_file` over writing it into the config |
 
 The fetch settings in `cne serve` only change `enabled` for TDX, the local QMT bridge, EastMoney, Sina daily bars, Baostock, the BSE website, THS pages and CNINFO, plus EastMoney's `push2_paused`. The minute-bar, trade-tick and futures switches and `[universe] ingest` / `ingest_listed_funds` / `ingest_eligible_etfs` are on that page too. Before confirming, it lists the differences, and it backs up before writing; intervals, budgets, breakers and credentials are left untouched. The environment variable `CNE_PUSH2_PAUSED=1` still takes precedence over the pause switch in the config.
 
@@ -117,12 +152,14 @@ Template request intervals (conservative client-side settings, not a guarantee o
 | sina_bars | 1.0 | BJ/delisted daily-bar fallback; rate limited independently of adjustment factors, with limited retries on HTTP 456 |
 | baostock | 1.0 + batch 20/120s | Historical market cap/ST. There is also a hard-coded cap of 50,000 per Shanghai calendar day and a single connection; the blacklist freeze is the number of occurrences this year × 6 hours |
 
+Credentials (the `[sources.tushare]` token and the `[sources.ths_official]` api_key) are looked up in this order: the environment variable (`TUSHARE_TOKEN` / `HITHINK_FINANCE_API_KEY`) → a file (`token_file` / `api_key_file`; a relative path resolves against the config file's directory, and only the first line is read) → the value written in the config. Scheduled runs started by launchd / cron do not see variables exported in your login shell, so a scheduled lake should use a file with mode 600. `cne doctor` warns when a credential is written in the config, and when such a config file is readable by other users.
+
 ## THS official API {#ths-official-api}
 `ths_official` is an optional API that requires account credentials; it is configured, rate limited and recorded as a source separately from the `ths` public pages. It must not become a hard dependency of the free core data chain. For source registration and data-use conditions, see the [source matrix](../legal-and-data-sources.md#source-compliance-matrix); the client code license is not a data redistribution license.
 
 ### Configuration and entry points
 
-Set `HITHINK_FINANCE_API_KEY` in the calling environment; do not put the key in public templates, logs or issue reports. Explicitly enable `[sources.ths_official] enabled = true` in your personal config. `verify` controls comparison evidence and `backfill` controls content backfill; the latter is off by default.
+Provide the key through the environment variable `HITHINK_FINANCE_API_KEY` or `api_key_file`; do not put the key in public templates, logs or issue reports. Explicitly enable `[sources.ths_official] enabled = true` in your personal config. `verify` controls comparison evidence and `backfill` controls content backfill; the latter is off by default.
 
 | Command | Fetch and write boundary |
 |---|---|
@@ -217,11 +254,11 @@ Four waves by default:
 
 ## Schedule groups {#schedule-groups}
 
-`[job.daily.groups.<name>]`: `at` (reference time for documentation/scheduling), `steps` (including the trailing `compact`).
+`[job.daily.groups.<name>]` (see [Extending the built-in defaults](#extends-builtin) for `steps_add` / `steps_remove` / `enabled = false`): `at` (reference time for documentation/scheduling), `steps` (including the trailing `compact`).
 
 The daily update and catch-up entry points use Beijing time `[job.daily].run_at` (default 17:30) and `[job.stale].run_at` (default 21:00). The in-group field `at` is a run reference; config alone does not install a system scheduler.
 
-`core`, `capital`, `signals`, `fundamentals`, `macro_risk` and `research` are the routine data groups; minute bars, trade ticks and derivatives are enabled by their own switches. The bundled template is authoritative; after upgrading, use `cne config upgrade` to add new steps. Do not copy timings from a personal host to set task intervals for everyone.
+`core`, `capital`, `signals`, `fundamentals`, `macro_risk` and `research` are the routine data groups; minute bars, trade ticks and derivatives are enabled by their own switches. The bundled template is authoritative: a config that extends the defaults picks up new steps on upgrade, and a full config adds them with `cne config upgrade`. Do not copy timings from a personal host to set task intervals for everyone.
 
 All daily tasks share a non-blocking write lock. Prefer a single scheduling entry point that runs the needed groups in sequence; multiple independent scheduled tasks may collide on the lock and be skipped, so you must check exit codes and run status.
 
@@ -260,6 +297,25 @@ weekday = 5          # A weekly group runs on the last trading day on or before 
   so `cne status`, the catch-up at `[job.stale].run_at` (default 21:00 Beijing time) and the health gate do not treat it as behind on rest days and fetch it again.
 - When a dataset is in both a daily and a weekly group, daily wins.
 
+## `[source_health]`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `vantage` | string | `local` | Label of this machine's network egress (`cn`, `overseas`, or your own, e.g. `cn-sh`), carried by every source probe and health record; some sources refuse non-mainland egress, so results are read per label. `CNE_SOURCE_VANTAGE` and `--vantage` override it for one run |
+
+## `[job.maintenance]`
+
+Settings of `cne run maintain`, which the timer `cne schedule install` installs runs after each trading day's update; see the [runbook](../operations/runbook.md#maintain).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `full_audit_weekday` | int | `6` | ISO weekday (1 = Monday … 7 = Sunday) of the whole-lake audit, which reads every Parquet file and can take hours on a large lake. 0 never runs it |
+| `backup_dir` | string | `{data.root}/backups` | Metadata backup directory; a relative path resolves against the config file's directory. Another disk is best |
+| `backup_retention_days` | int | `14` | Delete backups older than this many days; 0 disables the age limit |
+| `backup_retention_count` | int | `30` | Keep only this many newest backups; 0 disables the count limit |
+| `gate_groups` | list | `["core"]` | A failed run of these daily groups fails maintenance at once |
+| `soft_fail_max_days` | int | `3` | Any other failed daily group only warns, until it has failed this many sessions in a row; 0 never escalates |
+
 ## Event-stream schedule groups (24/7)
 
 `[job.events.groups.<name>]`: the same fields as schedule groups (`at`, `steps`, `parallel`), but they belong to
@@ -286,6 +342,33 @@ and `[job.events]` — the two tasks hold different locks, so fetching the same 
 
 `sentiment_scores` stays in the `research` group: it reads announcements and news **already committed to the lake**,
 never ones fetched in the same run, so its behavior is unchanged by the split.
+
+### Event schedules (`[[job.events.schedules]]`) {#event-schedules}
+
+The packaged timer (`cne schedule install --events`) runs event groups on these schedules; without any, it uses the single group and interval set on the dashboard. Write one entry per event group:
+
+| Key | Default | Description |
+|---|---|---|
+| `group` | omitted = all | A group from `[job.events.groups]`; omitted runs every group in config order |
+| `every_minutes` | `60` | Minutes between attempt starts (1–1440) |
+| `jitter_seconds` | `0` | After each run, push the next one out by a random 0–N seconds (0–3600), so requests do not land on the hour |
+| `quiet_hours` | omitted | Beijing-time quiet window, e.g. `"1-7"` (01:00–06:59); `"23-6"` wraps midnight |
+| `quiet_every_minutes` | `60` | Spacing inside the quiet window, with 5 minutes of slack |
+
+```toml
+[[job.events.schedules]]
+group = "news_wire"
+every_minutes = 15
+jitter_seconds = 120
+quiet_hours = "1-7"
+quiet_every_minutes = 60
+
+[[job.events.schedules]]
+every_minutes = 360
+jitter_seconds = 300
+```
+
+A group may appear only once, and it must exist. The dashboard's schedule page shows these schedules read-only; change them in the config.
 
 ## `[minute_bars]`
 
@@ -358,6 +441,17 @@ Announcements may be indexed late. The weekly deep reconciliation rechecks older
 | `datasets` | Built-in critical/snapshot set | Leave empty to use the default set; paged raw responses from financial statement and shareholder backfills are archived page by page to keep evidence from pages that succeeded midway. An explicit list can narrow it to fit the disk budget. |
 
 **Request credentials, proxy settings, cookies and authorization headers are never archived.**
+
+Large payloads such as financial report PDFs can live on a separate drive or in iCloud Drive while source, observation-time and hash sidecars stay local. Create the destination directory, then register it:
+
+```bash
+cne storage raw-external --dataset financial_statement_items --source cninfo \
+  --root "$HOME/Library/Mobile Documents/com~apple~CloudDocs/CNEquity/archives/my-lake"
+```
+
+By default only new PDF payloads go to the external folder; other responses stay local. The lake stores the registration in `meta/raw_storage.json`, which all archive readers recognize automatically. Historical `payload_path` values stay unchanged and no symlinks are used. Registration does not migrate existing files. Copy them under the external root at their original `payload_path`, verify bytes and hashes, and confirm cloud upload before removing local payloads. Keep the local `.json` source sidecars.
+
+Replay requires the external folder to be available; cloud files may need downloading first. An unavailable folder fails explicitly rather than being recreated empty or fetching the provider again. Portable snapshots materialize external payloads without machine-specific locations, which may download cloud files. macOS manages iCloud synchronization and Remove Download; registration alone does not confirm upload.
 
 ## `[exchange_audit]`
 

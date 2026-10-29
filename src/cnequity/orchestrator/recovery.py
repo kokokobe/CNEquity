@@ -7,6 +7,7 @@ import shlex
 from cnequity.domain.datasets import DATASETS, history_mode_for
 from cnequity.domain.http_policy import source_family
 from cnequity.domain.market_time import shanghai_today
+from cnequity.i18n import _
 
 
 def _source_enabled(config, source: str) -> bool:
@@ -95,9 +96,13 @@ def fallback_options(config, manifest, run_id: str) -> list[dict]:
                 "strategy": "use_available_data",
                 "available_data": dataset_has_parquet(read_root(config, dataset)),
                 "action": (
-                    "保留已有快照；将该数据集加入日更配置，从后续采集开始积累。"
+                    _(
+                        "Keep the existing snapshot; add this dataset to the daily configuration so it accumulates from later collections."
+                    )
                     if mode == "snapshot_only"
-                    else "保留已有湖，交付本次通过校验的数据；缺口留在覆盖记录中，可稍后补数。"
+                    else _(
+                        "Keep the existing lake and deliver the data that passed verification; the gaps stay in the coverage record and can be backfilled later."
+                    )
                 ),
                 "registered_sources": sources,
                 "scope": metadata.get("backfill_scope")
@@ -115,9 +120,13 @@ def fallback_options(config, manifest, run_id: str) -> list[dict]:
                 ),
                 "history_mode": mode,
                 "history_note": (
-                    "快照源不能补造错过的历史；重试只取得来源仍可提供的观察。"
+                    _(
+                        "A snapshot source cannot recreate missed history; a retry only obtains the observations the source can still offer."
+                    )
                     if mode == "snapshot_only"
-                    else "按原请求范围重试；来源能力不足的范围继续保留为缺口。"
+                    else _(
+                        "Retry with the original range; ranges beyond the source's capability stay as gaps."
+                    )
                 ),
             }
         )

@@ -32,7 +32,7 @@ _EX_DATE_COL = "EX_DIVIDEND_DATE"
 # dropped the first available quarter from the optional audit artifact.
 # The report itself reaches back to 1991, but only through the daily equality
 # filter. Paging the backfill that far costs a full-history walk, so the sweep
-# stops here; `--eastmoney-date-repair` is how a named older date is reached.
+# stops here; `cne repair ex-dates` is how a named older date is reached.
 EASTMONEY_BACKFILL_FLOOR = date(2015, 9, 29)
 _BACKFILL_FLOOR = EASTMONEY_BACKFILL_FLOOR
 _COLUMNS = (

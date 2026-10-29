@@ -159,6 +159,21 @@ def test_no_audit_evidence_cannot_prove_quality(lake, monkeypatch):
     assert "--full" in result.output
 
 
+def test_sample_lake_needs_no_audit_to_pass(lake, monkeypatch):
+    path = lake
+    text = (
+        open(path, encoding="utf-8").read().replace("[data]\n", '[data]\nprofile = "sample"\n', 1)
+    )
+    open(path, "w", encoding="utf-8").write(text)
+    _status_exits(monkeypatch, 0)
+
+    result = CliRunner().invoke(cli, ["check", "--config", lake])
+
+    assert result.exit_code == 0, result.output
+    assert "Install verified" in result.output
+    assert "not for research" in result.output
+
+
 @pytest.mark.usefixtures("chinese_output")
 def test_full_reruns_the_whole_lake_audit(lake, monkeypatch):
     _status_exits(monkeypatch, 0)

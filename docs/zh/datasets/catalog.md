@@ -210,7 +210,7 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | qmt_bridge（回填） | 日更仍用 eastmoney 日期快照；TDX/修理源补缺口；混粒度用 `scripts/migrations/repartition.py` |
+| corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | qmt_bridge（回填） | 日更仍用 eastmoney 日期快照；TDX/修理源补缺口；混粒度用 `cne repair repartition` |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
 | earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`cne backfill` 走 2016 起全报告期 |
 
@@ -227,9 +227,9 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 
 财报 DMSK 的 `NOTICE_DATE` 可能是比较期数据的再公告日。原始披露日从 LICO 解析；缺少对应 LICO 记录时保留较晚日期，不猜测原始日期。日更保留再公告版本，并仅为缺少原始日期版本的科目追加 `source=eastmoney_backfill` 重建值。重建数值可能经过重述：默认 `load(..., as_of=...)` 的 `best_effort` 可读，但返回 `pit_is_exact=false`；`pit_mode="strict"` 排除重建值且要求实际观察时间不晚于查询日期。
 
-已有数据可先运行 `cne repair financial-announcements` 预览，再加 `--apply` 发布保留旧版本的修复。它只修复有原始公告日期证据的已有科目；缺少的历史科目仍需 `cne backfill financial_statement_items --start <date> --end <date>` 按报告期补采。来源、科目及报告期的覆盖分别检查，不能由某一个报表齐全推断所有明细齐全。
+当前版本采集时已按原始公告日入库；0.17 及更早版本写入的数据由 `cne migrate` 修正（迁移 `financial-announcements`）。它只修复有原始公告日期证据的已有科目；缺少的历史科目仍需 `cne backfill financial_statement_items --start <date> --end <date>` 按报告期补采。来源、科目及报告期的覆盖分别检查，不能由某一个报表齐全推断所有明细齐全。
 
-估值源以零表示缺失的 PE、PB、PS 和总/流通市值统一写空值；负估值比率仍保留。旧数据用 `cne repair missing-values valuation_metrics` 预览，加 `--apply` 发布新版本。
+估值源以零表示缺失的 PE、PB、PS 和总/流通市值统一写空值；负估值比率仍保留。0.17 及更早版本写入的旧数据由 `cne migrate` 修正。
 
 `cne repair financial-originals --symbols <股票代码> --start-year 2016 --end-year 2024 --refresh-sources` 从巨潮按证券和披露日期完整枚举公告，定位最早的原始年报，归档 PDF 并提取明确可识别的合并报表当期科目；默认预览，加 `--apply` 追加 `source=cninfo_original` 版本。`--max-reports` 限制批量大小，重复运行跳过已含原文科目的报告；解析器升级后可用 `--reparse` 离线重放旧归档，追加新识别科目，内容及披露时间未变的行保留首次观测时间。`--all-stocks` 可替代 `--symbols`，按湖中股票目录分批；用输出的 `next_cursor` 传入 `--after` 接续，避免失败报告阻塞后续股票。不带游标重试仍会检查未恢复的失败项。比较期、母公司报表、修订版、扫描件及无法确定列头或单位的数值不用于补行。`--quarter` 选择 Q1、Q2（半年报）、Q3 或默认 Q4（年报），分别定位和归档原始报告。利润及现金流只恢复年初至报告期末累计数；第三季四列表只在列序明确且四个单元格齐全时取累计列，不用单季数填累计数。在线采证不依赖标题关键词或公告分类来判断最早披露；分页以公告记录总数为准，必须包含尾页并核对唯一公告数。无法完整枚举的窗口保留失败项。合并与公司混排的年报四列表，还须确认“合并、合并、公司、公司”的角色顺序和两组当年/上年日期；只取当年合并列，费用符号约定尚不明确的科目继续留缺口。拆成资产/负债两段的主表及期末、重述期初、上年末三列，也必须按明确日期顺序读取。表头只写“元”时，只有原文同时明确本位币及外币报表统一折成人民币的呈列政策，才可确定人民币单位；不能仅凭本位币猜测。当前支持有限科目和明确布局，不等于全市场全部季度或明细科目已恢复。原文披露时间和真实采集时间分别保存，今天取得的历史原文不会成为历史严格 PIT 的已观察证据；同一原始公告日的原文数值优先于后采集的重建值。
 
@@ -238,7 +238,7 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | staleness |
 |--------|--------|------|------|------|------|-----------|
 | fund_flow | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 1d |
-| fund_flow_ths | trade_date | symbol, trade_date | snapshot | ✓ | ths | 只在 push2 取不到 `fund_flow` 时由同花顺补：流入/流出/净额/成交额，**没有**主力与超大单…小单拆分，金额 4 位有效数字；源覆盖以响应为准，不承诺北交所；不判新鲜度、为空不报 |
+| fund_flow_ths | trade_date | symbol, trade_date | snapshot | ✓ | ths | 只在 push2 取不到 `fund_flow` 时由同花顺补：流入/流出/净额/成交额，**没有**主力与超大单…小单拆分，金额 4 位有效数字；源覆盖以响应为准，不承诺北交所；为空不报。默认不判新鲜度；配置的日更调度组里排了它（例如 push2 不可用时用 `steps_add` 换入），就要求最近收盘交易日有数据 |
 | margin_trading | trade_date | symbol, trade_date | by_date | ✓ | exchange | 沪深交易所自行编制的融资融券明细；SH 无融券余额（`short_balance` 为 null），深交所晚一个交易日发布、两边齐了才写；`[margin_trading] source` 可切回 eastmoney |
 | northbound_holdings | trade_date | symbol, trade_date, channel | by_date | ✓ | eastmoney | 100d（季频） |
 | northbound_flows | trade_date | trade_date, channel | by_date | ✓ | eastmoney | 2d |
@@ -272,7 +272,7 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 历史回填（C2）：`cne backfill industry_members` = 申万 SwClass2021 月度（`classification_system=sw`，2020 起）；
 `cne backfill index_constituents` = 国证调样史（399001/399006，约 2021-12 起）。沪深 300、科创 50 等其他指数依赖采集后积累的 EM 快照及下面的官方带日期文件；更早历史仍可能缺失。当前名单不能回填到更早日期，否则会产生幸存者偏差；EM 适配器只接受当前已收盘交易日。历史读取只使用当时已存的快照，早于最早快照的成员关系未知。
 
-EM 和国证调样史都不提供成分权重，`weight=null`，不能把它当成真实零权重或自动推断为等权。`cne repair missing-values index_constituents` 列出每个指数、来源的快照起止与数量，并预览将旧占位零改为空值；`--apply` 发布新版本，不制造缺失的历史成分或权重。
+EM 和国证调样史都不提供成分权重，`weight=null`，不能把它当成真实零权重或自动推断为等权。每个指数、来源的快照起止与数量可直接查询：`cne query --sql "SELECT index_symbol, source, min(as_of_date), max(as_of_date), count(DISTINCT as_of_date) FROM index_constituents GROUP BY ALL ORDER BY ALL"`。0.17 及更早版本留下的权重占位零由 `cne migrate` 改为空值，不制造缺失的历史成分或权重。
 
 `cne repair index-snapshots --refresh-sources` 取得沪深 300、科创 50、深证成指、创业板指可公开下载的官方文件；默认预览，`--apply` 按文件实际日期替换该指数的完整快照并保留旧版本。权重文件的百分数转换为比例（总和约为 1），来源为 `exchange` 或 `cni_weights`。成分文件和权重文件可能日期不同，不跨日期填权重；更晚的无权重观察也不能抹去同日已验证权重。这条路径只能恢复官方当前仍提供的带日期文件及已归档快照，不提供任意历史日期的完整权重，也不会把最新样本倒推到历史。
 
@@ -297,12 +297,12 @@ EM 响应若已包含尚未生效的调样行，会拒绝整份快照：删除�
 | hot_rank | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 人气榜 top100（公开接口上限） |
 | sector_bars | trade_date | sector_code, trade_date | snapshot | ✓ | ths | 日更与回填都走同花顺 board-kline；无第二源 |
 | sector_fund_flow | trade_date | sector_code, trade_date | snapshot | ✓ | eastmoney | 板块主力净流入 |
-| sector_fund_flow_ths | trade_date | board_type, sector_code, trade_date | snapshot | ✓ | ths | 只在 push2 取不到 `sector_fund_flow` 时由同花顺补：行业（881xxx）+ 概念板块的流入/流出/净额，金额单位亿、精确到 0.01；同花顺板块分类，和东财板块代码不对应 |
+| sector_fund_flow_ths | trade_date | board_type, sector_code, trade_date | snapshot | ✓ | ths | 只在 push2 取不到 `sector_fund_flow` 时由同花顺补：行业（881xxx）+ 概念板块的流入/流出/净额，金额单位亿、精确到 0.01；同花顺板块分类，和东财板块代码不对应。新鲜度规则同 `fund_flow_ths` |
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 新闻标题 |
 | flash_news_wire | publish_date | wire_id, wire_source | 兼容读取 | ✓ | eastmoney | 由 `news_headlines` 事实表投影，兼容旧 revision 的实体文件；不再重复写入 |
 | economic_calendar | event_date（按年） | event_id | snapshot | ✓ | —（源已下线） | EM `RPT_ECONOMICCALENDAR` 已退役（code 9501），保留 schema 等替代源；`required=false`，空表不判 UNHEALTHY |
 
-`sector_bars` 使用同花顺板块行情；历史通过 `cne backfill sector_bars` 分窗口补入。先用 `--plan` 检查范围，失败后用 `--retry-failed` 续跑，避免无故 `--force` 重抓。网络可达性以当前出口的小范围探测为准。
+`sector_bars` 使用同花顺板块行情；历史通过 `cne backfill sector_bars` 分窗口补入。先用 `--plan` 检查范围；失败后重跑同一命令即从断点续跑，避免无故 `--refetch` 全量重抓。网络可达性以当前出口的小范围探测为准。
 
 ## L8 风险合规
 

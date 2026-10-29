@@ -66,6 +66,25 @@ def _window_backfill(config: Config, start: date) -> bool:
     return bool(getattr(config, "_backfill", False)) or start == BACKFILL_START
 
 
+def _announce_drain(dataset: str, futures) -> None:
+    """Say why Ctrl-C has not stopped the run yet.
+
+    The pool waits for batches already talking to the source, which takes as
+    long as one batch does — tens of seconds for a hundred symbols. Silence
+    for that long reads as a hang, and the second Ctrl-C it provokes changes
+    nothing but the user's confidence in the lake.
+    """
+    running = sum(1 for future in futures if future.running())
+    if running:
+        logger.warning(
+            N_(
+                "Interrupted: letting %d %s batch(es) already in flight finish so nothing is half-written; this can take up to one batch's time."
+            ),
+            running,
+            dataset,
+        )
+
+
 def _empty_pool_result() -> dict[str, Any]:
     return {
         "rows_read": 0,
@@ -708,7 +727,7 @@ def fetch_daily_bars_parallel(
             logger.info(
                 "daily_bars: finished symbols can be loaded before this sweep ends, "
                 'for example load("daily_bars", symbols=[%r]). '
-                "Adjusted prices publish with adj_factors at the end of init.",
+                "Adjusted prices follow once adj_factors covers these sessions.",
                 symbols_ready[0],
             )
 
@@ -900,6 +919,7 @@ def fetch_daily_bars_parallel(
                     # Do not return control while in-flight workers can still
                     # write staging. Cancel queued work, then wait only for the
                     # lanes that had already entered their source call.
+                    _announce_drain(dataset, futures)
                     pool.shutdown(wait=True, cancel_futures=True)
                     raise
         except Exception as exc:
@@ -982,6 +1002,7 @@ def fetch_daily_bars_parallel(
             except (KeyboardInterrupt, SystemExit):
                 for future in futures:
                     future.cancel()
+                _announce_drain(dataset, futures)
                 pool.shutdown(wait=True, cancel_futures=True)
                 raise
     except BrokenProcessPool:

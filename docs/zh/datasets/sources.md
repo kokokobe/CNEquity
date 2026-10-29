@@ -159,8 +159,8 @@
 | 回填 | `cne backfill futures_bars --start 2010-04-16`、`cne backfill option_bars --start 2019-12-23`，之后 `cne backfill futures_contracts` / `option_contracts` 由 bars 重建合约表 |
 | 主键 | bars：(symbol, trade_date)；合约表：symbol |
 | 口径 | 上期/能源、郑商所 2019-12-31 前量、持仓、成交额为双边统计（期权同样），入湖时折半，双边值必为偶数；广期所、中金所一直单边。成交额万元→元；IV 百分数→小数；上期所/能源 IV 按到期系列发布，存 `series_implied_vol`。早年上期所文件把未挂牌的远月列成结算价 0、持仓 0 的占位行，这类行不入湖。期权到期当天虚值合约的结算价 0 是真实价格，按 0 入湖（期货的 0 仍视为无价格） |
-| 大商所 | 默认 `dce_route = "sina"`：逐合约历史约自 2018 年中，缺零成交日和成交额；批量报价只对应最近会话，不能证明零成交合约齐全，期权不收。历史持久缓存，已核对历史日常规复用，修订用 `--refresh`。`official` 是实验性映射：官方路由尚未通过可用性和数据完整性验收；遇到 412 或挑战页时标记为 blocked，项目不执行挑战脚本。探针可达仅代表请求可达，仍须独立核验必需字段、日期、总计及 Schema，不能据此视为生产验收 |
-| 已知限制 | 上期所逐合约成交额要到 2021/2022 年后才有，更早为空；中金所文件不给行权量与 IV；郑商所 2026 年起有带 `MS` 标记的第二到期系列，规范符号保留标记（如 `CF2701MSC14200.CZC`）；期权交易所 IV/Delta 与本湖派生值口径不同；上期所官方档案缺 2004-06-25、2007-06-04 两个交易日的期货文件（当天 404、前后两天正常，旧 `data/dailydata/kx` 路径已整体下线），任何回填都补不回，缺口检查对这两天豁免（`domain/derivatives.py` 的 `UNPUBLISHED_FUTURES_SESSIONS`） |
+| 大商所 | 默认 `dce_route = "sina"`：逐合约历史约自 2018 年中，缺零成交日和成交额；批量报价只对应最近会话，不能证明零成交合约齐全，期权不收。历史持久缓存，已核对历史日常规复用，修订用 `--refetch`。`official` 是实验性映射：官方路由尚未通过可用性和数据完整性验收；遇到 412 或挑战页时标记为 blocked，项目不执行挑战脚本。探针可达仅代表请求可达，仍须独立核验必需字段、日期、总计及 Schema，不能据此视为生产验收 |
+| 已知限制 | 上期所逐合约成交额要到 2021/2022 年后才有，更早为空；中金所文件不给行权量与 IV；郑商所 2026 年起有带 `MS` 标记的第二到期系列，规范符号保留标记（如 `CF2701MSC14200.CZC`）；期权交易所 IV/Delta 与本湖派生值口径不同；上期所官方档案缺 2004-06-25、2007-06-04 两个交易日的期货文件（当天 404、前后两天正常，旧 `data/dailydata/kx` 路径已整体下线），郑商所档案同样缺 2010-06-21、2010-07-01、2010-08-13 三个交易日（当天 404、前后正常）；任何回填都补不回，缺口检查对这些日期豁免（`domain/derivatives.py` 的 `UNPUBLISHED_FUTURES_SESSIONS`） |
 
 <!-- derivative-capabilities:start -->
 
@@ -184,8 +184,8 @@
 
 | 证据 | `payment_source` | 入口（均需 `--symbols --start --end`） |
 |------|------------------|------|
-| 发行人实施公告 | `issuer_notice:…`（公告编号、页码、PDF SHA256） | `--issuer-notice-repair`：已审清单、巨潮（沪深）、北交所公告（东财原文镜像）；不请求 Baostock |
-| 供应商 | `baostock:dividPayDate` | `--payment-date-repair`：先走发行人公告，余下再匹配 Baostock |
+| 发行人实施公告 | `issuer_notice:…`（公告编号、页码、PDF SHA256） | `cne repair payment-dates --issuer-notices-only`：已审清单、巨潮（沪深）、北交所公告（东财原文镜像）；不请求 Baostock |
+| 供应商 | `baostock:dividPayDate` | `cne repair payment-dates`：先走发行人公告，余下再匹配 Baostock |
 
 - 公告必须唯一证明证券代码、除权日、税前现金与到账日才写入；多份匹配、更正链、同日送转未核时保留缺口。原 PDF 与响应随修订归档，逐事件结论在 `meta/payment_date_repairs/<run_id>.json`。
 - 巨潮与交易所公告在来源策略中仅登记为显式修复证据，不参与普通日更或自动回退。ETF 分红若无可核实的完整历史，不能由单份公告推断基金总回报序列。
@@ -204,7 +204,7 @@
 | 主键 | (symbol, ex_date, action_type) |
 | 输出 | manifest 元数据 `symbols_to_rebackfill` |
 | 自愈 | 日更检查最近 10 个交易日的因子与公司行为矛盾：缺事件时补问 TDX，有事件但缺台阶时取 Baostock 独立证据并调用统一修复。历史矛盾始终为非阻断提示，未仲裁或来源不可用也不阻断日更。基金现金分配与份额折算分开处理。 |
-| **已知缺口** | 已退市标的的历史除权除息仍可能缺失。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个默认源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整历史。现在可用显式 `cne backfill corporate_actions --baostock-repair` 对已退市 SH/SZ 标的补抓 Baostock 的分红、送股、转股事件，并用 `--ths-repair` 对已退市 BJ 标的补抓同花顺历史分红页；对同花顺旧码页没有历史记录的迁移标的，再用 `--eastmoney-bj-repair` 按随代码库保存的北交所旧码→920xxx 映射定向查询 EastMoney。另有 `--eastmoney-date-repair --ex-dates ...`：回补主源是 TDX，东财只在日更的等值过滤下才够得到 2015-09-29 以前的行（报表本身回到 1991 年），这条按指定除权日逐日补，每个日期单独 capture scope 与 batch。四者默认都不参与日更或普通回填，所有修复行保留独立 `source` provenance。不是限流导致的默认缺口，而是各源的历史保留范围不同。`cne audit` 将未修复批次单独归为 `missing_corporate_action_delisted`（info 级），不与仍在交易标的的 `missing_corporate_action`（warning 级）混在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
+| **已知缺口** | 已退市标的的历史除权除息仍可能缺失。缺口数量随湖中退市标的、复权因子和审计窗口变化，**以最新 `meta/quality/health-latest.json` 的 `missing_corporate_action_delisted` finding 为准，不在文档固化样本数量**。**两个默认源都直接验证过**：`tdx_protocol` 的 `xdxr()` 传对市场号（market=2）后对已退市标的仍可能返回 0 条；`eastmoney` 的历史快照（`meta/source_snapshots/corporate_actions`，覆盖 2015-09-29 起）里同样可能没有记录。两源都不会对已从其在线标的列表里消失的证券稳定提供完整历史。现在可用显式 `cne repair delisted-actions --source baostock --apply` 对已退市 SH/SZ 标的补抓 Baostock 的分红、送股、转股事件，并用 `cne repair delisted-actions --source ths` 对已退市 BJ 标的补抓同花顺历史分红页。另有 `cne repair ex-dates --ex-dates ...`：回补主源是 TDX，东财只在日更的等值过滤下才够得到 2015-09-29 以前的行（报表本身回到 1991 年），这条按指定除权日逐日补，每个日期单独 capture scope 与 batch。三者默认都不参与日更或普通回填，所有修复行保留独立 `source` provenance。不是限流导致的默认缺口，而是各源的历史保留范围不同。`cne audit` 将未修复批次单独归为 `missing_corporate_action_delisted`（info 级），不与仍在交易标的的 `missing_corporate_action`（warning 级）混在一起。另有「缩股/减资/合股」等股本重组，不属于本数据集的四类分红除权事件；复权收益核对会用 `share_structure.change_reason` 做二次解释，并记为 `adjustment_explained_by_share_structure`（info），避免把已记录的股本重组误报成缺失除权 |
 
 #### adj_factors（derived）
 
@@ -278,7 +278,7 @@
 | 项 | 值 |
 |------|-------|
 | 日更源 | `eastmoney_datacenter`（datacenter 报表 `RPT_VALUEANALYSIS_DET`，按日期取全市场，含北交所，每天约 2 次请求）；datacenter 还没发布或失败时退到 eastmoney push2 clist 快照（来源记 `eastmoney`） |
-| 历史源 | baostock（`cne backfill valuation_metrics`；按标的每日 PE/PB/PS 回填至 2016；**不含北交所**，不再请求 BJ）；东财断档窗口用 `--fill-em-outage`，读 datacenter |
+| 历史源 | baostock（`cne backfill valuation_metrics`；按标的每日 PE/PB/PS 回填至 2016；**不含北交所**，不再请求 BJ）；东财断档窗口用 `cne repair valuation-outage`，读 datacenter |
 | 主键 | (symbol, trade_date) |
 | 已知限制 | baostock 历史含 pe_ttm/pb/ps_ttm；`float_mv`←close×volume/turn（收盘价口径），`total_mv`←Q4 totalShare×close（估算，按 `total_mv_basis` 标注）；日更 EM 快照覆盖最新交易日。**P/E 口径**：push2 f9 是动态市盈率，写入 `pe_dynamic`，不进入 `pe_ttm`；datacenter `PE_TTM` 与 baostock `peTTM` 一致（真 TTM）。市值字段按 `total_mv_basis` / `float_mv_basis` 区分供应商报告值与估算值 |
 

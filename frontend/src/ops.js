@@ -75,8 +75,8 @@ function dailySessionText(schedule, opId, params) {
     const date = String(params.trade_date || "").trim();
     const counts = !params.backfill && pending && ((date === "" && today === pending) || date === pending);
     parts.push(counts
-      ? tr(`这次手跑会计入定时日更 ${pending}。`, `This manual run counts as the scheduled update ${pending}.`)
-      : tr("这次手跑不会记成那次定时日更。", "This manual run is not recorded as that scheduled update."));
+      ? tr(`这次手动运行会计入定时日更 ${pending}。`, `This manual run counts as the scheduled update ${pending}.`)
+      : tr("这次手动运行不会记成定时日更。", "This manual run is not recorded as that scheduled update."));
     if (!date && schedule.today_is_session === false) {
       parts.push(tr(
         "不填日期会按今天提交。今天不是交易日，调度组会跳过，只有事件流会跑。要跑某个交易日，请填写日期。",
@@ -97,8 +97,8 @@ function deriveTargetText(opId, params) {
   if (opId !== "derive.run" || !RESAMPLED_MINUTE.has(params.name)) return "";
   const name = ds(params.name);
   return tr(
-    `${name}默认不计算，在这里运行后才写进数据湖，之后可用 SQL、HTTP 接口和 MCP 读取。某只股票某天有 1m 就用 1m，否则用 5m，resampled_from 列标明来源；上午从 09:30、下午从 13:00 对齐，开高低收只计入有成交的 K 线。停牌（整天无成交）和盘中停复牌的股票当天跳过并单独计数；有成交而 K 线中间断档的也跳过，但这次运行会记为降级。起点终点都不填：只算还没算过、或分钟线已更新的交易日；勾选全量重写：重算全部。分钟线更新后不会自动重算，需要再运行一次。完整规则见文档「15 / 30 / 60 分钟线」。`,
-    `${name} are not computed by default; running this writes them into the lake, where SQL, the HTTP API and MCP can read them. Each stock-day is built from 1m when the lake has it and from 5m otherwise, and the resampled_from column records which. Bars align to 09:30 and 13:00 and OHLC counts only traded bars. Halted stock-days and intraday suspensions are skipped and counted on their own; a traded day with a hole between bars is skipped too and marks the run degraded. With no start or end, only sessions not yet computed or whose minute bars changed are rebuilt; Full rewrite rebuilds all. Nothing reruns this when minute bars update, so run it again. See the "15 / 30 / 60-minute bars" docs page for the full rules.`,
+    `${name}默认不计算。运行后写入数据湖，resampled_from 标明由 1 分钟或 5 分钟重采样。不填起止日期时只补未计算或分钟线已更新的交易日；全量重写会重算全部。`,
+    `${name} are not computed by default. Running this writes them into the lake, and resampled_from records whether each bar came from 1-minute or 5-minute data. With no start or end, only sessions not yet computed or whose minute bars changed are rebuilt. Full rewrite rebuilds all of them.`,
   );
 }
 
@@ -226,7 +226,7 @@ function manualLimits() {
   return [
     tr(`日更只有一个交易日。要补一段日线，把范围改成一个数据集并选择 ${ds("daily_bars")}。`, `A daily update is one session. To fill a range of daily bars, choose one dataset and select ${ds("daily_bars")}.`),
     tr("交易状态这类快照漏掉当天，改一个旧日期补不回来；收尾补抓只在当天再试。", "A missed snapshot day, such as trading status, cannot be recovered by picking an old date. The catch-up only retries that day."),
-    tr("手跑一个调度组或一次回填，不会把那天记成定时日更已完成。", "Running one group or a backfill by hand does not mark that day's scheduled update done."),
+    tr("手动运行一个调度组或一次回填，不会把那天记成定时日更已完成。", "A manual group run or backfill does not mark that day's scheduled update done."),
   ];
 }
 
@@ -235,7 +235,7 @@ function commandGroups() {
     [tr("初始化", "Initialize"), ["diag.doctor", "init.start", "init.resume"]],
     [tr("日更", "Daily"), ["daily.full", "daily.group", "daily.stale", "events.run"]],
     [tr("补数", "Backfill"), ["backfill.run", "derive.run"]],
-    [tr("跑批", "Runs"), ["run.retry", "run.retry_failed_groups", "run.compact"]],
+    [tr("运行", "Runs"), ["run.retry", "run.retry_failed_groups", "run.compact"]],
     [tr("巡检", "Checks"), ["check.status", "check.verify", "check.audit", "check.sources_probe", "maint.stats_rebuild", "config.upgrade_preview"]],
   ];
 }
@@ -376,7 +376,7 @@ function dailyBlock(home, escapeHtml) {
   const closedToday = schedule.today_is_session === false && !schedule.daily_pending
     ? `<p class="ops-hint">${tr("今天不是交易日，所以没有“现在跑今天”。要重跑某一个交易日，用手动更新并填写日期。", "Today is not a trading session, so there is no run-today action. To rerun one session, use a manual update and enter the date.")}</p>`
     : "";
-  const when = schedule.daily_run_at ? ` · ${escapeHtml(schedule.daily_run_at)}` : "";
+  const when = schedule.daily_run_at ? `<span class="muted">${escapeHtml(schedule.daily_run_at)}</span>` : "";
   const pending = home.occupancy.incomplete_init;
   const initLeads = Boolean(home.occupancy.lake_empty) || Boolean(pending);
   return `<section class="surface-panel report-panel ops-workflow${initLeads ? "" : " ops-card-primary"}" id="ops-daily" data-workflow="daily">
@@ -385,7 +385,7 @@ function dailyBlock(home, escapeHtml) {
     ${actions ? `<div class="ops-actions">${actions}</div>` : ""}
     ${closedToday}
     <p class="ops-hint">${tr("要补一段日线，请用", "To fill a range of daily bars, use")} <a href="#/ops?op=backfill.run&dataset=daily_bars">${tr("回填", "Backfill")} ${ds("daily_bars")}</a>${tr("。", ".")}</p>
-    <details class="ops-fold ops-nested"><summary>${tr("定时设置", "Schedule")}${when}</summary><section class="surface-panel report-panel" id="ops-schedule">${tr("正在读取定时任务状态…", "Reading schedule status…")}</section></details>
+    <details class="ops-fold ops-nested"><summary>${tr("定时设置", "Schedule")}${when ? ` ${when}` : ""}</summary><section class="surface-panel report-panel" id="ops-schedule">${tr("正在读取定时任务状态…", "Reading schedule status…")}</section></details>
   </section>`;
 }
 
@@ -484,9 +484,9 @@ export async function renderOps(ctx) {
     : "";
   const deferredClose = emptyLake ? "</details>" : "";
   setPage(
-    `<section class="page-heading"><div class="eyebrow">${tr("数据湖控制台 / 操作", "Lake console / Operations")}</div>
-      <div class="heading-row"><div><h1>${tr("操作", "Operations")}</h1><p class="sub">${tr("打开操作即显示将执行的命令，点启动才会运行。同一时间只跑一个。", "Opening an action shows the command it will run; nothing runs until you press Start. Only one job runs at a time.")}</p>
-        <p class="ops-lake">${tr("数据目录", "Data directory")} <code>${esc(home.mode.data_root || "—")}</code></p></div>
+    `<section class="page-heading">
+      <div class="heading-row"><div><h1>${tr("操作", "Operations")}</h1>
+        <p class="meta-row"><span>${tr("数据目录", "Data directory")}</span><code>${esc(home.mode.data_root || "—")}</code></p></div>
       <span class="status-pill">${esc(modeLabel(home.mode.label))}</span></div></section>
     ${attention}
     <div id="ops-recent" hidden></div>
@@ -517,7 +517,7 @@ export async function renderOps(ctx) {
       recent.innerHTML = `<section class="surface-panel report-panel ops-recent"><div class="panel-header"><h2>${tr("最近的任务", "Recent jobs")}</h2></div><ul class="ops-jobs">${jobs
         .map((job) => {
           const when = jobStamp(job);
-          return `<li><a href="#/ops/jobs/${encodeURIComponent(job.job_id)}">${esc(pick(job, "title") || job.op)}</a><span class="muted">${esc(pick(job, "label") || job.state)}${job.scheduled ? tr(" · 定时执行", " · scheduled") : ""}${when ? ` · ${esc(when)}` : ""}</span></li>`;
+          return `<li><a href="#/ops/jobs/${encodeURIComponent(job.job_id)}">${esc(pick(job, "title") || job.op)}</a><span class="meta-row"><span>${esc(pick(job, "label") || job.state)}</span>${job.scheduled ? `<span>${tr("定时", "Scheduled")}</span>` : ""}${when ? `<span>${esc(when)}</span>` : ""}</span></li>`;
         })
         .join("")}</ul></section>`;
     }
@@ -818,14 +818,14 @@ async function renderJob(ctx, current) {
     )
     .join("");
   setPage(
-    `<section class="page-heading"><div class="eyebrow">${tr("数据湖控制台 / 操作 / 任务", "Lake console / Operations / Job")}</div>
-      <div class="heading-row"><div><h1>${esc(pick(job, "title") || job.op)}</h1><p class="sub"><span id="ops-job-state">${esc(pick(job, "label") || job.state)}</span> · <code>${esc(job.command || "")}</code></p></div>
-      <div class="action-row"><a class="button button-ghost" href="#/ops">${tr("← 返回操作", "← Back to operations")}</a>
+    `<section class="page-heading">
+      <div class="heading-row"><div><h1>${esc(pick(job, "title") || job.op)}</h1><p class="meta-row"><span id="ops-job-state">${esc(pick(job, "label") || job.state)}</span><code>${esc(job.command || "")}</code></p></div>
+      <div class="action-row"><a class="button button-ghost" href="#/ops">${tr("返回操作", "Operations")}</a>
         <button class="button button-danger" id="ops-cancel" type="button" ${job.state === "running" || job.state === "starting" ? "" : "disabled"}>${tr("取消", "Cancel")}</button></div></div></section>
     <p class="panel-note" id="ops-job-note">${esc(job.outcome?.message || "")}</p>
     <p class="panel-note" id="ops-next" ${jobNextStep(job) ? "" : "hidden"}>${jobNextStep(job)}</p>
     <div id="ops-readiness"></div>
-    ${runs ? `<section class="surface-panel report-panel"><h2>${tr("关联 run", "Related runs")}</h2><ul class="ops-jobs">${runs}</ul></section>` : `<div id="ops-runs"></div>`}
+    ${runs ? `<section class="surface-panel report-panel"><h2>${tr("关联运行", "Related runs")}</h2><ul class="ops-jobs">${runs}</ul></section>` : `<div id="ops-runs"></div>`}
     <section class="surface-panel report-panel"><div class="panel-header"><h2>${tr("进度", "Progress")}</h2><label class="ops-check"><input type="checkbox" id="ops-follow" checked> ${tr("跟随", "Follow")}</label></div>
       <pre class="ops-log" id="ops-log"></pre></section>
     <section class="surface-panel report-panel"><h2>${tr("命令输出", "Command output")}</h2><pre class="ops-log" id="ops-out"></pre></section>`,
@@ -873,7 +873,7 @@ async function renderJob(ctx, current) {
     await renderPackFinish(latest, api, home.csrf_token);
     const host = document.getElementById("ops-runs");
     if (host && latest.runs?.length) {
-      host.innerHTML = `<section class="surface-panel report-panel"><h2>${tr("关联 run", "Related runs")}</h2><ul class="ops-jobs">${latest.runs
+      host.innerHTML = `<section class="surface-panel report-panel"><h2>${tr("关联运行", "Related runs")}</h2><ul class="ops-jobs">${latest.runs
         .map((run) => `<li><a href="#/runs/${encodeURIComponent(run.run_id)}">${esc(run.job_name)}</a> ${esc(run.status)}</li>`)
         .join("")}</ul></section>`;
     }
@@ -897,7 +897,7 @@ async function renderJob(ctx, current) {
 function renderWizard(ctx, home, current) {
   const { api, setPage, esc } = ctx;
   setPage(
-    `<section class="page-heading"><div class="eyebrow">${tr("首次配置", "First-time setup")}</div><div class="heading-row"><div><h1>${tr("建立数据湖", "Create the lake")}</h1><p class="sub">${tr("选定数据目录、历史起点和研究包。初始化仍下载固定的全市场行情主干。这一步只能在本机完成。", "Choose a data directory, history start and research packs. Initialization always downloads the fixed full-market market data core. This step can only be done on this machine.")}</p></div></div></section>
+    `<section class="page-heading"><div class="heading-row"><div><h1>${tr("建立数据湖", "Create the lake")}</h1><p class="meta-row"><span>${tr("只能在本机完成。初始化包含全市场行情主干。", "This machine only. Initialization includes the full-market price spine.")}</span></p></div></div></section>
     <section class="surface-panel report-panel ops-form">
       <label>${tr("数据目录", "Data directory")}<input id="setup-root" type="text" value="${esc(home.mode.suggested_data_root || "")}"></label>
       <p class="panel-note">${tr("必须是绝对路径。缺少的目录会自动建立，已有上级目录必须可写。", "Must be an absolute path. Missing directories are created; existing parent directories must be writable.")}</p>

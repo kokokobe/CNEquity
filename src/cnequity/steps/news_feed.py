@@ -65,14 +65,21 @@ def shared_fetch(
     config: Config, trade_date: date, run_id: str
 ) -> tuple[pl.DataFrame, list[dict], bool]:
     """The run's fetch, made once; (rows, raw pages, reached *since*)."""
+    from cnequity.adapters.eastmoney import news_pause
     from cnequity.adapters.eastmoney.news_feed import fetch_news_since
 
     with _LOCK:
         cached = _CACHE.get(run_id)
         if cached is None:
+            news_pause.ensure_open(config)
             since = since_for(config, trade_date)
             pages: list[dict] = []
-            rows, reached = fetch_news_since(since, config=config, recorder=pages)
+            try:
+                rows, reached = fetch_news_since(since, config=config, recorder=pages)
+            except Exception as exc:
+                news_pause.note_outcome(config, exc)
+                raise
+            news_pause.note_outcome(config, None)
             if not reached:
                 logger.warning(
                     "fast news: the API stopped before %s; anything older was not served",

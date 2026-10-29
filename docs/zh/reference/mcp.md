@@ -22,7 +22,7 @@ cne mcp --config /abs/path/to/cnequity.toml --live
 
 默认传输是 stdio：客户端拉起进程，在管道上讲 JSON-RPC，不需要手动执行。只接远程 URL 的客户端（ChatGPT）用 `--http`，见下文[ChatGPT](#chatgpt)。
 
-**`--config` 和配置里的 `[data].root` 都要用绝对路径。** MCP 客户端从哪个目录启动进程是不确定的，而相对的 `data.root` 是相对**工作目录**解析的——于是湖解析到一个不存在的路径，每个工具都回「no parquet data」，agent 如实报告「没有数据」。这句话对那个路径是真的，对你的湖是假的。
+**`--config` 请写绝对路径。** MCP 客户端从哪个目录启动进程是不确定的，相对的 `--config` 会解析到别的位置。配置里的相对 `[data].root` 按配置文件所在目录解析，不受启动目录影响。省略 `--config` 时按统一顺序查找，用户级 `~/.config/cnequity/config.toml` 在任何目录都能找到；但写明绝对路径最不容易接错湖。
 
 `cne config create` 写出的配置本来就是绝对路径。启动时会检查 curated 下是否有 parquet，没有就直接退出并打印解析后的路径，而不是伺服一个空湖。
 

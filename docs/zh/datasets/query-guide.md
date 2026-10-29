@@ -32,7 +32,7 @@ meta = list_datasets()  # 或 list_datasets(config=cfg)
 # snapshot_only → 无诚实历史；coverage_start 为盘上分区起点
 ```
 
-配置解析顺序：`config=` → `data_root=` → `configs/cnequity.toml`
+配置解析顺序：`config=` → `data_root=` → `CNE_CONFIG` → 当前目录的 `configs/cnequity.toml` → 用户级 `~/.config/cnequity/config.toml`
 
 境内股票指数 ETF 使用单独的 `etf_profiles` 当前快照。按研究日筛掉之后的快照，
 再选每只基金当时最新的记录；只有 `eligibility_status="eligible"` 可进入该范围。
@@ -93,7 +93,7 @@ bars = load("daily_bars", start="2024-01-01", adjust="total_return", symbols=["5
 
 - 湖内 `daily_bars` 存**未复权**价
 - `adj_factors` 在 `derived/`，仅存 `hfq`（`adjust_type="hfq"`）
-- ETF/LOF 已记录的拆分和转增会在日常因子派生中校正，历史漏跳可用 `cne repair fund-factors --apply` 重建；修正来源为 `derived_fund_actions`。保留其他来源台阶，现金分红仍由总回报读取单独计入。
+- ETF/LOF 已记录的拆分和转增会在日常因子派生中校正，0.17 及更早版本留下的历史漏跳由 `cne migrate` 重建；修正来源为 `derived_fund_actions`。保留其他来源台阶，现金分红仍由总回报读取单独计入。
 - DuckDB 视图 `daily_bars_adj` / `daily_bars_hfq` / `daily_bars_qfq` 与上述语义一致；`daily_bars_total_return(start, end)` 表宏对应 `adjust="total_return"`，输出 `tr_*` 与 `adj_close`
 
 ## Universe 过滤
@@ -115,7 +115,7 @@ bars = load(
 旧的 `universe="all_a"` / `"all_a_sh_sz"` 参数仍供兼容使用；前者会发出
 `DeprecationWarning`，两者都不会自动成为严格画像。兼容过滤的基础规则：
 
-1. **instruments**：`list_date <= trade_date`，且未退市或 `delist_date > trade_date`
+1. **instruments**：`list_date <= trade_date`，且未退市或 `delist_date >= trade_date`（`delist_date` 是最后一个上市交易日）
 2. 排除 CDR（689xxx.SH）
 3. **trading_status**（仅有数据的日期）：剔除 ST/*ST 与停牌
 
@@ -135,8 +135,8 @@ bars = load(
 `all_a` 包含沪深北。北交所证券名单与简称在日更时由 BSE 行情板补齐；TDX 名单枚举与 TDX 日线协议的市场能力不能混为一谈。
 
 - BJ 日线历史优先走专用 TDX 路径（market id 2），当期 tip 可用 BSE 板快照，Sina 补未覆盖部分。显式小范围历史请求会跳过无关的全市场快照。
-- Sina 历史行可能缺 `amount`。`--tdx-amount-repair` 只在 OHLC 一致且成交量差小于一手时补成交额；旧代码等未被 TDX 服务的行仍保留缺失和 finding。
-- `--bse-tip-repair` 只对已存当期日线核对 BSE 快照并补量额，不重新请求 Sina 历史。它不能恢复过去的 BSE 快照。
+- Sina 历史行可能缺 `amount`。`cne repair bar-amounts` 只在 OHLC 一致且成交量差小于一手时补成交额；旧代码等未被 TDX 服务的行仍保留缺失和 finding。
+- `cne repair bse-tip-turnover` 只对已存当期日线核对 BSE 快照并补量额，不重新请求 Sina 历史。它不能恢复过去的 BSE 快照。
 
 这些路线补的是行情；BJ 历史 ST 仍需独立证据。完整来源与修复入口见[数据源说明](sources.md#daily_bars)。
 

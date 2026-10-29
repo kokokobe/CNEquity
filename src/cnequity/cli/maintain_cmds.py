@@ -226,7 +226,15 @@ def _published_derive(cfg, dataset: str):
                 if not dataset_has_parquet(store.current_root(name))
             ]
             if missing:
-                raise InputUnavailableError(f"{dataset}: missing input {', '.join(missing)}")
+                from cnequity.research.packs import next_command_for_dataset
+
+                remedies = ", ".join(
+                    f"`{next_command_for_dataset(name) or f'cne backfill {name}'}`"
+                    for name in missing
+                )
+                raise InputUnavailableError(
+                    f"{dataset}: missing input {', '.join(missing)}; build it first with {remedies}"
+                )
             yield outcome
             revision = _publish_derived_revision(
                 cfg,
@@ -338,7 +346,7 @@ def _published_derive(cfg, dataset: str):
     is_flag=True,
     help=(
         N_(
-            "bse_code_migration: actually rewrite partitions; adj_factor_source: write per-security source overrides and recompute factors for those securities (default: report only)."
+            "adj_factor_source: write per-security source overrides and recompute factors for those securities (default: report only)."
         )
     ),
 )
@@ -357,7 +365,10 @@ def derive(
     `derive_industry_index`); the suspension derivation for `trading_status` runs automatically after init
     and after `cne backfill daily_bars`, and `cne backfill corporate_actions` also recomputes factors for the affected securities.
     So running them here is a repair or covers an earlier window, not part of a normal day.
-    `sector_routing`, `sector_code_map` and `valuation_orphans` are run by no schedule and only by hand.
+    `sector_routing` and `sector_code_map` are run by no schedule and only by hand.
+    `industry_taxonomy` writes one stable identity per industry (`system:version:code`, e.g. `sw:2021:480101`) to meta, also by hand.
+    `industry_crosswalk` adds member-overlap evidence between Shenwan and EastMoney industries for the latest day both have a full
+    snapshot (or the latest on or before `--end`); nothing is merged.
     `adj_factor_source` arbitrates conflicts between factors and corporate actions with Baostock; securities
     where Sina is shown wrong and Baostock agrees with the other events switch their whole factor to Baostock with `--apply`.
     `futures_continuous` and `option_greeks` update daily in the `derivatives` group.
@@ -456,25 +467,35 @@ def derive(
     elif name == "sector_routing":
         from cnequity.derive.sector_routing import derive_sector_routing
 
-        summary = derive_sector_routing(cfg)
+        try:
+            summary = derive_sector_routing(cfg)
+        except RuntimeError as exc:  # missing input or source: the message says what to do
+            raise click.ClickException(str(exc)) from exc
         click.echo(json.dumps(summary, indent=2, default=str))
     elif name == "sector_code_map":
         from cnequity.derive.sector_code_map import derive_sector_code_map
 
-        summary = derive_sector_code_map(cfg)
+        try:
+            summary = derive_sector_code_map(cfg)
+        except RuntimeError as exc:  # missing input or source: the message says what to do
+            raise click.ClickException(str(exc)) from exc
         click.echo(json.dumps(summary, indent=2, default=str))
-    elif name == "valuation_orphans":
-        from cnequity.storage.repairs.valuation_orphans import purge_valuation_orphan_symbols
+    elif name == "industry_taxonomy":
+        from cnequity.derive.industry_taxonomy import derive_industry_taxonomy
 
-        summary = purge_valuation_orphan_symbols(cfg)
+        try:
+            summary = derive_industry_taxonomy(cfg)
+        except RuntimeError as exc:  # missing input: the message says what to do
+            raise click.ClickException(str(exc)) from exc
         click.echo(json.dumps(summary, indent=2, default=str))
-    elif name == "bse_code_migration":
-        from cnequity.storage.repairs.bse_code_migration import migrate_bse_legacy_codes
+    elif name == "industry_crosswalk":
+        from cnequity.derive.industry_crosswalk import derive_industry_crosswalk
 
-        summary = migrate_bse_legacy_codes(cfg, apply=apply_changes)
-        if not apply_changes:
-            summary["note"] = "report only; re-run with --apply to rewrite the partitions"
-        click.echo(json.dumps(summary, indent=2, default=str))
+        try:
+            summary = derive_industry_crosswalk(cfg, as_of=end)
+        except RuntimeError as exc:  # no same-day evidence yet: the message says what to run
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(summary, indent=2, default=str, ensure_ascii=False))
     else:
         raise click.ClickException(_("Unknown derive target: {name}").format(name=name))
 
@@ -559,7 +580,7 @@ def clean(
     "Cleanable" means: the run is in a terminal state (success/warning/degraded/failed), every batch has settled,
     and a successful compact has been recorded. Staging that did not finish or was never compacted stays for a retry;
     --force only widens the preview. Source snapshots and logs are preview-only too, with bytes_freed 0 throughout.
-    Old versions, registered experiments, and staging that merged successfully with no unfinished batches can be deleted after confirming on the serve storage page.
+    Old versions and staging that merged successfully with no unfinished batches can be deleted after confirming on the serve storage page.
     Orphaned staging, source snapshots and logs are only reported for now.
 
     """
@@ -756,7 +777,13 @@ def stats_rebuild(config_path: str, dataset_names: tuple[str, ...], if_stale: bo
         )
     )
     if result.empty:
-        click.echo(_("No parquet yet: {value}").format(value=", ".join(sorted(result.empty))))
+        # A first lake holds a few of the registered datasets; the other fifty
+        # names are noise, and `cne status --datasets` already lists them.
+        click.echo(
+            _(
+                "{value} registered datasets have no parquet yet (see `cne status --datasets`)"
+            ).format(value=len(result.empty))
+        )
 
 
 def _scan_curated_datasets(cfg) -> list[dict]:

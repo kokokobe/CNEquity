@@ -537,6 +537,55 @@ def test_malformed_frame_gets_a_parse_error_and_the_loop_continues(lake):
     assert replies[1]["id"] == 7
 
 
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+@pytest.mark.parametrize("invalid", [None, 7, True, "invalid", []])
+def test_invalid_batch_member_does_not_end_the_session(empty, transport, invalid):
+    import io
+
+    batch = [
+        invalid,
+        {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    ]
+    following = {"jsonrpc": "2.0", "id": 2, "method": "ping"}
+    if transport == "stdio":
+        stdout = io.StringIO()
+        protocol.serve_stdio(
+            empty,
+            stdin=io.StringIO(json.dumps(batch) + "\n" + json.dumps(following) + "\n"),
+            stdout=stdout,
+        )
+        replies, next_reply = map(json.loads, stdout.getvalue().splitlines())
+    else:
+        client = _http_client(empty)
+        response = client.post("/mcp", json=batch)
+        assert response.status_code == 200
+        replies = response.json()
+        next_reply = client.post("/mcp", json=following).json()
+
+    assert len(replies) == 2
+    assert replies[0]["id"] is None
+    assert replies[0]["error"]["code"] == protocol.INVALID_REQUEST
+    assert replies[1] == {"jsonrpc": "2.0", "id": 1, "result": {}}
+    assert next_reply == {"jsonrpc": "2.0", "id": 2, "result": {}}
+
+
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+def test_empty_batch_is_an_invalid_request(empty, transport):
+    import io
+
+    if transport == "stdio":
+        stdout = io.StringIO()
+        protocol.serve_stdio(empty, stdin=io.StringIO("[]\n"), stdout=stdout)
+        reply = json.loads(stdout.getvalue())
+    else:
+        response = _http_client(empty).post("/mcp", json=[])
+        assert response.status_code == 200
+        reply = response.json()
+    assert reply["id"] is None
+    assert reply["error"]["code"] == protocol.INVALID_REQUEST
+
+
 def test_process_streams_speak_utf8_under_a_gbk_console(lake, monkeypatch):
     """Chinese Windows hands the process GBK pipes with CRLF line ends; the
     client still writes and reads UTF-8 with bare LF."""

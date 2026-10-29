@@ -68,9 +68,15 @@ def load_curated_trading_status(
     end: date | None = None,
     symbols: list[str] | None = None,
     include_inferred: bool = False,
+    include_announced: bool = True,
     read_context: ReadContext | None = None,
 ) -> pl.DataFrame | None:
     """Load the available status evidence without making a network request.
+
+    With a ``start``/``end`` window, halts the issuer announced (see
+    :mod:`cnequity.domain.announced_halts`) are added as ``source="announcement"``
+    rows on keys no first-hand row speaks for; ``include_announced=False``
+    leaves them out.
 
     ``derived_bar_gap`` rows are left out unless ``include_inferred``: they
     are inferred from the very bars this evidence is used to judge, so a
@@ -117,4 +123,78 @@ def load_curated_trading_status(
         frame = frame.filter(
             pl.col("source").is_null() | (pl.col("source") != DERIVED_BAR_GAP_SOURCE)
         )
-    return dedupe_by_primary_key(frame, "trading_status")
+    frame = dedupe_by_primary_key(frame, "trading_status")
+    if include_announced and start is not None and end is not None:
+        frame = _with_announced_halts(config, frame, start, end, symbols, read_context)
+    return frame
+
+
+def _with_announced_halts(
+    config: Config,
+    status: pl.DataFrame,
+    start: date,
+    end: date,
+    symbols: list[str] | None,
+    read_context: ReadContext | None,
+) -> pl.DataFrame:
+    """Add halts the issuer announced where no first-hand row speaks for the key.
+
+    A first-hand row on the key wins either way: a halt already proves itself,
+    and a trading observation vetoes the announcement. Carried and derived rows
+    on the key are replaced, since they cannot prove the halt themselves.
+    """
+    from datetime import timedelta
+
+    from cnequity.domain.announced_halts import (
+        ANNOUNCEMENT_SOURCE,
+        LOOKBACK_DAYS,
+        announced_halt_keys,
+    )
+    from cnequity.domain.trading_status import trusted_evidence_expr
+    from cnequity.query.calendar import list_trading_dates
+    from cnequity.query.parquet_scan import collect_parquet_root
+
+    if read_context is not None and "announcement_index" not in read_context.roots:
+        # The caller pinned a read without notices; mixing in a newer one
+        # would break the consistency the pin exists for.
+        return status
+    root = read_root(config, "announcement_index", read_context)
+    if not root.exists() or not any(root.rglob("*.parquet")):
+        return status
+    try:
+        notices = collect_parquet_root(
+            root,
+            partition_col="announce_date",
+            start=start - timedelta(days=LOOKBACK_DAYS),
+            end=end + timedelta(days=LOOKBACK_DAYS),
+            symbols=symbols,
+            committed=False,
+        )
+        sessions = list_trading_dates(
+            config, start - timedelta(days=LOOKBACK_DAYS), end + timedelta(days=LOOKBACK_DAYS)
+        )
+    except (FileNotFoundError, OSError, pl.exceptions.PolarsError, ValueError) as exc:
+        logger.warning("announcement_index scan failed; announced halts unavailable: %s", exc)
+        return status
+    if not {"symbol", "announce_date", "title"}.issubset(notices.columns):
+        return status
+    keys = {(s, d) for s, d in announced_halt_keys(notices, sessions) if start <= d <= end}
+    if not keys:
+        return status
+    key_schema = {"symbol": pl.Utf8, "trade_date": pl.Date}
+    announced = pl.DataFrame(sorted(keys), schema=key_schema, orient="row")
+    if {"source", "is_trading"}.issubset(status.columns):
+        first_hand = status.filter(
+            pl.col("is_trading").is_not_null() & trusted_evidence_expr(status.schema)
+        ).select(*key_schema)
+        announced = announced.join(first_hand, on=list(key_schema), how="anti")
+    if announced.is_empty():
+        return status
+    rows = announced.with_columns(
+        pl.lit(False).alias("is_trading"),
+        pl.lit("suspended").alias("status"),
+        pl.lit(ANNOUNCEMENT_SOURCE).alias("source"),
+    )
+    rows = rows.select([c for c in rows.columns if c in status.columns or c in key_schema])
+    kept = status.join(announced, on=list(key_schema), how="anti")
+    return pl.concat([kept, rows], how="diagonal_relaxed")

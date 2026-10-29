@@ -479,11 +479,11 @@ test("the daily form says whether this run counts as the scheduled session", asy
   await renderOps(ctx);
   assert.match(ctx.node("ops-form").innerHTML, /今天 2026-10-04 不是交易日。/);
   assert.match(ctx.node("ops-form").innerHTML, /待跑的定时日更是 2026-09-30（17:30）。/);
-  assert.match(ctx.node("ops-form").innerHTML, /这次手跑不会记成那次定时日更。/);
+  assert.match(ctx.node("ops-form").innerHTML, /这次手动运行不会记成定时日更。/);
   assert.match(ctx.node("ops-form").innerHTML, /不填日期会按今天提交。/);
   globalThis.location.hash = "#/ops?op=daily.full&trade_date=2026-09-30";
   await renderOps(ctx);
-  assert.match(ctx.node("ops-form").innerHTML, /这次手跑会计入定时日更 2026-09-30。/);
+  assert.match(ctx.node("ops-form").innerHTML, /这次手动运行会计入定时日更 2026-09-30。/);
   globalThis.location.hash = "#/ops?op=daily.group";
   await renderOps(ctx);
   assert.match(ctx.node("ops-form").innerHTML, /这次不会写“定时日更已跑过”的标记。/);

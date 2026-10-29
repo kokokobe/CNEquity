@@ -35,7 +35,7 @@ exchange 简称, reachable through ``instruments.name`` and
 
 **Reading a lake that predates the split.** Old rows encode ST as
 ``status="st"``. :func:`risk_warning_expr` accepts both encodings, so queries
-are correct before and after ``scripts/migrations/migrate_trading_status_risk_warning.py``
+are correct before and after the (since removed) status/risk_warning migration
 runs; the migration only makes the old rows say it in the new column.
 """
 
@@ -259,6 +259,20 @@ def impossible_delistings(listings: pl.DataFrame) -> set[str]:
 CURRENT_SNAPSHOT_SOURCES = frozenset({"eastmoney", "eastmoney_cached", "tdx_protocol"})
 
 
+def trusted_evidence_expr(schema: Mapping[str, pl.DataType]) -> pl.Expr:
+    """Rows read first-hand for the session they are stamped on."""
+    rank = evidence_rank_expr(schema)
+    return (
+        pl.col("source").is_not_null()
+        & ~pl.col("source").is_in(NOT_FIRST_HAND_SOURCES)
+        & (
+            (rank == EVIDENCE_POINT_IN_TIME)
+            if rank is not None
+            else ~pl.col("source").is_in(CURRENT_SNAPSHOT_SOURCES)
+        )
+    )
+
+
 def independent_suspension_keys(status: pl.DataFrame) -> pl.DataFrame:
     """Session halts proved independently of missing prices or carried boards.
 
@@ -268,17 +282,7 @@ def independent_suspension_keys(status: pl.DataFrame) -> pl.DataFrame:
     keys = {"symbol": pl.Utf8, "trade_date": pl.Date}
     if status.is_empty() or not {*keys, "source", "is_trading"} <= set(status.columns):
         return pl.DataFrame(schema=keys)
-    rank = evidence_rank_expr(status.schema)
-    trusted = (
-        pl.col("source").is_not_null()
-        & ~pl.col("source").is_in(NOT_FIRST_HAND_SOURCES)
-        & (
-            (rank == EVIDENCE_POINT_IN_TIME)
-            if rank is not None
-            else ~pl.col("source").is_in(CURRENT_SNAPSHOT_SOURCES)
-        )
-    )
-    states = pl.col("is_trading").is_not_null() & trusted
+    states = pl.col("is_trading").is_not_null() & trusted_evidence_expr(status.schema)
     return (
         status.filter(states)
         .group_by(*keys)

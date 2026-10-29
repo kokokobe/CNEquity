@@ -1,5 +1,6 @@
 from datetime import date
 
+import polars as pl
 import pytest
 
 import cnequity.steps  # noqa: F401 — register steps
@@ -32,12 +33,50 @@ def test_manifest_run(config):
     assert summary["batch_counts"]["success"] == 1
 
 
-def test_daily_job_mock(config):
+def test_daily_job_mock(config, monkeypatch, caplog):
+    from cnequity.adapters.tdx_protocol import client as tdx
+
+    # TDX's mock gate covers its own data only. Beijing's current-session
+    # snapshot and adjustment factors use separate upstream adapters, so they
+    # need deterministic inputs too; a failed run is not a successful smoke test.
+    config.sources["exchange"] = False
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.instruments.fetch_bse_instruments",
+        lambda trade_date, *, config: tdx._mock_instruments().filter(pl.col("exchange") == "BJ"),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.bse.daily_quotes.fetch_daily_quotes",
+        lambda trade_date, *, symbols, config: tdx._mock_bars(
+            sorted(symbols), trade_date, trade_date
+        ),
+    )
+    monkeypatch.setattr(
+        "cnequity.derive.adj_factors.fetch_adj_factor_series",
+        lambda symbol, adjust_type, *, client: pl.DataFrame(
+            {"trade_date": [date(2010, 1, 1)], "factor": [1.0]}
+        ),
+    )
     init_data_layout(config)
     engine = JobEngine(config)
     result = engine.run_job("daily", date(2024, 6, 28))
     assert result["run_id"]
-    assert result["status"] in ("success", "degraded", "failed")
+    assert result["execution_status"] == "completed", result
+    # Mock provenance remains an explicit quality warning after successful
+    # execution, rather than being made to look like real market evidence.
+    assert result["status"] == "degraded", result
+    assert all(row["status"] != "failed" for row in result["results"])
+
+    from cnequity.query import load
+
+    symbols = {"600519.SH", "000001.SZ", "300750.SZ", "920000.BJ"}
+    bars = load("daily_bars", config=config)
+    factors = load("adj_factors", config=config)
+    assert set(bars["symbol"]) == symbols
+    assert bars.height == len(symbols)
+    assert set(factors["symbol"]) == symbols
+    assert factors.height == len(symbols)
+    assert factors["factor"].to_list() == [1.0] * len(symbols)
+    assert "outbound" not in caplog.text
 
 
 def test_daily_job_source_outage_finishes_without_fabricated_data(config, monkeypatch):

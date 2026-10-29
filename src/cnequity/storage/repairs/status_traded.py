@@ -1,4 +1,8 @@
-"""Fill missing status keys from actual prints, without claiming historical ST."""
+"""Fill missing status keys from actual prints, without claiming historical ST.
+
+ST does not apply to funds, so a fund's derived row says ``risk_warning=False``
+rather than unknown; a stock's stays null until first-hand evidence exists.
+"""
 
 from __future__ import annotations
 
@@ -43,6 +47,18 @@ def repair_status_traded(config: Config, *, start: date, end: date, apply: bool 
         evidence = traded_status_evidence(config, start=start, end=end, read_context=context)
         missing = evidence.filter(pl.col("exclusion").is_null() & ~pl.col("has_status"))
         pairs = missing.select(*KEY, "asset_class").sort(KEY).collect()
+        # Fund rows this repair wrote before funds were marked not-ST.
+        funds = (
+            evidence.filter(
+                pl.col("exclusion").is_null()
+                & pl.col("derived_traded")
+                & ~pl.col("risk_warning_known")
+                & (pl.col("asset_class") == "etf")
+            )
+            .select(*KEY, "asset_class")
+            .sort(KEY)
+            .collect()
+        )
         excluded = evidence.filter(pl.col("exclusion").is_not_null()).group_by("exclusion")
         exclusions = dict(excluded.len().sort("exclusion").collect().iter_rows())
         report = {
@@ -52,7 +68,8 @@ def repair_status_traded(config: Config, *, start: date, end: date, apply: bool 
             "rows": pairs.height,
             "symbols": pairs["symbol"].n_unique(),
             "source": DERIVED_TRADED_SOURCE,
-            "risk_warning": None,
+            "risk_warning": {"etf": False, "other": None},
+            "fund_rows_marked_not_st": funds.height,
             "by_class": dict(pairs.group_by("asset_class").len().sort("asset_class").iter_rows()),
             "by_date": {
                 str(day): count
@@ -62,13 +79,17 @@ def repair_status_traded(config: Config, *, start: date, end: date, apply: bool 
             "sample": pairs.head(20).with_columns(pl.col("trade_date").cast(pl.String)).to_dicts(),
             "input_roots": {name: str(root) for name, root in context.roots.items()},
         }
-        if not apply or pairs.is_empty():
+        if not apply or (pairs.is_empty() and funds.is_empty()):
             return report
         rows = with_provenance(
-            pairs.select(KEY).with_columns(
+            pl.concat([pairs, funds]).select(
+                *KEY,
                 pl.lit(True).alias("is_trading"),
                 pl.lit(STATUS_NORMAL).alias("status"),
-                pl.lit(None, dtype=pl.Boolean).alias("risk_warning"),
+                pl.when(pl.col("asset_class") == "etf")
+                .then(pl.lit(False))
+                .otherwise(pl.lit(None, dtype=pl.Boolean))
+                .alias("risk_warning"),
             ),
             source=DERIVED_TRADED_SOURCE,
             data_version="v1",
@@ -99,6 +120,7 @@ def repair_status_traded(config: Config, *, start: date, end: date, apply: bool 
             metadata={
                 "reason": "status_traded",
                 "rows_added": pairs.height,
+                "fund_rows_marked_not_st": funds.height,
                 "input_roots": report["input_roots"],
                 "publication_audit": publication["report_path"],
             },

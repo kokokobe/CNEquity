@@ -111,10 +111,6 @@ _SZSE_SCALE = 10_000.0
 _SZSE_PRE_CLOSE = "前收"
 
 
-class ExchangeQuotesUnavailable(RuntimeError):
-    """The publisher served nothing usable for the requested session."""
-
-
 @dataclass(frozen=True)
 class ExchangeQuotesResult:
     """Official quotes plus exactly which exchanges stand behind them.

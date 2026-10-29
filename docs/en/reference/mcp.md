@@ -22,7 +22,7 @@ cne mcp --config /abs/path/to/cnequity.toml --live
 
 The default transport is stdio: the client spawns the process and speaks JSON-RPC over the pipes, so you never run it by hand. Clients that only accept a remote URL (ChatGPT) use `--http`; see [ChatGPT](#chatgpt) below.
 
-**Both `--config` and `[data].root` in the configuration must be absolute paths.** The directory an MCP client starts the process from is unpredictable, and a relative `data.root` is resolved against the **working directory**. The lake then resolves to a path that does not exist, every tool answers "no parquet data", and the agent faithfully reports "there is no data". That statement is true for that path and false for your lake.
+**Give `--config` as an absolute path.** The directory an MCP client starts the process from is unpredictable, so a relative `--config` resolves somewhere else. A relative `[data].root` inside the configuration resolves against the config file's directory, whatever the start directory. Without `--config` the shared lookup order applies, and the per-user `~/.config/cnequity/config.toml` is found from any directory; an explicit absolute path is still the surest way to reach the right lake.
 
 Configurations written by `cne config create` already use absolute paths. At startup the server checks whether curated contains any parquet; if not, it exits immediately and prints the resolved path instead of serving an empty lake.
 

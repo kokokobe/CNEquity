@@ -4,6 +4,11 @@ Used for research series that EastMoney push2his does not cover reliably
 offshore — currently COMEX gold continuous (``GC`` → lake ``GC0.CMX``).
 
 API returns the full history each call; callers filter ``[start, end]``.
+
+Sina labels rows with the CME trade date (session ending 17:00 New York) and
+keeps updating the current session's row intraday.  A row is only emitted once
+its session has closed; the daily step re-reads the trailing
+``RECHECK_DAYS`` so a value captured before a weekend/holiday gets replaced.
 Advisory / research only — not A-share hfq, not a backtest input.
 """
 
@@ -11,8 +16,9 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date
+from datetime import date, datetime, time
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import polars as pl
@@ -32,6 +38,19 @@ _URL = (
 OFFSHORE_CONTRACTS: tuple[tuple[str, str, str, str], ...] = (("GC0.CMX", "GC", "COMEX黄金", "CMX"),)
 
 DEFAULT_BACKFILL_START = date(2020, 1, 1)
+
+# CME Globex metals close at 17:00 New York; wait for the next session open
+# (18:00) so Sina has published the final bar for the closed session.
+_SESSION_TZ = ZoneInfo("America/New_York")
+_SESSION_FINAL_AFTER = time(18, 0)
+RECHECK_DAYS = 7
+
+
+def session_is_final(trade_date: date, now: datetime | None = None) -> bool:
+    """True once the CME session labelled *trade_date* has closed."""
+    current = now or datetime.now(tz=_SESSION_TZ)
+    final_at = datetime.combine(trade_date, _SESSION_FINAL_AFTER, tzinfo=_SESSION_TZ)
+    return current >= final_at
 
 
 class SinaGlobalFuturesPayloadError(RuntimeError):
@@ -56,6 +75,7 @@ def _parse_rows(
     exchange: str,
     start: date,
     end: date,
+    now: datetime | None = None,
 ) -> list[dict]:
     rows: list[dict] = []
     for index, item in enumerate(payload):
@@ -74,6 +94,13 @@ def _parse_rows(
         except ValueError:
             continue
         if trade_date < start or trade_date > end:
+            continue
+        if not session_is_final(trade_date, now):
+            logger.info(
+                "offshore commodity_bars: skipping unfinished session %s for %s",
+                trade_date,
+                symbol,
+            )
             continue
         close = _f(item.get("close"))
         open_ = _f(item.get("open"))
@@ -129,6 +156,7 @@ def fetch_offshore_commodity_bars_range(
     client: httpx.Client | None = None,
     config=None,
     strict: bool = False,
+    now: datetime | None = None,
 ) -> pl.DataFrame:
     """Fetch offshore continuous daily OHLC for [*start*, *end*] (inclusive)."""
     if start > end:
@@ -165,6 +193,7 @@ def fetch_offshore_commodity_bars_range(
                     exchange=exchange,
                     start=start,
                     end=end,
+                    now=now,
                 )
                 rows.extend(part)
                 if not part:

@@ -25,6 +25,7 @@ from cnequity.cli import (  # noqa: F401
     quality_cmds,
     repair_cmds,
     run_cmds,
+    schedule_cmds,
     setup_cmds,
     storage_cmds,
     ths_official_cmds,

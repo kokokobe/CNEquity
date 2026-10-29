@@ -30,6 +30,8 @@ DEFAULT_DATA_VERSION = "v1"
 # `cnequity.domain.units` and docs/zh/datasets/schema.md.
 DATASET_DATA_VERSION = {
     "daily_bars": "v2",
+    # v2: industry_code is the level-3 leaf and the level columns are filled.
+    "industry_members": "v2",
 }
 
 
@@ -39,7 +41,9 @@ def data_version_for(dataset: str) -> str:
 
 # Columns a writer may leave out; validation adds them as null. Older rows and
 # sources that do not publish the value read the same way.
-OPTIONAL_COLUMNS = frozenset({"pre_close"})
+OPTIONAL_COLUMNS = frozenset(
+    {"pre_close", "l1_code", "l1_name", "l2_code", "l2_name", "l3_code", "l3_name"}
+)
 
 DAILY_BARS_SCHEMA = {
     "symbol": pl.Utf8,
@@ -642,8 +646,16 @@ INDEX_CONSTITUENTS_SCHEMA = {
 INDUSTRY_MEMBERS_SCHEMA = {
     "symbol": pl.Utf8,
     "classification_system": pl.Utf8,
+    # v2: the level-3 leaf. v1 EastMoney rows hold whichever level the source
+    # page order left last; read ``l1_*``..``l3_*`` for a fixed level.
     "industry_code": pl.Utf8,
     "industry_name": pl.Utf8,
+    "l1_code": pl.Utf8,
+    "l1_name": pl.Utf8,
+    "l2_code": pl.Utf8,
+    "l2_name": pl.Utf8,
+    "l3_code": pl.Utf8,
+    "l3_name": pl.Utf8,
     "as_of_date": pl.Date,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
@@ -1115,34 +1127,26 @@ def required_columns_for_dataset(dataset: str, schema: dict[str, pl.DataType]) -
     return list(dict.fromkeys(required))
 
 
-def _validate_bar_semantics(df: pl.DataFrame, dataset: str) -> None:
-    """Reject impossible numeric market rows before they reach Parquet."""
-    bar_datasets = {
-        "daily_bars",
-        "index_bars",
-        "minute_bars",
-        "minute_bars_5m",
-        "minute_bars_15m",
-        "minute_bars_30m",
-        "minute_bars_60m",
-        "commodity_bars",
-        "sector_bars",
-        "trade_ticks",
-    }
-    if dataset not in bar_datasets or df.is_empty():
-        return
+def market_bar_violations(dataset: str, columns: list[str]) -> pl.Expr | None:
+    """Impossible equity/commodity market rows, shared by writers and audits.
+
+    Historical Parquet can omit nullable columns, so only refer to columns
+    actually present in the frame being checked.
+    """
+    if dataset not in _CORE_BAR_REQUIRED_COLUMNS:
+        return None
 
     checks: list[pl.Expr] = []
-    price_cols = [col for col in ("open", "high", "low", "close", "price") if col in df.columns]
+    price_cols = [col for col in ("open", "high", "low", "close", "price") if col in columns]
     checks.extend(pl.col(col) <= 0 for col in price_cols)
-    if "volume" in df.columns:
+    if "volume" in columns:
         checks.append(pl.col("volume") < 0)
-    if "amount" in df.columns:
+    if "amount" in columns:
         checks.append(pl.col("amount").is_not_null() & (pl.col("amount") < 0))
-    if "pre_close" in df.columns:
+    if "pre_close" in columns:
         checks.append(pl.col("pre_close").is_not_null() & (pl.col("pre_close") <= 0))
 
-    if all(col in df.columns for col in ("open", "high", "low", "close")):
+    if all(col in columns for col in ("open", "high", "low", "close")):
         # Intraday sources emit zero-volume carried-forward placeholders for
         # suspended names. Their OHLC fields can legitimately straddle the
         # stale close, so only enforce the candle envelope on rows that carry
@@ -1150,7 +1154,7 @@ def _validate_bar_semantics(df: pl.DataFrame, dataset: str) -> None:
         # still apply to every row.
         ohlc_row = (
             pl.col("volume").is_null() | (pl.col("volume") > 0)
-            if "volume" in df.columns
+            if "volume" in columns
             else pl.lit(True)
         )
         checks.extend(
@@ -1163,9 +1167,15 @@ def _validate_bar_semantics(df: pl.DataFrame, dataset: str) -> None:
             ]
         )
 
-    if not checks:
+    return pl.any_horizontal(checks) if checks else None
+
+
+def _validate_bar_semantics(df: pl.DataFrame, dataset: str) -> None:
+    """Reject impossible numeric market rows before they reach Parquet."""
+    predicate = market_bar_violations(dataset, df.columns)
+    if predicate is None or df.is_empty():
         return
-    bad = df.filter(pl.any_horizontal(checks)).height
+    bad = df.filter(predicate).height
     if bad:
         raise SchemaValidationError(
             f"dataset '{dataset}': {bad} row(s) violate numeric market-data invariants"
@@ -1305,7 +1315,7 @@ def validate_dataframe(
         # upgraded here rather than at each of the half-dozen read paths
         # (reader, compact, repartition, derive, audit). Idempotent, so it also
         # no-ops on an already migrated lake; delete this once
-        # `scripts/migrations/migrate_trading_status_risk_warning.py` has been run
+        # the old status/risk_warning split migration has been run
         # everywhere. See domain/trading_status.py.
         from cnequity.domain.trading_status import normalize_legacy
 
@@ -1500,10 +1510,6 @@ def sanitize_dataset_rows(df: pl.DataFrame, dataset: str) -> pl.DataFrame:
             ).alias("is_trading")
         )
     return df
-
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def with_provenance(

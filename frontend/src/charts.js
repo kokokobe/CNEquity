@@ -10,7 +10,7 @@ import {
   VisualMapComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
-import { ds, dsWithCode, getLang, tr } from "./i18n.js";
+import { ds, dsWithCode, getLang, statusText, tr } from "./i18n.js";
 
 echarts.use([
   BarChart,
@@ -121,13 +121,14 @@ export function heatmap(el, data) {
   const windowEnd = 100;
   const windowStart = Math.max(0, 100 - (90 / Math.max(days.length, 1)) * 100);
 
-  el.style.height = `${Math.max(220, rows.length * 15 + 90)}px`;
+  el.style.height = `${Math.max(220, rows.length * 20 + 96)}px`;
   return mount(el, () => ({
     animation: false,
     grid: { left: compact() ? 118 : getLang() === "en" ? 210 : 168, right: compact() ? 8 : 20, top: 10, bottom: 62, containLabel: false },
     tooltip: {
       backgroundColor: t.surface,
       borderColor: t.line,
+      borderWidth: 0.5,
       textStyle: { color: t.ink, fontSize: 12 },
       formatter: (p) => {
         const row = rows[p.value[1]];
@@ -141,7 +142,7 @@ export function heatmap(el, data) {
       data: days,
       axisLine: { lineStyle: { color: t.line } },
       axisTick: { show: false },
-      axisLabel: { color: t.muted, fontSize: 10, hideOverlap: true },
+      axisLabel: { color: t.muted, fontSize: 12, hideOverlap: true },
       splitArea: { show: false },
     },
     yAxis: {
@@ -152,8 +153,8 @@ export function heatmap(el, data) {
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: compact()
-        ? { color: t.muted, fontSize: 9, width: 105, overflow: "truncate" }
-        : { color: t.muted, fontSize: 11 },
+        ? { color: t.muted, fontSize: 12, width: 105, overflow: "truncate" }
+        : { color: t.muted, fontSize: 12 },
     },
     visualMap: {
       type: "piecewise",
@@ -178,7 +179,7 @@ export function heatmap(el, data) {
         borderColor: t.line,
         fillerColor: "transparent",
         handleStyle: { color: t.muted },
-        textStyle: { color: t.muted, fontSize: 10 },
+        textStyle: { color: t.muted, fontSize: 12 },
       },
     ],
     series: [
@@ -186,7 +187,7 @@ export function heatmap(el, data) {
         type: "heatmap",
         data: points,
         // 1px of surface between cells so adjacent states never bleed together.
-        itemStyle: { borderColor: t.surface, borderWidth: 1 },
+        itemStyle: { borderColor: t.surface, borderWidth: 0.5 },
         progressive: 0,
       },
     ],
@@ -235,13 +236,14 @@ export function provenanceSeries(el, data) {
       axisPointer: { type: "shadow" },
       backgroundColor: t.surface,
       borderColor: t.line,
+      borderWidth: 0.5,
       textStyle: { color: t.ink, fontSize: 12 },
       valueFormatter: (v) => (v ? tr(`${v.toLocaleString()} 行`, `${v.toLocaleString()} rows`) : "-"),
     },
     legend: {
       data: keys.map(label),
       bottom: 0,
-      textStyle: { color: t.muted, fontSize: 11 },
+      textStyle: { color: t.muted, fontSize: 12 },
       itemWidth: 10,
       itemHeight: 10,
       icon: "roundRect",
@@ -251,14 +253,14 @@ export function provenanceSeries(el, data) {
       data: periods,
       axisLine: { lineStyle: { color: t.line } },
       axisTick: { show: false },
-      axisLabel: { color: t.muted, fontSize: 10, hideOverlap: true },
+      axisLabel: { color: t.muted, fontSize: 12, hideOverlap: true },
     },
     yAxis: {
       type: "value",
       splitLine: { lineStyle: { color: t.line } },
       axisLabel: {
         color: t.muted,
-        fontSize: 10,
+        fontSize: 12,
         formatter: (v) => (v >= 1e6 ? `${v / 1e6}M` : v >= 1e3 ? `${v / 1e3}k` : v),
       },
     },
@@ -267,8 +269,8 @@ export function provenanceSeries(el, data) {
       type: "bar",
       stack: "rows",
       color: key === OTHER_SOURCE ? t.other : t.series[i],
-      // 2px of surface between stacked segments so adjacent hues never touch.
-      itemStyle: { borderColor: t.surface, borderWidth: 1 },
+      // A hairline of the surface between stacked segments so adjacent hues never touch.
+      itemStyle: { borderColor: t.surface, borderWidth: 0.5 },
       barMaxWidth: 40,
       data: periods.map((d) => bucket.get(`${d}|${key}`) || 0),
     })),
@@ -281,7 +283,7 @@ const BATCH_COLORS = {
   success: "--cell-covered",
   running: "--series-1",
   failed: "--cell-gap",
-  stale: "--series-4",
+  stale: "--stale",
 };
 
 /**
@@ -314,7 +316,7 @@ export function runGantt(el, detail) {
         // A retried batch is not the same event as a clean one; outline it
         // rather than hiding the retry in a tooltip nobody opens.
         borderColor: b.retry_count ? css("--stale") : "transparent",
-        borderWidth: b.retry_count ? 2 : 0,
+        borderWidth: b.retry_count ? 0.5 : 0,
         // A stalled batch is still 'running' in the manifest but nothing is
         // moving; hatch it so it does not read as healthy progress.
         decal: b.stalled ? { symbol: "line", rotation: 0.8, color: css("--bg") } : undefined,
@@ -329,12 +331,13 @@ export function runGantt(el, detail) {
     tooltip: {
       backgroundColor: t.surface,
       borderColor: t.line,
+      borderWidth: 0.5,
       textStyle: { color: t.ink, fontSize: 12 },
       formatter: (p) => {
         const b = p.value[3];
         const secs = Math.round((( ms(b.finished_at) ?? now) - ms(b.started_at)) / 1000);
         const lines = [
-          `<b>${dsWithCode(b.dataset)}</b> · ${b.status}${b.stalled ? tr(" · 静默", " · silent") : ""}`,
+          `<b>${dsWithCode(b.dataset)}</b><br>${b.status}${b.stalled ? tr("<br>静默", "<br>Silent") : ""}`,
           `${secs}s${b.finished_at ? "" : tr("（进行中）", " (running)")}`,
           tr(`写入 ${(b.rows_written ?? 0).toLocaleString()} 行`, `${(b.rows_written ?? 0).toLocaleString()} rows written`),
         ];
@@ -347,7 +350,7 @@ export function runGantt(el, detail) {
     xAxis: {
       type: "time",
       axisLine: { lineStyle: { color: t.line } },
-      axisLabel: { color: t.muted, fontSize: 10 },
+      axisLabel: { color: t.muted, fontSize: 12 },
       splitLine: { lineStyle: { color: t.line } },
     },
     yAxis: {
@@ -356,8 +359,8 @@ export function runGantt(el, detail) {
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: compact()
-        ? { color: t.muted, fontSize: 9, width: 96, overflow: "truncate" }
-        : { color: t.muted, fontSize: 11 },
+        ? { color: t.muted, fontSize: 12, width: 96, overflow: "truncate" }
+        : { color: t.muted, fontSize: 12 },
     },
     series: [
       {
@@ -392,7 +395,7 @@ export function runGantt(el, detail) {
 // carried by colour alone.
 const SEVERITY = [
   ["error", "--cell-gap"],
-  ["warning", "--series-4"],
+  ["warning", "--stale"],
   ["info", "--empty"],
 ];
 
@@ -400,7 +403,7 @@ const SEVERITY = [
 export function severityTimeline(el, runs) {
   const t = tokens();
   if (!runs.length) {
-    el.innerHTML = `<p class="muted">${tr("还没有审计产物。请跑一次", "No audit output yet. Run")} <code>cne audit</code>.</p>`;
+    el.innerHTML = `<p class="muted">${tr("尚无审计记录。", "No audit output yet.")}</p>`;
     return null;
   }
   // Oldest first: a timeline that reads right-to-left is a timeline nobody reads.
@@ -412,21 +415,21 @@ export function severityTimeline(el, runs) {
     animation: false,
     grid: { left: 52, right: 16, top: 12, bottom: 48 },
     tooltip: { trigger: "axis", axisPointer: { type: "shadow" },
-      backgroundColor: t.surface, borderColor: t.line,
+      backgroundColor: t.surface, borderColor: t.line, borderWidth: 0.5,
       textStyle: { color: t.ink, fontSize: 12 } },
-    legend: { data: SEVERITY.map(([name]) => name), bottom: 0, icon: "roundRect",
-      itemWidth: 10, itemHeight: 10, textStyle: { color: t.muted, fontSize: 11 } },
+    legend: { data: SEVERITY.map(([name]) => statusText(name)), bottom: 0, icon: "rect",
+      itemWidth: 12, itemHeight: 12, textStyle: { color: t.muted, fontSize: 12 } },
     xAxis: { type: "category", data: labels,
       axisLine: { lineStyle: { color: t.line } }, axisTick: { show: false },
-      axisLabel: { color: t.muted, fontSize: 10, hideOverlap: true } },
+      axisLabel: { color: t.muted, fontSize: 12, hideOverlap: true } },
     yAxis: { type: "value", splitLine: { lineStyle: { color: t.line } },
-      axisLabel: { color: t.muted, fontSize: 10 } },
+      axisLabel: { color: t.muted, fontSize: 12 } },
     series: SEVERITY.map(([name, token]) => ({
-      name,
+      name: statusText(name),
       type: "bar",
       stack: "sev",
       color: css(token),
-      itemStyle: { borderColor: t.surface, borderWidth: 1 },
+      itemStyle: { borderColor: t.surface, borderWidth: 0.5 },
       barMaxWidth: 44,
       data: ordered.map((r) => r.by_severity[name] || 0),
     })),

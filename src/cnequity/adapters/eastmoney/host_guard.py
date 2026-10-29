@@ -54,6 +54,14 @@ class EastMoneyHostBlockedError(httpx.ConnectError):
     """An EastMoney request refused locally, before anything was sent."""
 
 
+class EastMoneyProxyUnreachableError(httpx.ConnectError, httpx.ProxyError):
+    """The configured local proxy refused the connection; EastMoney was never reached.
+
+    Still a ``ConnectError`` so every caller treats the route as dead, and a
+    ``ProxyError`` so it never counts as the host refusing this IP.
+    """
+
+
 class Push2BlockedError(EastMoneyHostBlockedError):
     """A push2 request refused locally."""
 

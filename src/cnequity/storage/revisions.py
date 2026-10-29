@@ -573,6 +573,22 @@ class RevisionStore:
         write_json_atomic(self.pointer_path(dataset), pointer, ensure_ascii=False, indent=2)
         return generation
 
+    def repair_base(self, dataset: str, *, register: bool) -> Path | None:
+        """Resolve the root a repair reads, or ``None`` when it holds no parquet.
+
+        A dataset without data registers nothing, in preview or apply: an
+        empty revision-zero baseline is a lake mutation with nothing to
+        repair. A legacy lake that has data is registered only with
+        ``register=True``; a preview reads its mutable tree as it stands.
+        """
+        current = self.current_root(dataset)
+        if current is None:
+            mutable = self._layer_root(dataset) / dataset
+            if not (mutable.is_dir() and any(mutable.rglob("*.parquet"))):
+                return None
+            current = self.ensure_current(dataset) if register else mutable
+        return current if any(current.rglob("*.parquet")) else None
+
     def materialize_current(self, dataset: str) -> Path | None:
         """Reset the mutable compatibility tree to the committed generation.
 

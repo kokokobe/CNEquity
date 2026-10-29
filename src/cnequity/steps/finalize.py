@@ -15,6 +15,7 @@ from cnequity.orchestrator.registry import register_step
 from cnequity.progress import sweep_progress
 from cnequity.storage import StagingWriter, compact_dataset
 from cnequity.storage.instruments import compact_instruments
+from cnequity.storage.observation import commit_observation
 from cnequity.storage.state import StateStore
 
 logger = logging.getLogger(__name__)
@@ -898,6 +899,7 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
         if published_dataset in fully_selected:
             published_state.commit_staged_request_days(published_dataset, run_id)
             published_state.commit_staged_units(published_dataset, run_id)
+            commit_observation(config, published_dataset, run_id)
         if resolved_keys.get(published_dataset):
             published_state.clear_outstanding_keys(
                 published_dataset, resolved_keys[published_dataset]

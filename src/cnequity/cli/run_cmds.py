@@ -28,7 +28,7 @@ from cnequity.cli._shared import (
 )
 from cnequity.cli.quality_cmds import _last_trading_day
 from cnequity.config import WaveConfig
-from cnequity.domain.market_time import shanghai_today
+from cnequity.domain.market_time import is_session_final, shanghai_today
 from cnequity.i18n import N_, _
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.orchestrator.run_lock import RunLockError
@@ -327,7 +327,8 @@ def _run_all_groups(
     worst = 0
     from cnequity.orchestrator.cadence import due_steps
 
-    schedule_date = td or _last_trading_day(cfg, shanghai_today())
+    session = _settled_session(cfg, td)
+    schedule_date = session or _last_trading_day(cfg, shanghai_today())
     selected = (
         cfg.schedule_groups.items()
         if only is None
@@ -367,7 +368,7 @@ def _run_all_groups(
         try:
             result = engine.run_job(
                 f"daily:{name}",
-                trade_date=td,
+                trade_date=session,
                 waves=[
                     WaveConfig(
                         name=f"group:{name}",
@@ -405,7 +406,7 @@ def _run_all_groups(
         try:
             audit = engine.run_job(
                 "daily:audit",
-                trade_date=td,
+                trade_date=session,
                 waves=[WaveConfig(name="audit", parallel=False, steps=["audit"])],
                 backfill=backfill,
             )
@@ -441,6 +442,33 @@ def _run_all_groups(
     click.echo(json.dumps(payload, indent=2, default=str))
     if worst:
         raise SystemExit(worst)
+
+
+def _settled_session(cfg, td: date | None) -> date | None:
+    """The session the schedule groups update when no ``--trade-date`` is given.
+
+    Today once its session is final, and before 15:05 Beijing time on a
+    trading day the previous session. A manual run at 01:00 on a Monday used
+    to target Monday itself: ``daily_bars`` refused the unfinished session with
+    a traceback, while snapshot feeds stamped Friday's numbers with Monday's
+    date. ``None`` keeps the engine's default of today, so a weekend or holiday
+    is still skipped as a non-trading day.
+    """
+    if td is not None:
+        return td
+    from cnequity.steps.common import is_trading_day
+
+    today = shanghai_today()
+    if is_session_final(today) or not is_trading_day(cfg, today):
+        return None
+    settled = _last_trading_day(cfg, today)
+    click.echo(
+        _(
+            "Today's session ({today}) is not final until 15:05 Beijing time; the schedule groups update through {settled}."
+        ).format(today=today.isoformat(), settled=settled.isoformat()),
+        err=True,
+    )
+    return settled
 
 
 def _run_stale_only(
@@ -712,6 +740,18 @@ def run_daily(
     attach_log_file(cfg, "run-daily", quiet=quiet)
     engine = JobEngine(cfg)
     td = parse_date_option(trade_date_str, "--trade-date")
+    if (
+        getattr(cfg, "lake_profile", None) in {"demo", "sample"}
+        and not (getattr(cfg, "daily_waves", None) or [])
+        and not getattr(cfg, "schedule_groups", None)
+    ):
+        # Every mode is refused, --stale-only included: judged against the
+        # whole registry it fetched market-wide snapshots into a 2-symbol lake.
+        raise click.ClickException(
+            _(
+                "{config_path} belongs to a {profile} lake, which has no daily schedule: a few symbols are not worth updating. Build a lake `cne run daily` can keep current with `cne init`, which writes the per-user config."
+            ).format(config_path=config_path, profile=cfg.lake_profile)
+        )
     if snapshots_only and not stale_only:
         raise click.ClickException(_("--snapshots-only only works with --stale-only"))
     if stale_groups is not None and not stale_only:
@@ -806,6 +846,7 @@ def run_daily(
             audit_after=True,
         )
         return
+    session = _settled_session(cfg, td)
     try:
         if group_name:
             group = cfg.schedule_groups.get(group_name)
@@ -824,7 +865,7 @@ def run_daily(
 
             steps = group.steps
             if not backfill:
-                steps = due_steps(group, td or _last_trading_day(cfg, shanghai_today()))
+                steps = due_steps(group, session or _last_trading_day(cfg, shanghai_today()))
             if not steps:
                 click.echo(
                     json.dumps(
@@ -840,7 +881,7 @@ def run_daily(
                 return
             result = engine.run_job(
                 f"daily:{group_name}",
-                trade_date=td,
+                trade_date=session,
                 waves=[
                     WaveConfig(
                         name=f"group:{group_name}",
@@ -869,7 +910,7 @@ def run_daily(
                         "{config_path} has no [[job.daily.waves]]: without schedule groups `cne run daily` runs this wave DAG, and this config defines none, so a run would fetch nothing and still report success. {remedy}"
                     ).format(config_path=config_path, remedy=remedy)
                 )
-            result = engine.run_job("daily", trade_date=td, backfill=backfill)
+            result = engine.run_job("daily", trade_date=session, backfill=backfill)
             # A skipped non-trading day ran nothing at all; listing what it did
             # not cover would put this note in every weekend cron mail.
             uncovered = (
@@ -990,6 +1031,15 @@ def _retry_single_run(engine: JobEngine, run_id: str) -> dict:
     record = engine.manifest.get_run(run_id)
     if record is None:
         raise click.ClickException(_("Unknown run_id: {run_id}").format(run_id=run_id))
+    if dict(record).get("status") == "success":
+        # Retrying re-runs the whole job and could only turn a finished run
+        # into a failed one, so say there is nothing to do.
+        click.echo(
+            _("Run {run_id} ({job_name}) already succeeded; nothing to retry.").format(
+                run_id=run_id, job_name=record["job_name"]
+            )
+        )
+        return {"run_id": run_id, "status": "success", "retried": 0}
     try:
         if record["job_name"] == "init":
             result = engine.resume_init(run_id=run_id)

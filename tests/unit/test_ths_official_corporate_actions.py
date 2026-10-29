@@ -183,7 +183,7 @@ def test_arbitration_names_the_repair_for_a_pre_floor_gap(tmp_path):
 
     assert finding["missing_recorded_action"] == 1
     assert finding["missing_recorded_action_reachable_dates"] == ["2004-06-10"]
-    assert "--eastmoney-date-repair --ex-dates 2004-06-10" in finding["remediation"]
+    assert "cne repair ex-dates --ex-dates 2004-06-10" in finding["remediation"]
     assert finding["remediation"] in finding["message"], (
         "a hint nobody prints is a hint nobody runs"
     )

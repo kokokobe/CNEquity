@@ -8,11 +8,13 @@ import pytest
 from click.testing import CliRunner
 
 from cnequity.cli.main import cli
+from cnequity.config import load_config
 from cnequity.config.bootstrap import (
     example_toml_text,
     render_example_toml,
     write_user_config,
 )
+from cnequity.config.locate import user_config_path
 
 
 def test_packaged_example_matches_repo_checkout():
@@ -86,7 +88,7 @@ def test_write_user_config_defaults_to_absolute_data_root(tmp_path, monkeypatch)
     """Bare ``cne config create`` must not leave ``./data/...`` for doctor to reject."""
     monkeypatch.chdir(tmp_path)
     out = tmp_path / "configs" / "cnequity.toml"
-    write_user_config(out, platform="linux")
+    write_user_config(out)
     try:
         import tomllib
     except ModuleNotFoundError:
@@ -100,11 +102,11 @@ def test_write_user_config_defaults_to_absolute_data_root(tmp_path, monkeypatch)
 
 def test_write_user_config_refuses_overwrite(tmp_path):
     out = tmp_path / "configs" / "cnequity.toml"
-    write_user_config(out, platform="linux")
+    write_user_config(out)
     assert out.is_file()
     with pytest.raises(FileExistsError):
-        write_user_config(out, platform="linux")
-    write_user_config(out, force=True, data_root=str(tmp_path / "data"), platform="linux")
+        write_user_config(out)
+    write_user_config(out, force=True, data_root=str(tmp_path / "data"))
     # Parse rather than substring-match: Windows paths are TOML-escaped (`\\`).
     try:
         import tomllib
@@ -157,7 +159,10 @@ def test_first_init_creates_the_default_config(tmp_path, monkeypatch):
     monkeypatch.delenv("CNE_CONFIG", raising=False)
     result = CliRunner().invoke(cli, ["init", "--layout-only"])
     assert result.exit_code == 0, result.output
-    assert (tmp_path / "configs" / "cnequity.toml").is_file()
+    # The per-user config, so the next command finds it from any directory.
+    assert user_config_path().is_file()
+    assert not (tmp_path / "configs").exists()
+    assert load_config(user_config_path()).data_root == (tmp_path / "data" / "cnequity").resolve()
     assert "已按默认值生成" in result.output
 
     again = CliRunner().invoke(cli, ["init", "--layout-only"])

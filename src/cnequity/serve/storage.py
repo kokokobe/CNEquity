@@ -12,17 +12,15 @@ import shutil
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Literal
 
 from cnequity.config import Config
 from cnequity.i18n import _, carry_language
-from cnequity.storage.lifecycle import LifecycleError, LifecycleStore, _read, digest
-from cnequity.storage.lifecycle.experiments import ExperimentRetirement
+from cnequity.storage.lifecycle import LifecycleError, LifecycleStore
 from cnequity.storage.lifecycle.purge import eligible, unfinished
 from cnequity.storage.lifecycle.staging import StagingRetirement
 
-Kind = Literal["revisions", "experiments", "staging"]
+Kind = Literal["revisions", "staging"]
 Phase = Literal["mark", "purge"]
 APPROVAL_SECONDS = 600
 
@@ -134,52 +132,10 @@ class StorageMaintenance:
                     "reasons": obj["blocked_reasons"],
                 }
             )
-        for obj in report["experiments"]:
-            oid = obj["object_id"]
-            pending = report["experiment_pending"].get(oid)
-            reasons = []
-            if obj.get("status") == "active":
-                reasons.append("active_experiment")
-            if obj.get("references"):
-                reasons.append("referenced_path")
-            if oid in report["resource_holds"]:
-                reasons.append("explicit_hold")
-            if not any(a["source_object_id"] == oid for a in report["artifacts"].values()):
-                reasons.append("archive_required")
-            if not Path(obj["path"]).is_dir():
-                reasons.append("source_missing")
-            status = (
-                "protected"
-                if reasons
-                else (
-                    "due"
-                    if pending
-                    and ExperimentRetirement._mature(
-                        obj | {"source_signature": pending["source_signature"]}, {oid: pending}
-                    )
-                    else "observing"
-                    if pending
-                    else "unmarked"
-                )
-            )
-            objects.append(
-                {
-                    "object_id": oid,
-                    "kind": "experiments",
-                    "current": False,
-                    "label": Path(obj["path"]).name,
-                    "status": status,
-                    "logical_bytes": obj.get("logical_bytes", 0),
-                    "not_before": pending.get("not_before") if pending else None,
-                    "reasons": reasons,
-                }
-            )
         objects.extend(StagingRetirement(self.config).inspect())
         events = [
             {
-                "kind": {"experiment-purges": "experiments", "staging-purges": "staging"}.get(
-                    p.parent.name, "revisions"
-                ),
+                "kind": "staging" if p.parent.name == "staging-purges" else "revisions",
                 "plan_id": p.stem,
             }
             for p in unfinished(self.store)
@@ -303,22 +259,13 @@ class StorageMaintenance:
                     plan = retirement.plan(phase=phase, selected_ids=object_ids)
             elif resume_plan_id:
                 if phase != "purge" or not any(
-                    p.stem == resume_plan_id
-                    and p.parent.name
-                    == ("experiment-purges" if kind == "experiments" else "purges")
+                    p.stem == resume_plan_id and p.parent.name == "purges"
                     for p in unfinished(self.store)
                 ):
                     raise LifecycleError(
                         _("Only the same unfinished deletion record can be reviewed again.")
                     )
-                if kind == "revisions":
-                    plan = self.store.read_plan(resume_plan_id)
-                else:
-                    plan = _read(self.store.root / "experiment-plans" / f"{resume_plan_id}.json")
-                    if digest(plan) != resume_plan_id or plan.get("meta_root") != str(
-                        self.store.meta
-                    ):
-                        raise LifecycleError(_("The experiment cleanup plan has changed."))
+                plan = self.store.read_plan(resume_plan_id)
                 if plan["phase"] != "purge":
                     raise LifecycleError(_("Invalid restore plan."))
                 plan = {**plan, "plan_id": resume_plan_id}
@@ -336,19 +283,9 @@ class StorageMaintenance:
                     for oid in object_ids
                 ):
                     raise LifecycleError(_("Invalid version number."))
-                plan = (
-                    self.store.plan(phase="purge", selected_ids=object_ids)
-                    if kind == "revisions"
-                    else ExperimentRetirement(self.store).plan(
-                        phase="purge", selected_ids=object_ids
-                    )
-                )
+                plan = self.store.plan(phase="purge", selected_ids=object_ids)
             else:
-                plan = (
-                    self.store.plan(phase=phase)
-                    if kind == "revisions"
-                    else ExperimentRetirement(self.store).plan(phase=phase)
-                )
+                plan = self.store.plan(phase=phase)
             if kind == "revisions":
                 selected = set(plan["purge_ids"] if phase == "purge" else plan["candidate_ids"])
                 objects = [o for o in plan["objects"] if o["object_id"] in selected]
@@ -364,9 +301,7 @@ class StorageMaintenance:
                             dataset=o["dataset"], revision=o["revision"]
                         )
                         if kind == "revisions"
-                        else o["label"]
-                        if kind == "staging"
-                        else Path(o["path"]).name,
+                        else o["label"],
                         "logical_bytes": o["logical_bytes"],
                     }
                     for o in objects
@@ -399,9 +334,7 @@ class StorageMaintenance:
                 raise LifecycleError(_("Nothing to execute this time."))
             if review["phase"] == "purge" and not maintenance:
                 raise LifecycleError(
-                    _(
-                        "First confirm that external queries, services, schedules and experiment writes have stopped."
-                    )
+                    _("First confirm that external queries, services and schedules have stopped.")
                 )
             if review["phase"] == "purge":
                 from cnequity.serve.ops.records import purge_blocked_reason
@@ -425,12 +358,8 @@ class StorageMaintenance:
                         if review["phase"] == "purge"
                         else self.store.mark(plan_id)
                     )
-                elif review["kind"] == "staging":
-                    result = StagingRetirement(self.config).apply(plan_id, maintenance=maintenance)
                 else:
-                    result = ExperimentRetirement(self.store).apply(
-                        plan_id, maintenance=maintenance, manifest=self.config.manifest_path
-                    )
+                    result = StagingRetirement(self.config).apply(plan_id, maintenance=maintenance)
                 return {"status": "complete", "result": result}
 
             try:

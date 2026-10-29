@@ -75,7 +75,7 @@ Long tasks (baostock backfill) are kept alive by a **batch heartbeat** and are n
 | Data is still in staging | `ls staging/*/run_id=*` | `cne run compact` publishes all finished but unpublished runs, or use `cne run retry`; **compact first, then** `cne run clean` (no `--force`, otherwise after demotion the data can only be refetched) |
 | Group run was not compacted | Do the group's steps include `compact`? | Fix the configuration and rerun the group |
 | compact was skipped by a gate | Check failed batches in `cne status` | `cne run retry --run-id <id>` |
-| Wrong path | `config.data_root` | Check `configs/cnequity.toml` |
+| Wrong path | `config.data_root` | `cne config path` shows the config in effect and its data root |
 | Initialization is still running, and `load("daily_bars")` without `symbols` is empty | An unpublished full-market scan is not treated as published data | Specify symbols that are already sealed, e.g. `load("daily_bars", symbols=["600519.SH"])`; adjustment factors require `adj_factors` to be published |
 
 ## Symptom: daily_bars "interior symbol×session key(s) remain absent; refusing to checkpoint"
@@ -162,22 +162,22 @@ A proxy is network configuration, not a way to lift a ban. Do not rotate egress 
 - **Observation**: log lines `THS sweep: BKxxxx (板块名) failed: ...` (板块名 = sector name); a high `failed_sectors` count.
 - **Cause**: **this is a THS source, not EastMoney** — `[sources.eastmoney] proxy` has no effect on it.
   `d.10jqka.com.cn` rate-limits or even bans dense requests.
-- **Fix**: after the cooldown, raise `[sources.ths] min_interval_seconds` (default 1.0, not a guaranteed safe threshold), then `cne backfill sector_bars --retry-failed`;
-  after switching sources for the full set, use `--force`. Checkpoint: `meta/state/sector_bars_backfill.json`.
+- **Fix**: after the cooldown, raise `[sources.ths] min_interval_seconds` (default 1.0, not a guaranteed safe threshold), then `cne backfill sector_bars`;
+  it resumes from the checkpoint by default; after switching sources, use `--refetch` for a full refetch. Checkpoint: `meta/state/sector_bars_backfill.json`.
   When the failure rate exceeds 50% the step status is `warning`, and sectors that succeeded are still written.
 
 ### Deploying on another machine
 
 First set up an independent environment and personal configuration following the installation guide, then confirm availability on a small scale with `sources probe --only <key>`. An HTTP proxy may not carry Baostock/TDX TCP protocols; do not guess whether a source is available based on geography.
 
-When you need historical backfill, use `cne backfill sector_bars --retry-failed` or `cne backfill trading_status --symbols <code>` directly; this keeps the existing checkpoint and does not automatically force a refetch of the whole lake. Move data with the reviewed snapshot workflow; do not copy the whole working directory, with its personal credentials, logs and data, as an installation package.
+When you need historical backfill, use `cne backfill sector_bars` or `cne backfill trading_status --symbols <code>` directly; this keeps the existing checkpoint and does not automatically force a refetch of the whole lake. Move data with the reviewed snapshot workflow; do not copy the whole working directory, with its personal credentials, logs and data, as an installation package.
 
 ## Symptom: audit --full UNHEALTHY
 
 | Finding type | Meaning | Fix |
 |--------------|------|------|
 | `pk_unique` | Duplicate PK; `--full` checks the full history | Check the most recent compact; if necessary, backfill and rerun that partition |
-| `mixed_partition_granularity` | Fine-grained partitions still sit on disk on top of year/month partitions, duplicating the same PK across granularities | Prefer `python scripts/migrations/repartition.py <dataset>` (or `--all`) to rewrite atomically according to `DatasetSpec`; only if the tool cannot run, move the fine-grained directories to `_quarantine/`. Historical derivation of `trading_status` must go through `partition_for` (monthly partitions); do not write daily directories again |
+| `mixed_partition_granularity` | Fine-grained partitions still sit on disk on top of year/month partitions, duplicating the same PK across granularities | Prefer `cne repair repartition <dataset> --apply` (or `--all`) to rewrite atomically according to `DatasetSpec`; only if the tool cannot run, move the fine-grained directories to `_quarantine/`. Historical derivation of `trading_status` must go through `partition_for` (monthly partitions); do not write daily directories again |
 | `mock_source` | Mock data in production | Turn off `allow_mock`; clear the mock partitions and recollect |
 | `adj_close_discontinuity` | Abnormal adjusted returns | `cne derive adj_factors`; check the Sina source |
 | `missing_corporate_action` | No corp action on an ex-date | `cne backfill corporate_actions` |
@@ -224,7 +224,7 @@ The scheduler scripts and the operations page share a different lock, whose dire
 ## Symptom: low disk space / staging bloat
 
 1. `cne run compact`: automatically finds and publishes all finished runs that have staging data and have not been successfully compacted
-2. `cne run clean` to view candidates; it now only previews and no longer deletes. Confirm historical versions and registered experiments on the storage operations page in serve; staging is report-only for now
+2. `cne run clean` to view candidates; it now only previews and no longer deletes. Confirm historical versions on the storage operations page in serve; staging is report-only for now
 3. Incomplete / uncompacted failed runs are kept by default for `cne run retry`; use `--force` only when you have confirmed they can be discarded
 4. Compress or archive old `meta/source_snapshots/` (it grows over time)
 5. Do not delete curated data; recollect with backfill rather than deleting parts of it

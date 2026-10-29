@@ -180,14 +180,37 @@ def snapshot_trading_status_exchange(
     sh_sz = served("exchange_boards", symbols)
     if not sh_sz or not config.sources.get("exchange", True):
         return 0
-    from cnequity.adapters.exchange.trading_status import fetch_trading_status_exchange
+    from cnequity.adapters.exchange.trading_status import (
+        fetch_fund_trading_status_exchange,
+        fetch_trading_status_exchange,
+    )
+    from cnequity.domain.symbols import is_etf_symbol, parse_symbol
 
     # ``prefetched`` is a whole-board reading the caller already made for this
     # session (see steps/reference.py); asking the exchanges twice is waste.
     result = prefetched or fetch_trading_status_exchange(sh_sz, trade_date, config=config)
-    if result.is_empty:
+    frames = [] if result.is_empty else [result.rows]
+    # The equity boards carry no ETF or LOF. The fund boards record only funds
+    # that traded; an untraded fund stays absent rather than suspended. Their
+    # payload is cached per session, so an outage day's fallback reuses it.
+    funds = [
+        symbol
+        for symbol in sh_sz
+        if is_etf_symbol(parse_symbol(symbol).code, parse_symbol(symbol).exchange)
+    ]
+    if funds:
+        try:
+            fund_result = fetch_fund_trading_status_exchange(funds, trade_date, config=config)
+        except Exception as exc:  # noqa: BLE001 — the stock reading stands on its own
+            logger.warning("trading_status: fund board snapshot unavailable: %s", exc)
+        else:
+            if not fund_result.is_empty:
+                frames.append(fund_result.rows)
+    if not frames:
         return 0
-    rows = result.rows.filter(pl.col("symbol").is_in(sorted(set(sh_sz))))
+    rows = pl.concat(frames, how="diagonal_relaxed").filter(
+        pl.col("symbol").is_in(sorted(set(sh_sz)))
+    )
     if rows.is_empty():
         return 0
     frame = with_provenance(rows, source="exchange", data_version="v1")

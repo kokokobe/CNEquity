@@ -27,7 +27,7 @@ test("choosing a minute resample explains that it is opt-in and how it builds", 
   const html = mount(t, "name=minute_bars_15m");
   assert.match(html, /默认不计算/);
   assert.match(html, /resampled_from/);
-  assert.match(html, /15 分钟线 · minute_bars_15m/);
+  assert.match(html, /15 分钟线（minute_bars_15m）/);
 });
 
 test("other derive targets keep the form free of the minute note", (t) => {

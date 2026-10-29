@@ -38,7 +38,7 @@ def resolved_bj_session_dates(config, payload: dict, *, read_context=None) -> se
     if not days:
         return set()
     context = read_context or ReadContext.capture(
-        config, ("instruments", "daily_bars", "trading_status"), {}
+        config, ("instruments", "daily_bars", "trading_status", "announcement_index"), {}
     )
     instruments = load_curated_instruments(config, context)
     if instruments is None or not {"symbol", "list_date", "delist_date"} <= set(

@@ -102,6 +102,17 @@ def test_rejects_other_sessions_and_malformed_payload(tmp_path):
         fetch_daily_quotes(date(2026, 8, 21), client=broken, config=cfg)
 
 
+@pytest.mark.parametrize("volume", [2**53 + 1, 2**63 - 1])
+def test_quote_keeps_exact_int64_volume_from_source_text(tmp_path, volume):
+    row = {**_row(), "hqcjsl": str(volume)}
+    client = _Client({0: _jsonp([row], total=1)})
+    cfg = Config(data_root=tmp_path / "data", source_intervals={"bse": 0.0})
+
+    out = fetch_daily_quotes(date(2026, 8, 21), client=client, config=cfg)
+
+    assert out["volume"].to_list() == [volume]
+
+
 def test_retries_a_same_endpoint_waf_redirect(tmp_path):
     from cnequity.domain.rate_limit import _read_json
 

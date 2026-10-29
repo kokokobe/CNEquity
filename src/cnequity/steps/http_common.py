@@ -296,7 +296,15 @@ def _validate_raw_archive_evidence(
             for value in df.get_column("source").drop_nulls().unique().to_list()
             if str(value).strip()
         }
-        if observed_sources and observed_sources != {str(source)}:
+        # A dataset may derive weaker-labelled rows from the same exact capture
+        # (see ``DatasetSpec.reconstructed_sources``); those keep their label.
+        spec = DATASETS.get(dataset)
+        allowed_sources = {str(source)} | {
+            label
+            for captured, scope_prefix, label in (spec.reconstructed_sources if spec else ())
+            if captured == str(source) and evidence.request_scope.startswith(scope_prefix)
+        }
+        if observed_sources - allowed_sources:
             raise RawArchiveError(
                 f"{dataset}: normalized rows contain source(s) {sorted(observed_sources)!r}, "
                 f"not the archived source {source!r}"

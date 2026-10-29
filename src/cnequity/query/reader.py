@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -265,15 +266,23 @@ def resolve_config(
         return config
     if data_root is not None:
         return Config(data_root=Path(data_root).expanduser().resolve())
-    path = Path("configs/cnequity.toml")
-    if path.exists():
+    # The same lookup as the CLI, so `load()` in a notebook opened from any
+    # directory reads the lake `cne` commands update.
+    from cnequity.config.locate import PROJECT_CONFIG, find_config, user_config_path
+
+    env = os.environ.get("CNE_CONFIG")
+    if env:
+        return load_config(Path(env).expanduser())
+    path = find_config()
+    if path is not None:
         return load_config(path)
     raise ReaderError(
-        "No config found: pass config= or data_root=, or create configs/cnequity.toml"
+        "No config found: pass config= or data_root=, set CNE_CONFIG, or create "
+        f"{PROJECT_CONFIG.as_posix()} or {user_config_path()} (`cne init` writes the latter)"
     )
 
 
-def _missing_dataset_message(dataset: str, root, data_root) -> str:
+def _missing_dataset_message(dataset: str, root, config) -> str:
     """Say what is absent and what fills it.
 
     The path alone answers "is it there" and nothing else, which is the wrong
@@ -283,11 +292,16 @@ def _missing_dataset_message(dataset: str, root, data_root) -> str:
     """
     from cnequity.research.packs import next_command_for_dataset
 
-    remedy = next_command_for_dataset(dataset) or (
+    direct = (
         f"cne derive {dataset}" if dataset in DERIVE_COMMAND_DATASETS else f"cne backfill {dataset}"
     )
+    # A demo or sample lake is never grown by `cne init` or a pack's daily
+    # run (both refuse it, or would build a whole market); only the direct
+    # command fills the one dataset that is missing.
+    demo = getattr(config, "lake_profile", None) in {"demo", "sample"}
+    remedy = direct if demo else (next_command_for_dataset(dataset) or direct)
     return (
-        f"no parquet data for dataset {dataset!r} under {root} (data_root={data_root}); "
+        f"no parquet data for dataset {dataset!r} under {root} (data_root={config.data_root}); "
         f"build it with `{remedy}`"
     )
 
@@ -509,7 +523,7 @@ def _read_dataset(
         committed=read_context is None,
     )
     if not published and not _preview_can_answer(dataset, symbols, revision, read_context):
-        raise ReaderError(_missing_dataset_message(dataset, root, config.data_root))
+        raise ReaderError(_missing_dataset_message(dataset, root, config))
 
     partition_col = DATE_COLUMNS.get(dataset) or partition_col_for_dataset(dataset)
     df = pl.DataFrame()
@@ -527,7 +541,7 @@ def _read_dataset(
                 committed=read_context is None,
             )
         except FileNotFoundError as exc:
-            raise ReaderError(_missing_dataset_message(dataset, root, config.data_root)) from exc
+            raise ReaderError(_missing_dataset_message(dataset, root, config)) from exc
     df = _with_daily_bar_preview(
         config,
         df,
@@ -539,7 +553,7 @@ def _read_dataset(
         read_context=read_context,
     )
     if df.is_empty() and not published:
-        raise ReaderError(_missing_dataset_message(dataset, root, config.data_root))
+        raise ReaderError(_missing_dataset_message(dataset, root, config))
     if not include_otc and dataset in OTC_SCOPED_DATASETS and not df.is_empty():
         df = _drop_otc_quotes(df, config, read_context, DATE_COLUMNS.get(dataset, "trade_date"))
     # Apply semantic scope before strict schema validation.  Live snapshots
@@ -744,6 +758,129 @@ def _with_distribution_multiplier(
     return with_steps.sort("_row").drop("_row", "_prev_close", "_cash", "_step", "_multiplier")
 
 
+# A restructuring suspension can run for months. The last published hfq factor
+# still applies to the zero-volume placeholder bars the vendor keeps writing;
+# looking back this far covers that without scanning the whole factor history
+# on every adjusted load.
+_SUSPENDED_FACTOR_LOOKBACK_DAYS = 400
+
+_FACTOR_SCHEMA = {"symbol": pl.Utf8, "trade_date": pl.Date, "factor": pl.Float64}
+
+
+def _positive_hfq_factors(factors: pl.DataFrame) -> pl.DataFrame:
+    """Keep one finite positive stored hfq factor per symbol and session."""
+
+    if factors.is_empty():
+        return pl.DataFrame(schema=_FACTOR_SCHEMA)
+    frame = factors
+    if "adjust_type" in frame.columns:
+        frame = frame.filter(pl.col("adjust_type") == STORED_ADJUST_TYPE)
+    if not {"symbol", "trade_date", "factor"} <= set(frame.columns):
+        return pl.DataFrame(schema=_FACTOR_SCHEMA)
+    return (
+        frame.select(["symbol", "trade_date", pl.col("factor").cast(pl.Float64)])
+        .filter(
+            pl.col("factor").is_not_null() & pl.col("factor").is_finite() & (pl.col("factor") > 0)
+        )
+        .unique(subset=["symbol", "trade_date"], keep="last")
+    )
+
+
+def _forward_filled_factors(gaps: pl.DataFrame, known: pl.DataFrame) -> pl.DataFrame:
+    """The last known factor at or before each gap key; unmatched gaps are dropped.
+
+    Forward-fill within each symbol never reads a later session, so a factor
+    that changes when trading resumes stays on the resume session.
+    """
+
+    if gaps.is_empty() or known.is_empty():
+        return pl.DataFrame(schema=_FACTOR_SCHEMA)
+    on_dtype = gaps.schema["trade_date"]
+    history = (
+        pl.concat(
+            [
+                known.select(
+                    "symbol", pl.col("trade_date").cast(on_dtype), pl.col("factor"), _gap=False
+                ),
+                gaps.with_columns(pl.lit(None, dtype=pl.Float64).alias("factor"), _gap=True),
+            ],
+            how="diagonal_relaxed",
+        )
+        .sort(["symbol", "trade_date"])
+        .with_columns(pl.col("factor").forward_fill().over("symbol"))
+    )
+    return history.filter(pl.col("_gap") & pl.col("factor").is_not_null()).drop("_gap")
+
+
+def _with_carried_suspension_factors(
+    bars: pl.DataFrame,
+    factors: pl.DataFrame,
+    config: Config,
+    start: date | None,
+    *,
+    revision: RevisionRef | None,
+    read_context: ReadContext | None,
+) -> pl.DataFrame:
+    """Stored hfq factors plus the carried factor for unfactored suspended bars.
+
+    The derive carries the last factor onto every suspended session. A lake
+    derived before that was fixed can still lack rows for zero-volume
+    placeholders, and the next derive only refetches a bounded batch. Until
+    then those bars take the last published factor here, before qfq, hfq and
+    total_return diverge, so every mode prices the same row the same way. A
+    row that actually traded and still has no factor stays missing.
+    """
+
+    known = _positive_hfq_factors(factors)
+    if (
+        "volume" not in bars.columns
+        or "bar_time" in bars.columns
+        or not {"symbol", "trade_date"} <= set(bars.columns)
+    ):
+        return known
+    gaps = (
+        bars.filter(pl.col("volume").is_not_null() & (pl.col("volume") == 0))
+        .select("symbol", "trade_date")
+        .unique()
+    )
+    if gaps.is_empty():
+        return known
+    gaps = gaps.join(
+        known.select("symbol", pl.col("trade_date").cast(gaps.schema["trade_date"])),
+        on=["symbol", "trade_date"],
+        how="anti",
+    )
+    if gaps.is_empty():
+        return known
+    carried = _forward_filled_factors(gaps, known)
+    unmatched = gaps.join(carried, on=["symbol", "trade_date"], how="anti")
+    if not unmatched.is_empty() and isinstance(start, date):
+        try:
+            earlier = _read_dataset(
+                config,
+                "adj_factors",
+                start=start - timedelta(days=_SUSPENDED_FACTOR_LOOKBACK_DAYS),
+                end=start - timedelta(days=1),
+                symbols=sorted(unmatched["symbol"].unique().to_list()),
+                revision=revision,
+                read_context=read_context,
+            )
+        except ReaderError:
+            earlier = pl.DataFrame()
+        prior = _positive_hfq_factors(earlier)
+        if not prior.is_empty():
+            carried = pl.concat(
+                [carried, _forward_filled_factors(unmatched, pl.concat([prior, known]))],
+                how="diagonal_relaxed",
+            )
+    if carried.is_empty():
+        return known
+    return pl.concat(
+        [known, carried.with_columns(pl.col("trade_date").cast(known.schema["trade_date"]))],
+        how="diagonal_relaxed",
+    )
+
+
 def _apply_adjustment(
     bars: pl.DataFrame,
     config: Config,
@@ -766,6 +903,19 @@ def _apply_adjustment(
         revision=revision,
         read_context=read_context,
     )
+    if not factors.is_empty():
+        factors = factors.filter(pl.col("adjust_type") == STORED_ADJUST_TYPE)
+        if factors.is_empty():
+            raise ReaderError(
+                f"adj_factors has no {STORED_ADJUST_TYPE!r} rows; re-run derive (ADR-0004)"
+            )
+    # Historical factor diagnostics are advisory and belong to the read
+    # receipt (load_with_receipt, MCP, serve), not to every adjusted load.
+    # The window can also sit entirely inside a suspension whose last factor
+    # was published earlier, so carry before declaring the table empty.
+    factors = _with_carried_suspension_factors(
+        bars, factors, config, start, revision=revision, read_context=read_context
+    )
     if factors.is_empty():
         out = bars.with_columns(
             *[pl.col(c).alias(f"adj_{c}") for c in PRICE_COLS if c in bars.columns],
@@ -778,16 +928,6 @@ def _apply_adjustment(
         logger.warning("adj_factors missing; adj_is_exact=False for all rows")
         return out
 
-    factors = factors.filter(pl.col("adjust_type") == STORED_ADJUST_TYPE)
-    if factors.is_empty():
-        raise ReaderError(
-            f"adj_factors has no {STORED_ADJUST_TYPE!r} rows; re-run derive (ADR-0004)"
-        )
-
-    # Historical factor diagnostics are advisory and belong to the read
-    # receipt (load_with_receipt, MCP, serve), not to every adjusted load.
-    factors = factors.select(["symbol", "trade_date", "factor"])
-
     if adjust == "qfq":
         anchors = _hfq_anchor_factors(factors, bars, end)
         factors = factors.join(anchors, on="symbol", how="left")
@@ -797,7 +937,11 @@ def _apply_adjustment(
     elif adjust not in ("hfq", "total_return"):
         raise ReaderError(f"unsupported adjust type {adjust!r}")
 
-    joined = bars.join(factors, on=["symbol", "trade_date"], how="left")
+    joined = bars.join(
+        factors.with_columns(pl.col("trade_date").cast(bars.schema["trade_date"])),
+        on=["symbol", "trade_date"],
+        how="left",
+    )
     if adjust == "total_return":
         joined = _with_distribution_multiplier(
             joined, config, start, end, read_context=read_context
@@ -956,7 +1100,8 @@ def load(
         for the requested scope. Use it for research reads; the default remains
         permissive for exploratory queries.
     config, data_root:
-        Lake location; auto-detects ``configs/cnequity.toml`` when omitted.
+        Lake location; when omitted, ``CNE_CONFIG``, then ``configs/cnequity.toml``
+        under the working directory, then the per-user config.
         Raises ``ReaderError`` if config or dataset parquet files are missing.
     revision:
         Committed revision number/id for the primary dataset, or a mapping
@@ -1174,7 +1319,7 @@ def scan(
         meta_root=cfg.meta_root,
         revision=_revision_for_dataset(revision_selection, dataset),
     ):
-        raise ReaderError(_missing_dataset_message(dataset, root, cfg.data_root))
+        raise ReaderError(_missing_dataset_message(dataset, root, cfg))
     return scan_parquet_root(
         root,
         partition_col=DATE_COLUMNS.get(dataset) or partition_col_for_dataset(dataset),

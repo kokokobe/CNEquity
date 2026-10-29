@@ -243,6 +243,11 @@ _OPTION_WORDS = {
 
 def _default(param: click.Parameter, ctx: click.Context, lang: str = "zh") -> str:
     words = _OPTION_WORDS[lang]
+    # A string `show_default` is what `--help` prints in place of the value,
+    # e.g. a default that depends on another option.
+    shown = getattr(param, "show_default", None)
+    if isinstance(shown, str):
+        return shown
     value = param.get_default(ctx, call=False)
     if value.__class__.__name__ == "Sentinel":
         return "—"
@@ -303,7 +308,10 @@ EFFECTS: dict[str, tuple[str, str]] = {
     "audit": ("条件", "读取湖、输出审计；启用外部对照时访问源"),
     "backfill": ("执行时", "补历史并写暂存与发布数据；--plan 仅读配置和状态"),
     "check": ("无", "读取状态、新鲜度、审计结果与统计；统计过期时重算，--full 重跑全湖审计"),
-    "config": ("无", "create 写个人配置；upgrade 备份后补调度 step；validate/diff 仅读"),
+    "config": (
+        "无",
+        "create 写继承内置默认值的个人配置；upgrade 备份后补调度 step，--minimize 备份后改写为继承默认值；validate/diff/show/path 仅读",
+    ),
     "contract diff": ("无", "读取契约并输出差异"),
     "contract show": ("无", "读取契约；指定输出路径时写文件"),
     "contract validate": ("无", "校验契约"),
@@ -323,41 +331,49 @@ EFFECTS: dict[str, tuple[str, str]] = {
         "默认离线预览；--apply 按缺口查询 Baostock 与巨潮资讯，核验后发布新版本并保留旧版本",
     ),
     "repair layout": ("无", "默认只预览；--apply 发布新版本，保留旧版本和重复观察证据"),
-    "repair misdated-valuation": (
-        "--apply 时",
-        "默认离线预览；--apply 向东财 datacenter 取被替换交易日的估值，核验后发布新版本并保留旧版本",
-    ),
-    "repair orphan-symbols": (
-        "无",
-        "默认预览，可能登记旧湖基线版本；--apply 移除无日线证券的因子和公司行为行，发布新版本并保留旧版本",
-    ),
-    "repair stale-suspensions": (
-        "无",
-        "默认预览，可能登记旧湖基线版本；--apply 移除成交日线否定的推断停牌，发布新版本并保留旧版本",
-    ),
-    "repair status-listing-window": (
-        "无",
-        "默认预览，可能登记旧湖基线版本；--apply 删除上市日之前和没有退市记录支撑的状态行，发布新版本并保留旧版本",
-    ),
-    "repair status-outages": (
-        "无",
-        "默认预览，可能登记旧湖基线版本；--apply 按现行规则重建窗口内的东财中断缓存行，发布新版本并保留旧版本",
-    ),
     "repair status-traded": (
         "无",
         "默认只读预览；--apply 用已提交成交日线补缺失状态键，ST 保持未知，发布新版本并保留旧版本",
     ),
+    "import shfe-archive": (
+        "无",
+        "默认只读预览；--apply 校验本地上期所年度包后写入缺字段的日线行，不覆盖已有主键，保存原包证据",
+    ),
+    "migrate": (
+        "条件",
+        "默认只读预览；--apply 按顺序运行还欠的迁移，经修复门禁发布并保留旧版本，结果写入 meta/state/lake.json；fund-listing-dates 读交易所基金列表，misdated-valuation 有待替换行时读东财数据中心",
+    ),
+    "repair payment-dates": (
+        "仅 --apply 时",
+        "默认只读预览；--apply 用已审发行人公告（巨潮、北交所）与 Baostock 修复现金到账日，经回填门禁发布",
+    ),
+    "repair delisted-actions": (
+        "仅 --apply 时",
+        "默认只读预览；--apply 从 Baostock（沪深）或同花顺（北交所）补已退市证券的历史分红除权并写湖",
+    ),
+    "repair ex-dates": (
+        "仅 --apply 时",
+        "默认只读预览；--apply 按给定除权日逐日向东财请求历史除权行并写湖",
+    ),
+    "repair bar-amounts": (
+        "仅 --apply 时",
+        "默认只读预览；--apply 请求通达信核对新浪补的日线，只补成交额，不改价格与成交量",
+    ),
+    "repair bar-turnover": (
+        "仅 --apply 时",
+        "默认只读预览；--apply 请求 Baostock（--peer-review 另请求交易所历史、通达信与东财）整行替换成交额异常的沪深股票日线",
+    ),
+    "repair bse-tip-turnover": (
+        "仅 --apply 时",
+        "默认只读预览；--apply 请求北交所行情板，只补最近一个交易日的成交额",
+    ),
+    "repair valuation-outage": (
+        "仅 --apply 时",
+        "默认只读预览；--apply 请求东财数据中心估值报表补断档窗口，取到全市场才写入",
+    ),
     "repair adj-factors": (
         "仅 --refresh-sources 联网",
         "默认离线预览并保存计划；--apply 发布有证据支持的修正、保留旧版本和未解决提示，分批保存历史进度",
-    ),
-    "repair fund-factors": (
-        "无",
-        "默认只读预览；--apply 从原始来源序列补入已记录基金拆分和转增，经修复门禁发布并保留旧版本",
-    ),
-    "repair fund-listing-dates": (
-        "请求交易所当前 ETF/LOF 目录",
-        "默认预览；--apply 归档来源响应并补未知上市日期，经修复门禁发布并保留已有日期和旧版本",
     ),
     "repair stock-listing-dates": (
         "仅 --refresh-sources 联网",
@@ -383,28 +399,29 @@ EFFECTS: dict[str, tuple[str, str]] = {
         "仅 --refresh-sources 联网",
         "默认离线预览；联网归档上交所行情服务的历史 K 线，金额冲突时复用或采集东财证据；--apply 核验后修复沪深场内基金成交量，经修复门禁发布并保留旧版",
     ),
-    "repair missing-values": (
+    "repair repartition": (
         "无",
-        "默认只读预览；--apply 将估值占位零及东财、国证缺失权重改为空值，经修复门禁发布并保留旧版本",
+        "默认只读列出或预览；--apply 在湖锁下按登记粒度改写分区并整体换上",
     ),
-    "repair financial-announcements": (
-        "无",
-        "默认只读预览；--apply 追加有 LICO 原始披露日证据的财报重建版本，经修复门禁发布并保留已有版本",
-    ),
-    "repair daily-bar-coverage": (
-        "无",
-        "默认只读预览；--apply 按已提交数据结清北交所整日欠账及已证明的上市前欠账并刷新覆盖水位，保存证据收据，不改日线",
-    ),
-    "repair valuation-basis": ("无", "默认只预览；--apply 发布新版本并保留旧版本"),
     "run clean": ("无", "仅预览过期文件；显式 --reconcile-runs 可修改运行状态"),
     "run compact": ("无", "将已结束、未发布的暂存数据发布到湖"),
     "run daily": ("执行时", "增量取数并写湖；默认含全部调度组与事件流"),
     "run events": ("执行时", "事件取数并写湖"),
+    "run maintain": (
+        "执行时",
+        "日更后的维护：审计、新鲜度门禁、源探针与 SLO、运行证据核验（只读），写元数据备份并按保留期轮换旧备份，过期文件仅预览",
+    ),
     "run retry": ("执行时", "重试失败范围并写湖"),
     "serve": (
         "条件",
         "启动湖面板。回环地址可从操作页发起白名单内的取数与日更；--read-only 关闭写入口；远程取数须 --allow-remote-ops；存储清理仍须网页确认；取数开关经预览确认后写回配置并备份，不因此启动取数",
     ),
+    "schedule install": (
+        "无",
+        "确认后为当前用户注册系统定时任务（launchd/cron/任务计划），写定时设置；保留面板设置的备份与事件流；--events 按配置的 [[job.events.schedules]] 运行事件流",
+    ),
+    "schedule remove": ("无", "确认后停用定时并注销系统任务；正在运行的任务继续"),
+    "schedule status": ("无", "只读：系统定时任务状态与最近一次检查"),
     "snapshot create": ("无", "创建本地快照"),
     "snapshot delta apply": ("无", "应用本地增量包；--dry-run 仅校验"),
     "snapshot delta create": ("无", "创建本地增量包"),
@@ -422,19 +439,13 @@ EFFECTS: dict[str, tuple[str, str]] = {
     "stats rebuild": ("无", "重建本地统计"),
     "stats show": ("无", "读取本地统计；过期或明细视图需要时自动重算"),
     "status": ("无", "读取运行状态与数据集覆盖"),
-    "storage archive": ("无", "复制已登记试验、逐文件校验并登记封存工件；保留源目录"),
-    "storage artifact-verify": ("无", "读取并校验封存工件完整内容"),
-    "storage experiment-create": ("无", "创建空试验目录和独立实例身份并登记 active"),
-    "storage experiment-seal": ("无", "显式结束试验并绑定已验证归档；源内容改变后不能按旧封存清理"),
-    "storage experiment-plan": ("无", "校验引用、原目录及归档，保存冗余原位置退出计划"),
-    "storage experiment-apply": ("无", "仅原地标记试验；CLI purge 禁用，删除须在 serve 网页确认"),
-    "storage resolve": ("无", "校验旧路径对应的归档位置；不重写报告"),
     "storage apply": ("无", "复核版本计划并 mark；CLI purge 禁用，删除须在 serve 网页确认"),
     "storage explain": ("无", "读取版本保留依据"),
     "storage hold": ("无", "增加对象保护并取消待删除标记"),
     "storage import": ("无", "校验并登记引用清单；只增加保护"),
-    "storage inspect": ("无", "读取版本、保留原因与登记试验"),
+    "storage inspect": ("无", "读取版本与保留原因"),
     "storage plan": ("无", "校验保留依赖并保存版本计划；不删除数据"),
+    "storage raw-external": ("无", "登记外置原文目录；本地保留来源记录，不移动或删除文件"),
     "ths-official backfill": ("执行时", "调用凭证源并补缺"),
     "ths-official capture": ("执行时", "调用凭证源并写对照证据"),
     "ths-official repair-bars": ("执行时", "预演也取数；--apply 写修复"),

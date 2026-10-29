@@ -314,3 +314,66 @@ def test_window_checks_authoritative_contract_absent_for_entire_window(cfg, monk
         ["IF2611.CFE"],
         ["IF2611.CFE"],
     ]
+
+
+def _reference(cfg: Config, exchange: str, day: date, symbols: list[str], kind="future") -> None:
+    path = cfg.meta_root / "derivatives" / "references" / exchange
+    path.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": symbols,
+            "kind": [kind] * len(symbols),
+            "list_date": [date(2026, 1, 19)] * len(symbols),
+            "last_trade_date": [date(2026, 12, 18)] * len(symbols),
+        }
+    ).write_parquet(path / f"{day}-{kind}.parquet")
+
+
+def test_the_days_official_list_proves_the_exchange_complete(cfg):
+    _write(
+        cfg,
+        "futures_bars",
+        [
+            _bar("IF2610.CFE", date(2026, 9, 23)),
+            _bar("IF2610.CFE", date(2026, 9, 24)),
+            _bar("IF2611.CFE", date(2026, 9, 24)),
+        ],
+    )
+    _reference(cfg, "CFE", date(2026, 9, 24), ["IF2610.CFE", "IF2611.CFE"])
+
+    report = derivative_tip_scope(cfg, "futures_bars")
+
+    assert report["state"] == "complete"
+    assert (report["covered"], report["expected"]) == (2, 2)
+    assert report["unproven_exchanges"] == []
+
+
+def test_an_older_or_other_kind_list_does_not_prove_the_day(cfg):
+    _write(
+        cfg,
+        "futures_bars",
+        [_bar("IF2610.CFE", date(2026, 9, 23)), _bar("IF2610.CFE", date(2026, 9, 24))],
+    )
+    _reference(cfg, "CFE", date(2026, 9, 23), ["IF2610.CFE"])  # the day before
+    _reference(cfg, "CFE", date(2026, 9, 24), ["IO2610-C-4000.CFE"], kind="option")
+
+    report = derivative_tip_scope(cfg, "futures_bars")
+
+    assert report["state"] == "unverified"
+    assert report["unproven_exchanges"] == ["CFE"]
+
+
+def test_a_vendor_route_is_a_stated_limitation_not_a_failure(cfg):
+    cfg.futures_exchanges = ["CFE", "DCE"]
+    cfg.futures_dce_route = "sina"
+    _write(
+        cfg,
+        "futures_bars",
+        [_bar("IF2610.CFE", date(2026, 9, 23)), _bar("IF2610.CFE", date(2026, 9, 24))],
+    )
+    _reference(cfg, "CFE", date(2026, 9, 24), ["IF2610.CFE"])
+
+    report = derivative_tip_scope(cfg, "futures_bars")
+
+    assert report["state"] == "complete"
+    assert report["unverifiable_exchanges"] == ["DCE"]

@@ -297,6 +297,41 @@ def test_run_daily_run_lock_error(cfg_path, monkeypatch):
     assert "daily lock held" in result.output
 
 
+@pytest.mark.parametrize(
+    ("args", "hint"),
+    [
+        (["init", "--since", "2026-10-09"], "Run `cne init` again to resume"),
+        (["run", "daily", "--group", "core"], "run the same command again to continue"),
+        (["backfill", "daily_bars", "--start", "2026-10-01"], "run the same command again"),
+    ],
+)
+def test_ctrl_c_says_what_survived_and_how_to_continue(tmp_path, monkeypatch, args, hint):
+    """Click's bare "Aborted!" told nobody that finished batches are kept."""
+    cfg = _write_config(
+        tmp_path, extra='\n[job.daily.groups.core]\nat = "16:00"\nsteps = ["compact"]\n'
+    )
+
+    def interrupted(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(JobEngine, "run_job", interrupted)
+    monkeypatch.setattr(JobEngine, "run_init_phases", interrupted)
+    result = CliRunner().invoke(cli, [*args, "--config", cfg])
+    assert result.exit_code == 1
+    assert hint in result.output
+    assert "Aborted!" in result.output
+
+
+def test_ctrl_c_on_a_read_only_command_adds_no_resume_hint(cfg_path, monkeypatch):
+    def interrupted(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("cnequity.cli.quality_cmds.Manifest.latest_run", interrupted)
+    result = CliRunner().invoke(cli, ["status", "--config", cfg_path])
+    assert result.exit_code == 1
+    assert "Stopped." not in result.output
+
+
 @pytest.mark.usefixtures("chinese_output")
 def test_run_daily_unknown_group(cfg_path):
     result = CliRunner().invoke(cli, ["run", "daily", "--config", cfg_path, "--group", "nope"])
@@ -333,6 +368,35 @@ def test_run_daily_refuses_a_config_with_no_waves(tmp_path):
     assert result.exit_code != 0
     assert "没有 [[job.daily.waves]]" in result.output
     assert "cne config create" in result.output
+
+
+def _demo_config(tmp_path):
+    cfg = tmp_path / "demo.toml"
+    cfg.write_text(
+        f'[data]\nroot = "{path_for_toml(tmp_path / "data")}"\nprofile = "demo"\n\n'
+        "[orchestrator]\nworkers = 1\n",
+        encoding="utf-8",
+    )
+    return str(cfg)
+
+
+@pytest.mark.parametrize("extra", [[], ["--stale-only"]])
+def test_run_daily_on_a_demo_lake_explains_there_is_no_schedule(tmp_path, extra):
+    result = CliRunner().invoke(cli, ["run", "daily", "--config", _demo_config(tmp_path), *extra])
+    assert result.exit_code != 0
+    assert "demo lake" in result.output
+    assert "cne init" in result.output
+    assert "cne config create" not in result.output
+
+
+@pytest.mark.parametrize("action", ["diff", "upgrade"])
+def test_config_diff_and_upgrade_leave_a_demo_config_alone(tmp_path, action):
+    path = _demo_config(tmp_path)
+    before = open(path, encoding="utf-8").read()
+    result = CliRunner().invoke(cli, ["config", action, "--config", path])
+    assert result.exit_code == 0, result.output
+    assert "demo lake" in result.output
+    assert open(path, encoding="utf-8").read() == before
 
 
 @pytest.mark.usefixtures("chinese_output")
@@ -437,6 +501,33 @@ def test_status_datasets_all_fresh(cfg_path, monkeypatch):
     result = CliRunner().invoke(cli, ["status", "--gate", "--datasets", "--config", cfg_path])
     assert result.exit_code == 0, result.output
     assert "最后交易日：2024-06-28" in result.output
+
+
+def test_status_datasets_keeps_long_dataset_names_on_one_line(cfg_path, monkeypatch):
+    names = ["earnings_disclosure_schedule", "financial_statement_items"]
+    monkeypatch.setattr(
+        "cnequity.cli.quality_cmds._last_trading_day",
+        lambda cfg, today: date(2024, 6, 28),
+    )
+    monkeypatch.setattr(
+        "cnequity.query.reader.list_datasets",
+        lambda config=None: pl.DataFrame(
+            {
+                "dataset": names,
+                "layer": ["curated"] * 2,
+                "has_data": [False, False],
+                "watermarked": [False, False],
+                "watermark": pl.Series([None, None], dtype=pl.Date),
+                "coverage_start": pl.Series([None, None], dtype=pl.Date),
+                "coverage_end": pl.Series([None, None], dtype=pl.Date),
+            }
+        ),
+    )
+    monkeypatch.setattr("cnequity.domain.datasets.is_stale", lambda *a, **k: False)
+    result = CliRunner().invoke(cli, ["status", "--datasets", "--config", cfg_path])
+    assert result.exit_code == 0, result.output
+    for name in names:
+        assert name in result.output
 
 
 @pytest.mark.usefixtures("chinese_output")
@@ -1027,6 +1118,42 @@ def test_clean_dry_run(cfg_path, monkeypatch):
     assert payload["logical_bytes_selected"] == 120
 
 
+def test_clean_with_changed_references_refuses_without_traceback(cfg_path, tmp_path, caplog):
+    from cnequity.config import load_config
+    from cnequity.storage.lifecycle import LifecycleStore, reference_fingerprint
+
+    cfg = load_config(cfg_path)
+    evidence = tmp_path / "references"
+    evidence.mkdir()
+    roots = [{"path": str(evidence)}]
+    store = LifecycleStore(cfg.meta_root)
+    store.import_manifest(
+        {
+            "schema_version": 1,
+            "meta_root": str(store.meta),
+            "holds": {},
+            "reference_roots": roots,
+            "reference_fingerprint": reference_fingerprint(roots),
+        }
+    )
+    (evidence / "new.json").write_text("{}")
+    registry_before = store.registry_path.read_bytes()
+    staged = cfg.staging_root / "daily_bars/run_id=kept/input.parquet"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"must survive the refusal")
+
+    result = CliRunner().invoke(cli, ["run", "clean", "--config", cfg_path])
+
+    assert result.exit_code == 1
+    assert "References changed; refresh the lifecycle import before cleanup" in result.output
+    assert "Traceback" not in result.output
+    records = [record for record in caplog.records if record.name == "cnequity.cli"]
+    assert len(records) == 1
+    assert records[0].exc_info is None
+    assert staged.read_bytes() == b"must survive the refusal"
+    assert store.registry_path.read_bytes() == registry_before
+
+
 def test_stats_show_scans_curated_when_no_stats_exist(tmp_path, cfg_path):
     """The former `cne catalog`. A lake that has never run `stats rebuild` must
     still be able to answer what is in it, without a build step first."""
@@ -1133,19 +1260,15 @@ def test_query_rejects_partial_on_demand_options(cfg_path, args):
     assert "必须一起给" in result.output or "需要同时给" in result.output
 
 
-def test_query_sql(cfg_path, monkeypatch, tmp_path):
-    db = tmp_path / "lake.duckdb"
-    db.touch()
-
+def test_query_sql(cfg_path, monkeypatch):
     class FakeCon:
-        def execute(self, sql):
-            return SimpleNamespace(pl=lambda: pl.DataFrame({"n": [1]}))
+        def sql(self, sql):
+            return SimpleNamespace(to_arrow_table=lambda: pl.DataFrame({"n": [1]}).to_arrow())
 
         def close(self):
             pass
 
-    monkeypatch.setattr("cnequity.cli.consume_cmds.ensure_duckdb_views", lambda cfg: db)
-    monkeypatch.setattr("duckdb.connect", lambda *a, **k: FakeCon())
+    monkeypatch.setattr("cnequity.cli.consume_cmds.views_connection", lambda cfg: FakeCon())
     result = CliRunner().invoke(cli, ["query", "--config", cfg_path, "--sql", "SELECT 1 AS n"])
     assert result.exit_code == 0, result.output
     assert "1" in result.output
@@ -1425,13 +1548,9 @@ def test_derive_trading_status_and_orphans(cfg_path, monkeypatch):
     assert summary["run_id"] == seen["run_id"]
     assert "compact" in summary
 
-    monkeypatch.setattr(
-        "cnequity.storage.repairs.valuation_orphans.purge_valuation_orphan_symbols",
-        lambda cfg: {"purged_symbols": 2},
-    )
+    # The one-off target is gone; a valuation_metrics backfill drops orphans itself.
     result = CliRunner().invoke(cli, ["derive", "valuation_orphans", "--config", cfg_path])
-    assert result.exit_code == 0, result.output
-    assert "purged_symbols" in result.output
+    assert result.exit_code != 0
 
 
 def test_derive_trading_status_failure_is_persisted_and_exits_nonzero(cfg_path, monkeypatch):
@@ -1534,19 +1653,21 @@ def test_shfe_annual_plan_is_offline_and_requires_partial_fields(cfg_path, tmp_p
         lambda *_args, **_kwargs: pytest.fail("plan must not import"),
     )
     base = [
-        "backfill",
-        "futures_bars",
-        "--shfe-annual-archive",
+        "import",
+        "shfe-archive",
         str(archive),
-        "--archive-year",
+        "--dataset",
+        "futures_bars",
+        "--year",
         "2026",
         "--config",
         cfg_path,
     ]
-    rejected = CliRunner().invoke(cli, [*base, "--plan"])
+    # A preview by default: the plan, never the import.
+    rejected = CliRunner().invoke(cli, base)
     assert rejected.exit_code != 0
     assert "--accept-partial-fields" in rejected.output
-    planned = CliRunner().invoke(cli, [*base, "--accept-partial-fields", "--plan"])
+    planned = CliRunner().invoke(cli, [*base, "--accept-partial-fields"])
     assert planned.exit_code == 0, planned.output
     assert '"network_requests": 0' in planned.output
     naive = CliRunner().invoke(
@@ -1554,18 +1675,48 @@ def test_shfe_annual_plan_is_offline_and_requires_partial_fields(cfg_path, tmp_p
         [
             *base,
             "--accept-partial-fields",
-            "--archive-downloaded-at",
+            "--downloaded-at",
             "2026-09-27T09:00:00",
-            "--plan",
         ],
     )
     assert naive.exit_code != 0
     assert "必须带时区" in naive.output
 
 
+def test_backfill_explains_a_watermark_it_pulled_back(cfg_path, monkeypatch):
+    from cnequity.config import load_config
+    from cnequity.storage.state import StateStore
+
+    state = StateStore(load_config(cfg_path).meta_root)
+    state.set_date("margin_trading", date(2024, 3, 29))
+
+    class FakeEngine:
+        def __init__(self, cfg):
+            self.manifest = SimpleNamespace(finish_run=lambda *a, **k: None)
+
+        def run_job(self, *a, **k):
+            # An older window left a hole, so finalize pulled the watermark back.
+            state.set_date("margin_trading", date(2024, 1, 5))
+            return {"run_id": "bf", "status": "success", "rows_read": 1, "rows_written": 1}
+
+        def run_step(self, name, trade_date, run_id):
+            return {"rows_written": 1}
+
+    monkeypatch.setattr("cnequity.cli.backfill_cmds.JobEngine", FakeEngine)
+    result = CliRunner().invoke(
+        cli,
+        ["backfill", "margin_trading", "--config", cfg_path, "--start", "2024-01-01"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "2024-03-29" in result.output and "2024-01-05" in result.output
+    assert "cne backfill margin_trading --start 2024-01-06" in result.output
+
+
 def test_backfill_snapshot_dataset_reports_capability_and_fallback(cfg_path):
     result = CliRunner().invoke(cli, ["backfill", "fund_flow", "--config", cfg_path])
-    assert result.exit_code == 0, result.output
+    # A snapshot-only dataset cannot serve history: nothing usable, so the backfill fails.
+    assert result.exit_code == 1, result.output
+    assert "fetched nothing usable" in result.stderr
     payload = json.loads(result.stdout)
     assert payload["execution_status"] == "completed"
     assert payload["status"] == "degraded"
@@ -1612,7 +1763,8 @@ def test_backfill_trading_status_bj_reports_capability_limit(cfg_path, extra):
         cli,
         ["backfill", "trading_status", "--config", cfg_path, "--symbols", "920201.BJ", *extra],
     )
-    assert result.exit_code == 0, result.output
+    # A plan writes nothing by design; a run the source cannot serve fetched nothing usable.
+    assert result.exit_code == (0 if extra else 1), result.output
     payload = json.loads(result.stdout)
     if extra:
         assert payload["writes"] is False
@@ -1627,13 +1779,10 @@ def test_backfill_trading_status_bj_reports_capability_limit(cfg_path, extra):
 
 
 @pytest.mark.usefixtures("chinese_output")
-def test_backfill_sector_bars_force_and_retry_mutex(cfg_path):
-    result = CliRunner().invoke(
-        cli,
-        ["backfill", "sector_bars", "--config", cfg_path, "--retry-failed", "--force"],
-    )
+def test_backfill_refetch_is_refused_where_it_has_no_meaning(cfg_path):
+    result = CliRunner().invoke(cli, ["backfill", "daily_bars", "--config", cfg_path, "--refetch"])
     assert result.exit_code != 0
-    assert "只能用一个" in result.output
+    assert "--refetch" in result.output
 
 
 def test_backfill_success_compacts(cfg_path, monkeypatch):
@@ -2126,6 +2275,79 @@ def test_bare_run_daily_runs_every_group_then_the_event_stream(tmp_path, monkeyp
     assert payload["events"]["status"] == "success"
 
 
+def _pin_monday(monkeypatch, *, final: bool) -> date:
+    """Monday 2026-10-19 in Beijing, before or after the 15:05 settlement."""
+    monday = date(2026, 10, 19)
+    settled = (lambda _day: True) if final else (lambda day: day != monday)
+    monkeypatch.setattr("cnequity.cli.run_cmds.shanghai_today", lambda: monday)
+    monkeypatch.setattr("cnequity.cli.run_cmds.is_session_final", settled)
+    monkeypatch.setattr("cnequity.cli.quality_cmds.is_session_final", settled)
+    return monday
+
+
+def _record_trade_dates(monkeypatch) -> dict[str, object]:
+    seen: dict[str, object] = {}
+
+    def fake_run_job(self, job_name, *a, trade_date=None, **k):
+        seen[job_name] = trade_date
+        return {"run_id": f"r-{job_name}", "status": "success", "results": []}
+
+    monkeypatch.setattr(JobEngine, "run_job", fake_run_job)
+    return seen
+
+
+def test_run_daily_before_the_close_updates_through_the_last_settled_session(tmp_path, monkeypatch):
+    """At 01:00 on a Monday the groups catch up to Friday, not to Monday.
+
+    Targeting Monday made `daily_bars` refuse the unfinished session with a
+    traceback, and stamped snapshot feeds read before the open with Monday's
+    date. The event stream follows the calendar and keeps today.
+    """
+    cfg = _write_config(tmp_path, extra=_DAY_GROUPS)
+    _pin_monday(monkeypatch, final=False)
+    seen = _record_trade_dates(monkeypatch)
+    result = CliRunner().invoke(cli, ["run", "daily", "--config", cfg])
+    assert result.exit_code == 0, result.output
+    friday = date(2026, 10, 16)
+    assert seen["daily:core"] == friday
+    assert seen["daily:capital"] == friday
+    assert seen["daily:audit"] == friday
+    assert seen["events"] is None
+    assert "not final until 15:05" in result.output
+
+
+@pytest.mark.parametrize("flags", [["--group", "core"], ["--core-only"]])
+def test_single_group_runs_also_wait_for_the_settled_session(tmp_path, monkeypatch, flags):
+    cfg = _write_config(
+        tmp_path,
+        extra=_DAY_GROUPS + '\n[[job.daily.waves]]\nname = "w"\nsteps = ["compact"]\n',
+    )
+    _pin_monday(monkeypatch, final=False)
+    seen = _record_trade_dates(monkeypatch)
+    result = CliRunner().invoke(cli, ["run", "daily", "--config", cfg, *flags])
+    assert result.exit_code == 0, result.output
+    assert list(seen.values()) == [date(2026, 10, 16)]
+
+
+@pytest.mark.parametrize(
+    ("final", "flags", "expected"),
+    [
+        (True, [], None),
+        (False, ["--trade-date", "2026-10-19"], date(2026, 10, 19)),
+    ],
+)
+def test_settled_session_leaves_final_and_explicit_dates_alone(
+    tmp_path, monkeypatch, final, flags, expected
+):
+    cfg = _write_config(tmp_path, extra=_DAY_GROUPS)
+    _pin_monday(monkeypatch, final=final)
+    seen = _record_trade_dates(monkeypatch)
+    result = CliRunner().invoke(cli, ["run", "daily", "--no-events", "--config", cfg, *flags])
+    assert result.exit_code == 0, result.output
+    assert seen["daily:core"] == expected
+    assert "not final until 15:05" not in result.output
+
+
 @pytest.mark.parametrize(
     ("flags", "expected"),
     [
@@ -2516,3 +2738,140 @@ def test_every_scope_report_names_its_dataset(tmp_path):
     report = _tip_scope(cfg, catalog, "daily_bars")
     assert report["state"] == "unverified"
     assert report["dataset"] == "daily_bars"
+
+
+@pytest.mark.parametrize(
+    ("args", "needle"),
+    [
+        (["decision-data", "stock-terms"], "corporate_actions"),
+        (["derive", "industry_index"], "industry_members"),
+    ],
+)
+def test_a_missing_input_dataset_is_an_error_not_a_traceback(tmp_path, args, needle):
+    from cnequity.config import load_config
+    from cnequity.storage.layout import init_data_layout
+
+    cfg_path = _demo_config(tmp_path)
+    init_data_layout(load_config(cfg_path))
+
+    result = CliRunner().invoke(cli, [*args, "--config", cfg_path])
+
+    assert result.exit_code == 1
+    assert needle in result.output
+    assert "cne backfill" in result.output
+    assert "Traceback" not in result.output
+    assert not isinstance(result.exception, (ValueError, RuntimeError))
+
+
+def test_comma_option_joins_repeats_and_stays_none_when_absent():
+    import click
+
+    from cnequity.cli._shared import comma_option
+
+    @click.command()
+    @comma_option("--only", default=None)
+    def probe(only):
+        click.echo(repr(only))
+
+    runner = CliRunner()
+    assert runner.invoke(probe, []).output.strip() == "None"
+    assert runner.invoke(probe, ["--only", "a,b"]).output.strip() == "'a,b'"
+    assert runner.invoke(probe, ["--only", "a", "--only", "b,c"]).output.strip() == "'a,b,c'"
+
+
+@pytest.mark.parametrize("dataset", ["adj_factors", "valuation_metrics"])
+def test_backfill_symbols_on_an_unscoped_dataset_is_a_clear_error(tmp_path, dataset):
+    """`code, _, exchange = ...` shadowed gettext, so this path raised UnboundLocalError."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "backfill",
+            dataset,
+            "--symbols",
+            "600519.SH",
+            "--plan",
+            "--config",
+            _demo_config(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "does not support overriding the scope by symbol" in result.output
+    assert not isinstance(result.exception, UnboundLocalError)
+
+
+def test_backfill_futures_minute_rejects_a_bad_contract_cleanly(tmp_path):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "backfill",
+            "futures_minute_bars",
+            "--symbols",
+            "NOPE.SHF",
+            "--config",
+            _demo_config(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, UnboundLocalError)
+
+
+def test_corporate_action_gaps_without_evidence_names_the_command_to_run(tmp_path):
+    from cnequity.config import load_config
+    from cnequity.storage.layout import init_data_layout
+
+    cfg_path = _demo_config(tmp_path)
+    init_data_layout(load_config(cfg_path))
+
+    result = CliRunner().invoke(cli, ["repair", "corporate-action-gaps", "--config", cfg_path])
+
+    assert result.exit_code == 1
+    assert "cne derive adj_factor_source" in result.output
+    assert isinstance(result.exception, SystemExit)
+
+
+@pytest.mark.parametrize(
+    ("target", "needle"),
+    [("sector_code_map", "sector_bars")],
+)
+def test_derive_with_missing_input_data_is_an_error_not_a_traceback(tmp_path, target, needle):
+    from cnequity.config import load_config
+    from cnequity.storage.layout import init_data_layout
+
+    cfg_path = _demo_config(tmp_path)
+    init_data_layout(load_config(cfg_path))
+
+    result = CliRunner().invoke(cli, ["derive", target, "--config", cfg_path])
+
+    assert result.exit_code == 1
+    assert needle in result.output
+    assert isinstance(result.exception, SystemExit)
+
+
+def test_retry_of_a_succeeded_run_says_there_is_nothing_to_retry(cfg_path, monkeypatch):
+    class FakeManifest:
+        def get_run(self, run_id):
+            return {"run_id": run_id, "job_name": "daily", "status": "success"}
+
+    class FakeEngine:
+        def __init__(self, cfg):
+            self.manifest = FakeManifest()
+
+        def run_job(self, *a, **k):
+            raise AssertionError("a succeeded run must not be re-run")
+
+    monkeypatch.setattr("cnequity.cli.run_cmds.JobEngine", FakeEngine)
+    result = CliRunner().invoke(cli, ["run", "retry", "--config", cfg_path, "--run-id", "d1"])
+    assert result.exit_code == 0, result.output
+    assert "already succeeded" in result.output
+
+
+def test_a_broken_config_names_the_line_but_not_its_text(tmp_path):
+    """The position is what a person needs; the text may hold a token."""
+    path = tmp_path / "broken.toml"
+    path.write_text('[sources.tushare]\ntoken = "s3cret\n', encoding="utf-8")
+    result = CliRunner().invoke(cli, ["status", "--config", str(path)])
+    assert result.exit_code == 1
+    assert "TOMLDecodeError at line 2, column" in result.output
+    assert "s3cret" not in result.output

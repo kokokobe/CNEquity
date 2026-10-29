@@ -11,6 +11,7 @@ from pathlib import Path
 from cnequity.file_lock import (
     DEFAULT_LOCK_WAIT_SECONDS,
     LockUnavailable,
+    _held_count,
     exclusive_lock,
     is_locked,
 )
@@ -37,6 +38,64 @@ EVENTS_INGESTION_LOCK = "events_ingestion"
 # what lets a retry tell "someone else is initialising" from "my last attempt
 # died" — the two cases that used to produce the same refusal.
 INIT_JOB_LOCK = "init_job"
+
+
+# Which ingestion jobs an init may not overlap, in either direction. Init
+# builds the lake's spine — instruments, calendar, the full bar history — and
+# a daily group or event sweep started alongside it writes against a lake that
+# does not exist yet while doubling the load on the same sources. Daily and
+# event jobs still overlap each other (disjoint datasets, see above), and a
+# backfill does not hold the daily job off: a skipped day loses its snapshot
+# datasets for good, which costs more than sharing the sources for a while.
+INIT_EXCLUDES = (DAILY_INGESTION_LOCK, EVENTS_INGESTION_LOCK)
+
+
+def held_here(meta_root: Path, name: str) -> bool:
+    """True when this thread already holds *name*'s lock."""
+    return bool(_held_count(lock_path(meta_root, name)))
+
+
+def held_elsewhere(meta_root: Path, name: str) -> bool:
+    """True when *name*'s lock is held, but not by this thread."""
+    return not held_here(meta_root, name) and is_run_locked(meta_root, name)
+
+
+@contextlib.contextmanager
+def init_job_lock(meta_root: Path) -> Iterator[None]:
+    """Hold ``init_job`` for one init, refusing to start beside daily or event jobs.
+
+    Re-entrant per thread: `cne init --resume` takes it and then resumes, while
+    `cne run retry --run-id <init>` resumes directly and used to take nothing,
+    so a retried init could run beside a second `cne init` or a daily update.
+    """
+    if held_here(meta_root, INIT_JOB_LOCK):
+        yield
+        return
+    with run_lock(meta_root, INIT_JOB_LOCK, blocking=False):
+        refuse_init_overlap(meta_root)
+        yield
+
+
+def refuse_overlap_with_init(meta_root: Path) -> None:
+    """Raise when an init is running; for any ingestion job other than init."""
+    if held_elsewhere(meta_root, INIT_JOB_LOCK):
+        raise RunLockError(
+            "An init is running on this lake. Ingestion waits until it finishes: "
+            "`cne status` shows its progress, and `cne init` continues it if it stops."
+        )
+
+
+def refuse_init_overlap(meta_root: Path) -> None:
+    """Raise when a daily or event job is running; for `cne init`."""
+    busy = [name for name in INIT_EXCLUDES if held_elsewhere(meta_root, name)]
+    if busy:
+        jobs = " and ".join(
+            "a daily update" if name == DAILY_INGESTION_LOCK else "an event sweep" for name in busy
+        )
+        raise RunLockError(
+            f"Not starting init while {jobs} is running on this lake. "
+            "Wait for it to finish, then run `cne init` again."
+        )
 
 
 def lock_path(meta_root: Path, run_id: str) -> Path:

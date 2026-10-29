@@ -245,7 +245,9 @@ def _scan_provenance_batch(
         "FROM read_parquet(?, filename=true, union_by_name=true) "
         f"GROUP BY {', '.join(grouped)}"
     )
-    frame = pl.from_arrow(con.execute(query, [[str(file.path) for file in files]]).arrow())
+    frame = pl.from_arrow(
+        con.sql(query, params=[[str(file.path) for file in files]]).to_arrow_table()
+    )
     for key in keys:
         if key not in frame.columns:
             frame = frame.with_columns(pl.lit(None, dtype=pl.Utf8).alias(key))

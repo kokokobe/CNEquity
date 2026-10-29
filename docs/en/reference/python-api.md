@@ -49,7 +49,7 @@ def load(
 | `all_vintages` | When True, returns **all** versions before `as_of` (for studying financial statement revisions); do not enable it for cross-sectional stock selection, as it counts the same fact more than once |
 | `pit_mode` | PIT evidence mode: omitted or `None` defaults to `best_effort`, keeping historical backfills collected after `as_of` and returning `pit_is_exact=False`; announcement and known availability/publication dates still obey the cutoff. `strict` excludes reconstructed backfills and returns only evidence the lake held by the cutoff |
 | `include_otc` | Defaults to False: `daily_bars` and `adj_factors` exclude Beijing securities' quotes before exchange trading began. True retains those OTC quotes. The exchange start is the later of the listing date and 2020-07-27 |
-| `config` / `data_root` | Lake location; reads `configs/cnequity.toml` by default |
+| `config` / `data_root` | Lake location; when omitted, looked up as `CNE_CONFIG` → `configs/cnequity.toml` in the current directory → the per-user config |
 | `profile` / `universe_profile` | Versioned universe policy; the two are aliases. Official research profiles enable strict evidence checks automatically |
 | `revision` | Pins the primary dataset by revision number or ID; a per-dataset mapping is also supported. A single number does not pin factor or universe dependencies |
 | `revision_map` | Pins the retained revision of each dependency dataset; an explicitly requested missing version raises `RevisionConsistencyError` instead of falling back to latest |
@@ -112,6 +112,46 @@ bulk research should still use the Python API. This endpoint requires every read
 `strict_adj` and `adj_is_exact` describe factor coverage only, not historical accuracy. The `adjustment` summary from `load_with_receipt()` reports sources and advisory historical diagnostics for the revision read; unavailable diagnostics are unassessed.
 
 `ReaderError` (a subclass of `ValueError`): unknown dataset, no data, strict_adj failure, and so on.
+
+## load_profile()
+
+Fetch what could be known about many securities on many dates, for several fields at once, as a long table with one row per `(symbol, as_of, field)`.
+Each source dataset is read once and joined as-of per security, so more dates cost a join, not another read.
+
+```python
+from datetime import date
+from cnequity.query import load_profile
+
+p = load_profile(
+    ["listed", "status.trading", "status.st", "shares.total", "holders.count",
+     "fsi:net_profit", "industry.sw.l1", "industry.eastmoney.l3"],
+    symbols=["600519.SH"],
+    as_of_dates=[date(2024, 4, 30)],
+    pit_mode="best_effort",   # or "strict"
+)
+```
+
+| Field | Source | Meaning |
+|---|---|---|
+| `listed` | instruments | 1 while listed on the date |
+| `status.trading` / `status.st` | trading_status | Latest row on or before the date; a null ST is unknown, not "not ST" |
+| `shares.total` / `shares.float` / `shares.free_float` | share_structure | Known once both the change date and the announcement have passed |
+| `holders.count` | shareholder_counts | Known from its announcement |
+| `fsi:<item_code>` | financial_statement_items | Latest report period visible on the date; `value_str` is the period, `field_date` its end |
+| `industry.<sw\|eastmoney>.l<1\|2\|3>` | industry_members | Industry code at that level in the latest snapshot on or before the date; `label` is its name |
+
+Columns: `value_num`, `value_str`, `label`, `field_date` (the date the value describes), `visible_from` (earliest date it could be known), `source`,
+`pit_quality` (`strict`: first-hand and observed by this lake by the date; `reconstructed`: known by its announcement but recovered later; `snapshot_only`: a snapshot date only),
+`age_days` and `missing_reason`.
+
+`missing_reason`: `before_listing`, `after_delisting`, `outside_coverage` (the date precedes anything the dataset holds), `not_yet_published`,
+`value_unknown` (a record exists but leaves the value unknown, e.g. ST on a derived status row), `no_pit_evidence` (`strict` only) and `no_record`;
+a value older than the field's age limit is returned with `stale`. Nothing is returned outside a listed life.
+
+`pit_mode="published"` accepts only values with a recorded publication time (`available_at`); announcement and ingestion dates never count, and a value is not visible before the date it took effect (e.g. a share change).
+`cutoff=time(15)` requires that time to fall before 15:00 Shanghai on the as-of date, otherwise the value counts from the next day; without it the whole day counts.
+Industry snapshots have no publication time and are `no_pit_evidence` in that mode; listing and trading status are session facts and read the same in every mode.
+`canonical=True` first re-keys each row onto the code effective on its date (as `canonicalize_dated_identifiers` does); `data_root` and `revision_map` go to every read.
 
 ## scan()
 
@@ -192,6 +232,22 @@ def dataset_schema(dataset: str) -> dict[str, pl.DataType]
 ```
 
 Returns the Polars type mapping registered in `domain/schemas.py`.
+
+## Security identifier continuity
+
+Module: `cnequity.domain.security_identifiers`. This is a public read contract that downstream consumers (such as EquityLab's backtest ledger and research samples) import directly; removing or renaming it requires a deprecation cycle.
+
+```python
+from cnequity.domain.security_identifiers import (
+    canonical_symbol,
+    canonicalize_dated_identifiers,
+    identifier_aliases,
+    identifier_changes,
+    transitions_on,
+)
+```
+
+The registry holds only code changes whose effective date and share ratio are backed by an archived announcement; never infer a change from similar prices or names. `canonicalize_dated_identifiers(frame, date_col=..., key_columns=...)` moves dated rows back to the code effective on that date, and keeps the native row when a native and a vendor-restated row share a business key. Downstream consumers may hash the module source as the identity of frozen samples, so editing the registry invalidates those samples.
 
 ## Configuration resolution
 

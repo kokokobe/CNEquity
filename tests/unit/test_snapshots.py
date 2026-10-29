@@ -41,6 +41,27 @@ def test_snapshot_create_verify_and_restore(tmp_path):
     assert StateStore(restored / "meta").get_date("daily_bars") == date(2024, 6, 18)
 
 
+def test_snapshot_accepts_a_calendar_whose_watermark_runs_ahead_of_today(tmp_path):
+    """trading_calendar is written a year ahead; its rows back the watermark."""
+    cfg = Config(data_root=tmp_path / "lake")
+    day = date(2099, 1, 4)
+    path = cfg.curated_root / "trading_calendar" / "trade_date=2099"
+    path.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "trade_date": [day],
+            "is_trading": [True],
+            "fetched_at": [datetime(2024, 6, 18, tzinfo=timezone.utc)],
+        }
+    ).write_parquet(path / "part-merged.parquet")
+    StateStore(cfg.meta_root).set_date("trading_calendar", day)
+    store = SnapshotStore(cfg, tmp_path / "snapshots")
+
+    store.create("calendar", ["trading_calendar"])
+
+    assert store.verify("calendar").passed
+
+
 def test_snapshot_detects_tampering_and_refuses_restore(tmp_path):
     cfg = Config(data_root=tmp_path / "lake")
     _write_bars(cfg)

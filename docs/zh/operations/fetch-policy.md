@@ -54,7 +54,7 @@ TDX K 线只有记录偏移量，没有按日期过滤的服务器参数。回�
 | `init` | quick/full 抓历史；demo 抓小样；sample 离线合成；`--layout-only` 只创建本地目录和元数据 |
 | `run daily/events/retry` | 联网采集，写 staging、元数据并按步骤发布；retry 应指定失败 run/组 |
 | `run compact/clean` | 离线；compact 发布暂存数据，clean 删除符合条件的本地数据。clean 的 `--dry-run` 预览删除范围，不能与会改运行状态的 `--reconcile-runs` 同用 |
-| `backfill` | 通常联网补历史；已完成的切片/证券按各数据集 checkpoint 续跑；退市范围使用 `backfill daily_bars --profile delisted`；`backfill --plan` 离线。`--shfe-annual-archive` 是显式本地 ZIP 导入，不请求数据源，但会保存原包并发布缺字段行 |
+| `backfill` | 通常联网补历史；已完成的切片/证券按各数据集 checkpoint 续跑；退市范围使用 `backfill daily_bars --profile delisted`；`backfill --plan` 离线。`cne import shfe-archive` 是显式本地 ZIP 导入，不请求数据源，但会保存原包并发布缺字段行 |
 | `derive` | `adj_factors` 会刷新外部因子及备源；其他派生模式主要读本地数据、写派生结果或映射。不要把 derive 整体视为离线命令 |
 | `verify` | 默认检查本地覆盖；`--repair` 才执行联网回填 |
 | `audit` | run 审计可能向 NBS/交易所做启用的外部对照；`--full` 读取湖和已有证据，不等同于主动源探测 |

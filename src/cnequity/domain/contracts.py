@@ -618,7 +618,7 @@ def validate_contract(
 
     An omitted value validates the live registry, including schema/PK coverage.
     A supplied document is validated as a portable historical contract and is
-    not required to contain today's complete 42-dataset registry.  Pass
+    not required to contain today's complete dataset registry.  Pass
     ``against_registry=True`` to require exact current registry membership and
     definitions.
     """

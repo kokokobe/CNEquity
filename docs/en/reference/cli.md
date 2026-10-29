@@ -22,6 +22,8 @@ The sections are defined by `SECTIONS` in `cnequity/cli/_root.py`; leaving any c
 | Command | Purpose |
 |------|------|
 | [`cne run daily`](#cne-run-daily) | Run one day's update: every daily schedule group, then the event streams |
+| [`cne run maintain`](#cne-run-maintain) | Post-update maintenance: audit, gates, source probes, run evidence, metadata backup |
+| [`cne schedule`](#cne-schedule) | Install, inspect or remove the current user's timer |
 | [`cne run events`](#cne-run-events) | 7×24 event streams (announcements, news), on the natural calendar rather than the trading calendar |
 | [`cne run retry`](#cne-run-retry) | Retry one run, or the latest failed run of each daily group |
 | [`cne run compact`](#cne-run-compact) | Merge finished, unpublished staging into curated |
@@ -29,6 +31,8 @@ The sections are defined by `SECTIONS` in `cnequity/cli/_root.py`; leaving any c
 | [`cne storage`](#cne-storage) | Version-retention register, cleanup plans and in-place pending-deletion marks |
 | [`cne backfill`](#cne-backfill-dataset) | Backfill one dataset |
 | [`cne derive`](#cne-derive-name) | Compute derived datasets |
+| [`cne import shfe-archive`](#cne-import-shfe-archive) | Import an official SHFE annual package offline |
+| [`cne migrate`](#cne-migrate) | Preview or run the one-off migrations this lake still owes, and record the results |
 | [`cne repair`](#cne-repair) | Offline repair of stored data layout or field semantics; previews by default, `--apply` publishes a new version |
 
 `compact` is already a step built into every schedule group, so `retry` / `compact` / `clean`
@@ -99,7 +103,7 @@ The top-level mapping is defined by `MOVED` in `cnequity/cli/_root.py`; old name
 
 Command: `cne` (`cnequity.cli.main:cli`)
 
-Leaf commands that support configuration accept `--config PATH`; resolution order is explicit option → `CNE_CONFIG` → `configs/cnequity.toml` in the current working directory. For example, `cne status --config /abs/path/to/cnequity.toml`.
+Leaf commands that support configuration accept `--config PATH`; resolution order is explicit `--config` → `CNE_CONFIG` → `configs/cnequity.toml` in the current directory → the per-user `~/.config/cnequity/config.toml` (honours `XDG_CONFIG_HOME`; `%APPDATA%\cnequity\config.toml` on Windows); `cne config path` shows the config chosen and why. For example, `cne status --config /abs/path/to/cnequity.toml`.
 
 **Command names are case-insensitive**: `cne STATUS`, `cne run DAILY` and `cne config CREATE` are equivalent to their lowercase forms (Click's `token_normalize_func`). `-h` is short for `--help`. **There is no prefix matching**: `cne stat` is rejected with a hint pointing to `stats` / `status`, rather than guessing one and running it.
 
@@ -123,10 +127,10 @@ The options below apply only to these two profiles; `--config` / `--resume` / `-
 | `--days` | About how many trading days of `daily_bars` (default 30) |
 | `--intraday` | Also fetch 1m bars for the same symbols (at most about 5 trading days) and print one full session |
 | `--research` | Also derive hfq factors from Sina and print a raw / hfq return comparison; extends the window to about 3 years |
-| `--data-root` | Separate lake root directory (default `data/cnequity-demo`) |
+| `--data-root` | Separate lake root directory (default `data/cnequity-demo`; sample: `data/cnequity-sample`) |
 | `--profile sample` | No network access; generates a synthetic sample for verifying the installation, queries and DuckDB views; cannot be combined with `--research` / `--intraday` |
 | `--trade-date` | As-of date YYYY-MM-DD (default today / the latest trading day) |
-| `--config-out` | Write a small configuration for later `cne query` use (default `configs/cnequity.demo.toml`) |
+| `--config-out` | Write a small configuration for later `cne query` use (default `configs/cnequity.demo.toml`; sample: `configs/cnequity.sample.toml`) |
 | `--force` | Allow overwriting an existing `--config-out` with different content; by default the original file is kept and an error is raised; identical content can simply be rerun |
 
 Flow: create directories → probe TDX → pull instruments and trim to the demo universe → trading calendar → `daily_bars` + compact → print sample tables; with `--research` it also derives Sina hfq and checks exact coverage, and with `--intraday` it also runs `minute_bars`. The terminal shows staged progress and INFO logs. TDX must be reachable; `allow_mock` is not turned on.
@@ -151,7 +155,7 @@ Synthetic rows are prominently marked `source=mock`, and the quality audit does 
 
 Initialize the data lake and run the init phases. quick/full automatically recover known delisted daily bars within the configured market and history window, fetch the current trading status, and derive historical suspensions once the daily bars are published. The whole-market historical ST scan uses the separate `cne backfill trading_status` and is not a completion condition for init.
 
-When the default configuration `configs/cnequity.toml` does not exist, `cne init` first generates it from the example shipped with the package (same as `cne config create`); a missing file named by an explicit `--config` or by `CNE_CONFIG` is not generated. For an interrupted, partially covered, or old-version unfinished init, rerunning the same `cne init` resumes automatically, and data already fetched is kept.
+When no configuration is found, `cne init` first generates the per-user configuration from the example shipped with the package (same as `cne config create`); a missing file named by an explicit `--config` or by `CNE_CONFIG` is not generated. For an interrupted, partially covered, or old-version unfinished init, rerunning the same `cne init` resumes automatically, and data already fetched is kept.
 
 | Option | Description |
 |------|------|
@@ -194,15 +198,19 @@ Exit: success, source-limited outcomes (`degraded` / `warning`, including 0 rows
 
 ## cne config create
 
-Write the user configuration from the template inside the package (no repository clone needed after a PyPI install).
+Write a short user configuration that extends the built-in defaults (`extends = "builtin"` plus `[data].root`); see [Extending the built-in defaults](../getting-started/configuration.md#extends-builtin).
 
 | Option | Description |
 |------|------|
-| `--config` | Output path (default `configs/cnequity.toml`) |
+| `--config` | Output path (default: `configs/cnequity.toml` when the current directory has one, otherwise the per-user `~/.config/cnequity/config.toml`) |
 | `--data-root` | Written into `[data].root` |
 | `--force` | Overwrite an existing file |
 
-On macOS, `orchestrator.workers` is written as `1` (consistent with the `validate` rule). Template source: `cnequity.config.templates` (kept in sync with the repository's `configs/cnequity.example.toml`).
+Platform-dependent defaults (such as `orchestrator.workers = 1` on macOS) come from the built-in defaults and are not written into the file. Source of the defaults: `cnequity.config.templates` (kept in sync with the repository's `configs/cnequity.example.toml`).
+
+## cne config show
+
+Print the full effective configuration (TOML) with credentials masked; for a config that extends the defaults, it marks which values come from the file and which groups `steps_add` / `steps_remove` edited. `--defaults` prints every setting with its default and explanation.
 
 ## cne config validate
 
@@ -226,7 +234,7 @@ The report has three categories, ordered by consequence:
 
 Steps missing from schedule groups are reported separately: a step that the example configuration's group of the same name has, and none of your groups has, is not run by `cne run daily` without arguments, even if some wave still lists it.
 
-Machine-specific values such as `[data].root` and `orchestrator.workers` do not count as drift; extra custom content in your configuration is not reported either.
+Machine-specific values such as `[data].root` and `orchestrator.workers` do not count as drift; extra custom content in your configuration is not reported either. A config that extends the defaults cannot miss keys; only a whole-group `steps = [...]` that shadows a new default step is reported, while `steps_remove` and `enabled = false` are deliberate opt-outs, not drift.
 
 ## cne config upgrade
 
@@ -242,6 +250,8 @@ cne config upgrade
 - Steps that are only in an example wave are appended to your wave of the same name.
 
 Before making changes, the original file is backed up as `cnequity.toml.bak-<timestamp>`, and the configuration is validated after writing. Other settings (times, concurrency, credentials, switches) are untouched; missing configuration keys already use built-in defaults and are not written to the file, so that current defaults are not pinned. `--dry-run` only lists the changes. Groups written as inline tables or dotted keys cannot be edited automatically; the command lists the steps to add by hand and returns 1.
+
+A config that extends the defaults needs no upgrade step. `--minimize` rewrites a full config into the extending form (rules in [Extending the built-in defaults](../getting-started/configuration.md#extends-builtin)): it first lists the settings kept, the schedule groups' `steps_add` / `steps_remove`, the groups set to `enabled = false`, and every setting whose behaviour changes on loading; with `--dry-run` it only previews.
 
 ## cne sources resilience
 
@@ -319,7 +329,7 @@ Schedule it a few hours after the main pipeline:
 
 ```cron
 # Main pipeline
-5 16 * * 1-5 /path/to/cnequity/scripts/scheduler/daily_pipeline.sh
+5 16 * * 1-5 cne run daily && cne run maintain
 
 # Closing catch-up: run only what is still behind; idles if nothing is
 5 20 * * 1-5 cd /path/to/cnequity && cne run daily --stale-only
@@ -329,11 +339,32 @@ The freshness criterion is exactly the same as `cne status --datasets` (includin
 
 Derived datasets are not included: they are recomputed from curated, so what should run is `cne derive`, not a refetch.
 
-**Without arguments, it is a complete day.** It runs every group of `[job.daily.groups]` serially in configuration order, runs one `audit` over the whole lake (it reads the whole lake, so it comes after all groups have landed; skipped when no group actually ran), then runs the `[job.events.groups]` event streams: one failed group does not interrupt later groups, the exit code is the worst one, and groups whose datasets are all disabled are skipped automatically. On non-trading days the schedule groups are skipped automatically while the event streams run as usual, so one scheduled job running once a day is enough (a repository checkout also has `scripts/scheduler/daily_pipeline.sh`, which additionally does health checks and metadata backups). When the event-stream lock is already held by a separate `cne run events`, this part is recorded as `skipped_locked`, which is not a failure; when `--backfill` reruns a trading day, the event streams are not run. When the configuration has fewer schedule steps than the current version, you are prompted to run `cne config upgrade`.
+**Without arguments, it is a complete day.** It runs every group of `[job.daily.groups]` serially in configuration order, runs one `audit` over the whole lake (it reads the whole lake, so it comes after all groups have landed; skipped when no group actually ran), then runs the `[job.events.groups]` event streams: one failed group does not interrupt later groups, the exit code is the worst one, and groups whose datasets are all disabled are skipped automatically. On non-trading days the schedule groups are skipped automatically while the event streams run as usual, so one scheduled job running once a day is enough; the timer `cne schedule install` installs runs `cne run maintain` (audit, gates and metadata backup) after it. When the event-stream lock is already held by a separate `cne run events`, this part is recorded as `skipped_locked`, which is not a failure; when `--backfill` reruns a trading day, the event streams are not run. When the configuration has fewer schedule steps than the current version, you are prompted to run `cne config upgrade`.
 
 `--core-only` runs the `[[job.daily.waves]]` DAG, which is only the core skeleton; when the configuration has no schedule groups, running without arguments also takes this path, and with no waves it fails outright instead of pretending to succeed. The `intraday` group requires `[minute_bars].enabled` first; when its datasets are disabled, the whole group is skipped automatically.
 
 Success, a valid partial result, or `skipped_non_trading_day` exits 0; execution failure returns 1.
+
+## cne run maintain
+
+Maintenance after the daily update; the timer `cne schedule install` installs runs it once after each trading day's update: the run audit (the whole-lake audit on `[job.maintenance] full_audit_weekday`), the freshness gate, source probes and SLO, run evidence over the last 20 trading days, a metadata backup (manifest database, receipts, quality findings, never curated Parquet, rotated by the `[job.maintenance]` retention), and the preview of `cne run clean`.
+
+| Option | Description |
+|------|------|
+| `--groups` | Schedule groups the freshness gate fails on (space- or comma-separated); default: the groups the scheduled update runs |
+| `--notify` | On problems, also show a desktop notification (macOS) |
+
+It exits 1 when the audit, the freshness gate or the backup fails; source probe and run evidence problems are only reported. See the [runbook](../operations/runbook.md#maintain) for each step.
+
+## cne schedule
+
+Manages the current user's timer (launchd on macOS, crontab on Linux, Task Scheduler on Windows), the same task the `cne serve` operations page manages. It checks once a minute; on each trading day, after `[job.daily] run_at` (Beijing time), it runs `cne run daily`, then `cne run maintain`; after `[job.stale] run_at` it retries the missed snapshots.
+
+| Subcommand | Description |
+|------|------|
+| `install` | Registers or updates the timer after confirmation. `--pack` updates only the selected research packs' schedule groups; `--no-stale` leaves out the closing catch-up; `--events` runs event streams on the config's `[[job.events.schedules]]`; without them, `--events-group` / `--events-every` run one event group on an interval; options not given keep their current settings; `--yes` skips the confirmation |
+| `status` | Installed? active? what it runs and when it last checked; `--json` for machine-readable output; flags legacy `scripts/scheduler` launchd jobs |
+| `remove` | Pauses and unregisters the system task after confirmation; running jobs finish |
 
 ## cne run events
 
@@ -348,10 +379,10 @@ and it takes its own `events_ingestion` lock, so it does not compete with the ev
 
 ```cron
 # Full event streams once a day (weekends included)
-0 14 * * *  /path/to/cnequity/scripts/scheduler/events_pipeline.sh
+0 14 * * *  cne run events --config /abs/path/to/cnequity.toml
 
 # Intraday freshness for news only: a single live page, very cheap
-*/30 9-22 * * *  CNE_EVENTS_GROUP=news_wire /path/to/cnequity/scripts/scheduler/events_pipeline.sh
+*/30 9-22 * * *  cne run events --group news_wire --config /abs/path/to/cnequity.toml
 ```
 
 The `disclosures` group rereads a 30-day reconciliation tail window every time, so running it at high frequency pays that cost over and over;
@@ -393,73 +424,82 @@ The result JSON also has `adj_factors_sync` / `trading_status_derive` fields. Se
 
 | Option | Description |
 |------|------|
-| `--start` / `--end` | Requested window; the part beyond the source's historical boundary is reported as insufficient coverage, and the available range is still fetched |
-| `--profile delisted` | `daily_bars` only: uses the confirmed delisting list as the universe; `--start` corresponds to the old command's `--since`; `--plan` is offline. Cannot be mixed with ordinary repair or range options |
-| `--shfe-annual-archive ZIP --archive-year YYYY --accept-partial-fields` | `futures_bars` / `option_bars` only: explicit offline import of an SHFE annual package, keeping missing-field markers and skipping daily-bar primary keys that already exist; `--archive-url` / `--archive-downloaded-at` can attach evidence of the original source. Default backfill still uses complete daily files; see the [derivatives guide](../recipes/derivatives.md#official-annual-packages) for details |
-| `--symbols` | Ad hoc symbol scope for intraday, `daily_bars`, `trading_status`, `corporate_actions` and `share_structure` (`share_structure` fetches all share-capital changes per security in one go, for the share-capital lag the audit hints at); other datasets still use the configured scope |
-| `--baostock-repair` | `corporate_actions` only: explicitly fetch Baostock dividend and ex-rights data for delisted SH/SZ symbols; best combined with `--symbols` |
-| `--ths-repair` | `corporate_actions` only, for historical migration: explicitly fetch THS historical dividend and ex-rights data for delisted BJ symbols; best combined with `--symbols` |
-| `--eastmoney-bj-repair` | `corporate_actions` only, for historical migration: fetch historical dividend and ex-rights data from EastMoney in a targeted way, using the BSE old-code → new 920-code mapping; best combined with `--symbols` |
-| `--issuer-notice-repair` | `corporate_actions` only: use only issuer implementation announcements (reviewed list, CNINFO, BSE) to fill cash payment dates and apply reviewed bonus/conversion terms; stored payment dates earlier than the ex-date are treated as unknown and cleared if nothing is found. No Baostock requests. Requires `--symbols`/`--start`/`--end` |
-| `--payment-date-repair` | As above, then after issuer announcements also match remaining events with Baostock `dividPayDate`; the two cannot be used together |
-| `--outstanding` | Precisely repair the debt keys recorded by tolerated gaps: scope and window come from the ledger, not from `--symbols`/`--start`/`--end`. Keys that are filled are written off immediately; those still missing stay outstanding |
-| `--bj-amount-repair` | Superseded by `--tdx-amount-repair`, kept for old scripts: fill from TDX the BJ turnover Sina never published, never touching stored prices or volumes. Requires `--start`/`--end` |
-| `--tdx-amount-repair` | `daily_bars` only: Shanghai, Shenzhen and Beijing historical rows filled from Sina are checked against TDX, and turnover is filled only when open/high/low/close agree and the volume difference is less than one lot; codes TDX does not have keep the Sina row. Requires `--start`/`--end` |
-| `--turnover-repair` | `daily_bars` only: Shanghai/Shenzhen stock rows whose turnover is missing, 0, or has mismatched volume/turnover units are replaced as whole rows by Baostock's same-day row; open/high/low/close must agree within half a cent, and rows that disagree or are not provided keep the original values and are counted. Requires `--start`/`--end` |
-| `--turnover-peer-review` | With `--turnover-repair`, first confirm BaoStock prices using SSE historical K-lines or explicitly dated SZSE reports, then review remaining conflicts with TDX and EastMoney. Replacements are whole bars with agreeing prices and usable turnover; exchange-wide turnover is never spliced into auction bars. Unresolved conflicts and unavailable sources remain reported. |
-| `--tdx-volume-repair` | `daily_bars` only: reread TDX and rewrite only the volume of stored TDX rows (and turnover inflated below 64.5 yuan), fixing decoding errors before 2026-09-17; prices must agree, no rows are added, and it bypasses the internal gap gate. Requires `--symbols` and `--start`/`--end` |
-| `--bse-tip-repair` | `daily_bars` only, for historical migration: read the OHLCV of existing sessions and request only turnover from BSE, with strict checks; the same `--start/--end` and `--symbols` must be given together |
+| `--start` / `--end` | Request window; the part beyond a source's historical depth is reported as a coverage gap, and the available range is still fetched |
+| `--symbols` | A temporary symbol scope for intraday, `daily_bars`, `trading_status`, `corporate_actions` and `share_structure` (`share_structure` fetches every share change of a security at once, for the share lag the audit reports); other datasets keep the configured scope |
+| `--outstanding` | Repair exactly the keys tolerated gaps left owed: scope and window come from the ledger, not from `--symbols`/`--start`/`--end`. Filled keys are cleared at once; keys still missing stay owed |
+| `--refetch` | Ignore completion receipts and checkpoints and fetch the whole range again (`sector_bars`, `futures_bars`, `option_bars`); circuit breakers still apply. Without it a backfill resumes |
+| `--source` | Source to use this time, without editing the config; currently for `margin_trading` (`exchange` / `eastmoney`) |
+| `--workers` | `margin_trading` only: concurrency of the date walk; each request still goes through the shared rate limiter |
+| `--exchange` | Derivatives: restrict to a publisher; repeatable |
+| `--profile delisted` | `daily_bars` only: the confirmed delisting catalog as the universe; `--start` maps to the old command's `--since`; `--plan` is offline |
+| `--plan` | Read-only plan; no network, no writes |
 
-The BSE repair switches (`--ths-repair`, `--eastmoney-bj-repair`, `--bse-tip-repair`, `--bj-amount-repair`) are only for cleaning up existing history; daily updates never use them. New data is guaranteed by rules applied at write time:
+**Dataset-specific repairs and imports have moved out of `backfill`.** They run on the same backfill machinery (window, scope, downstream derive follow-up, plan output) but follow the repair convention: a preview by default, `--apply` to run. The old flags have been removed; use the right-hand column:
 
-| Problem previously handled by a repair switch | Current handling |
+| Old form | New command |
 |---|---|
-| Missing current BJ turnover | Daily updates use the BSE quote board as the current primary source; rows missing turnover at the exchange stage raise a warning before merging |
-| A batch of BJ securities missing on some trading day | The completeness rule before merging records that day in the gap ledger and refetches it on the next run |
-| Out-of-limit price moves with no event | Quarantined, keeping the committed values, and recorded as pending refetch |
-| BJ adjustment steps Sina missed | Factors are computed from corporate actions, `pre_close` checks the steps, and Sina is only a cross-reference |
+| `backfill corporate_actions --payment-date-repair` / `--issuer-notice-repair` | [`cne repair payment-dates`](#cne-repair) (`--issuer-notices-only`) |
+| `backfill corporate_actions --baostock-repair` / `--ths-repair` | `cne repair delisted-actions --source baostock\|ths` |
+| `backfill corporate_actions --eastmoney-date-repair --ex-dates ...` | `cne repair ex-dates --ex-dates ...` |
+| `backfill daily_bars --tdx-amount-repair` | `cne repair bar-amounts` |
+| `backfill daily_bars --turnover-repair [--turnover-peer-review]` | `cne repair bar-turnover [--peer-review]` |
+| `backfill daily_bars --bse-tip-repair --start D --end D` | `cne repair bse-tip-turnover --date D` |
+| `backfill valuation_metrics --fill-em-outage` | `cne repair valuation-outage` |
+| `backfill futures_bars --shfe-annual-archive ZIP --archive-year Y ...` | [`cne import shfe-archive ZIP --dataset futures_bars --year Y ...`](#cne-import-shfe-archive) |
+| `--refresh` (derivatives) / `--force` (`sector_bars`) | `--refetch` |
+| `--retry-failed` (`sector_bars`) | No longer needed: a backfill resumes by default |
+| `--margin-source` | `--source` |
+
+The former `--eastmoney-bj-repair`, `--bj-amount-repair` and `--tdx-volume-repair` have been removed: they only fixed data written by 0.17 or earlier (`cne repair bar-amounts` replaces `--bj-amount-repair`). The daily update never needs these repairs; rules at write time keep new data right:
+
+| Problem once handled by a repair flag | How it is handled now |
+|---|---|
+| Missing BJ current-period turnover | The daily update uses the BSE quote board as the current-period primary source; rows missing turnover at the exchange stage raise a warning before merge |
+| A batch of BJ securities missing on a session | The completeness rule before merge records the session in the gap ledger, and the next run refetches it |
+| Out-of-limit moves with no event | Quarantined; the committed value is kept and marked for refetch |
+| BJ adjustment steps Sina missed | Factors are computed from corporate actions, `pre_close` checks the steps, and Sina is only a cross-check |
 
 ```bash
 cne backfill minute_bars_5m --start 2026-05-01 --end 2026-07-31 \
   --symbols 600519.SH,000001.SZ
 
-# For existing BJ daily bars, fill only turnover in the current partition, without refetching Sina history
-cne backfill daily_bars --start 2026-08-21 --end 2026-08-21 \
-  --symbols 920000.BJ,920001.BJ --bse-tip-repair
+# Fill only current-partition turnover for existing BJ daily bars, without refetching Sina history (preview first, then --apply)
+cne repair bse-tip-turnover --date 2026-08-21 --symbols 920000.BJ,920001.BJ --apply
 ```
 
 ### Derivatives backfill
 
 | Option | Description |
 |------|------|
-| `--plan` | Read-only plan: sources, dates, cold-cache request estimate, rate limits and next steps; no network, no lake writes |
-| `--exchange` | Restrict publishers, repeatable; INE is routed under SHF, and 2018 futures additionally fetch the energy center's daily files |
-| `--refresh` | futures_bars / option_bars ignore receipts and old caches and refetch, still honoring circuit breakers |
-| `--symbols` | Explicit contract list for futures_minute_bars, such as CU2611.SHF; daily bars do not support per-contract file fetches |
+| `--plan` | Read-only plan: sources, dates, cold-cache request estimate, rate limits and follow-up steps; no network, no writes |
+| `--exchange` | Restrict to a publisher, repeatable; INE is routed via SHF, and 2018 futures also fetch the energy-center daily files |
+| `--refetch` | futures_bars / option_bars ignore receipts and the old cache and refetch; circuit breakers still apply |
+| `--symbols` | Explicit contract list for futures_minute_bars, e.g. CU2611.SHF; daily bars do not support per-contract files |
 
-Daily-bar backfill automatically updates the corresponding contract tables and derivations and outputs `followup`; minute bars only have a rolling window and reject date ranges. `--force` / `--retry-failed` raise errors for derivatives. Continuous futures are fully recomputed and reject `derive --start/--end`. For the full flow, source-side constraints and acceptance, see the [derivatives guide](../recipes/derivatives.md).
+A daily-bar backfill updates the matching contract table and derivations automatically and outputs `followup`; minute bars have only a rolling window and refuse date ranges. Continuous futures are recomputed in full and refuse `derive --start/--end`. SHFE annual packages are imported offline with [`cne import shfe-archive`](#cne-import-shfe-archive). The full workflow, source constraints and acceptance are in the [derivatives guide](../recipes/derivatives.md).
 
-For historical reference replay and request upper bounds of derivatives contract backfill, see the [derivatives research guide](../recipes/derivatives.md). For contract tables, `--start/--end` limit the reference file dates and do not trim the final contract universe.
+Historical reference replay and request bounds of derivatives contract backfills are in the [derivatives research guide](../recipes/derivatives.md). `--start/--end` of a contract table limit the reference file dates and do not trim the final contract set.
 
 ### sector_bars
 
-| Option | Description |
-|------|------|
-| `--retry-failed` | Skip sectors already completed in the checkpoint and retry only failures |
-| `--force` | Clear the checkpoint and refetch everything (mutually exclusive with `--retry-failed`) |
+It resumes from the checkpoint by default, skipping finished boards; `--refetch` clears the checkpoint and refetches everything. Checkpoint: `meta/state/sector_bars_backfill.json`. When more than 50% fail the step status is `warning`, but the successful part is still written.
 
-Checkpoint: `meta/state/sector_bars_backfill.json`. When more than 50% fail, the step status is `warning`, but the successful part is still written.
-
-**Network**: goes to THS `d.10jqka.com.cn` (daily updates and history share a source), rate-limited under `[sources.ths]`.
-It has nothing to do with EastMoney, and `[sources.eastmoney] proxy` does not apply to it.
+**Network**: goes through THS `d.10jqka.com.cn` (the same source for daily and history), rate-limited under `[sources.ths]`.
+It has nothing to do with EastMoney; `[sources.eastmoney] proxy` does not apply to it.
 
 ```bash
-# Full fetch, first time or after switching sources
-cne backfill sector_bars --config configs/cnequity.toml --force
-
-# Resume failed sectors
-cne backfill sector_bars --config configs/cnequity.toml --retry-failed
+cne backfill sector_bars              # resume
+cne backfill sector_bars --refetch    # full refetch, first time or after a source change
 ```
+
+## cne import shfe-archive
+
+```bash
+cne import shfe-archive ZIP --dataset futures_bars --year 2018 --accept-partial-fields           # preview
+cne import shfe-archive ZIP --dataset futures_bars --year 2018 --accept-partial-fields --apply   # import
+```
+
+Imports an official SHFE annual package offline: it checks the format, keeps the missing-field marks, skips daily-bar keys already present, and never overwrites complete daily-file data. `--accept-partial-fields` is required and accepts that the annual package lacks fields only the daily files have; `--url` / `--downloaded-at` attach the original source evidence; `--start` / `--end` stay within `--year`. The default backfill still uses complete daily files; see the [derivatives guide](../recipes/derivatives.md) for details.
 
 ## cne run compact
 
@@ -517,32 +557,50 @@ the directory before modification is saved in `meta/state/history/`, the quality
 cne derive trading_status --start 2001-01-01 --end 2001-12-31
 ```
 
+
+## cne migrate
+
+Fixes data that older versions wrote, after an upgrade. When a release fixes a writer, rows the old writer stored still need a one-off correction; each such correction is a migration. `meta/state/lake.json` records the version that built the lake (migrations introduced earlier do not apply) and every migration this lake has run or checked and found nothing to do.
+
+```bash
+cne migrate             # preview: how many rows each migration would change; writes nothing
+cne migrate --apply     # runs them in order and records the results
+```
+
+| Option | Description |
+|------|------|
+| `--apply` | Run the owed migrations and write the results to `meta/state/lake.json` |
+| `--only` | Comma-separated migration ids; runs them even when already recorded |
+| `--json` | Machine-readable output |
+
+Each migration holds the lake mutation lock, publishes through the repair gate, and keeps the previous revision readable. When one fails, the run stops; later ones neither run nor get recorded. `fund-listing-dates` reads the exchanges' official fund lists and `misdated-valuation` reads the EastMoney datacenter when it has rows to replace; the rest read only the lake. `cne doctor` reports migrations not yet checked. Migrate a lake written by 0.12 or earlier with 0.19 or earlier before upgrading.
+
 ## cne repair
 
 By default it outputs a plan based on data already in the lake; with `--apply` it publishes as a new version, the old version is kept, and both can be read by version. `corporate-action-gaps --apply` fetches evidence from data sources for each gap.
+
 
 Before publishing, `--apply` compares offline quality checks between the committed version and the candidate version. Historical factor/action contradictions are advisory diagnostics. New or worsened structural problems, including invalid factor values, corrupt files and primary-key errors, block publication; the candidate version is moved into `_quarantine`, and the report is written to `meta/quality/publication/`. This repair gate is not affected by the ordinary daily-update publication setting `[quality].publication_gate`.
 
 | Subcommand | Description |
 |------|------|
 | `layout DATASET` | Merge files in a partitioned dataset's root directory or in wrongly keyed directories into the registered partitions. Multiple observations of the same primary key fill each other's blanks only when their non-null values agree exactly; for conflicting keys one whole row is kept by the canonical rule. All original observations of duplicate keys are written to `_quarantine`. When publishing a new version detects such a layout, it suggests running this command |
+| `repartition [DATASET] [--all]` | Rewrite a dataset's partitions at its registered granularity; without arguments it lists the datasets that need it, with one it previews the file, partition and size change, and `--apply` rewrites under the lake lock and swaps it in. It reclaims space and file handles and fixes no correctness problem; the audit points here when it finds mixed granularity |
+| `payment-dates` | `corporate_actions` cash payment dates: reviewed issuer announcements first, then Baostock; `--issuer-notices-only` uses issuer announcements only and applies reviewed bonus/transfer terms. Needs `--symbols`/`--start`/`--end` |
+| `delisted-actions --source baostock\|ths` | Fill historical dividends and ex-rights of delisted securities: `baostock` for Shanghai/Shenzhen, `ths` for Beijing |
+| `ex-dates --ex-dates ...` | Request historical ex-rights rows from EastMoney day by day for the given ex-dates; the only way to reach rows before 2015-09-29 |
+| `bar-amounts` | Cross-check Sina-filled historical daily bars against TDX and fill turnover when OHLC match and volume differs by under one lot; prices and volumes untouched |
+| `bar-turnover [--peer-review]` | Replace Shanghai/Shenzhen stock daily bars whose turnover is missing, zero or misaligned with the whole same-day Baostock row; `--peer-review` reviews conflicts against exchange history, TDX and EastMoney |
+| `bse-tip-turnover --date D` | Fill Beijing turnover for the latest session from the BSE quote board, without refetching Sina |
+| `valuation-outage` | Fill the `--start`/`--end` window of an EastMoney snapshot outage from the datacenter valuation report; writes only when the whole market is retrieved |
 | `corporate-action-gaps` | Fill ex-rights events where both the Sina and Baostock factors have a step but the lake has no record, based on the evidence of the most recent `cne derive adj_factor_source`. A record dated within 10 days nearby is moved to the step date if its terms explain the step; for the rest, dividends are fetched from Baostock by security and year, matched by effective trading day, and only rows whose terms explain the step are accepted; for those Baostock cannot explain either, CNINFO is searched for the issuer's restructuring capital-conversion announcement, and the event is recorded as `reorg_transfer` only if the ex-rights reference price stated in the announcement explains the step. This command previews offline, and only `--apply` requests Baostock and CNINFO |
-| `orphan-symbols` | Delete rows in `adj_factors` and `corporate_actions` for securities that never appear in `daily_bars`: price data for OTC funds (519xxx) that slipped in early on as NAV series has been cleaned up, but their factors and dividends were left behind; listed funds whose prices are not collected are also among them. These rows have no prices to adjust and would only be reported as factor vs. corporate-action contradictions. Publishes one new version per dataset |
-| `stale-suspensions` | Delete inferred suspensions (`derived_bar_gap`) in `trading_status` that are contradicted by daily bars with actual trades: when a run missed fetching prices, the gap was once wrongly recorded as a suspension; once the prices are filled, a daily bar with trades on the same day proves the row wrong. Suspensions from independent sources are unaffected |
-| `status-outages --start --end` | Rebuild the `trading_status` rows written while EastMoney was unavailable (`eastmoney_cached`) under the current rule. The earlier fallback reused its own carried rows, expired across long holidays, and recorded every security it had no row for as suspended. All carried rows in the window are deleted; on an exchange the primary feed answered for fewer than half of the securities it answered in the previous sessions, a security with no other row on that day carries its latest first-hand status from the previous 5 trading days, keeping that reading's fetch time, so Baostock history and suspensions inferred from daily-bar gaps still take precedence. Securities without a first-hand status get no row |
-| `status-listing-window` | Delete `trading_status` rows that fall before a security's listing date or have no delisting on record. Earlier compaction inferred a delisting for new securities that had no daily bars yet, and the status step then wrote `derived_delisted` for their first trading days; EastMoney also reports codes that have not listed yet as trading normally. A `derived_delisted` row is kept only while the current `instruments` record still has a delisting date no earlier than the listing date and no later than the row; rows before the listing date are deleted, unless daily bars traded before that date (then the listing date is wrong). No rows are added. Publishes a new version and keeps the old one |
 | `status-traded --start --end` | Read-only preview by default: fill missing stock/ETF status keys within a known listed life from committed positive-volume daily bars, using `derived_traded` with null ST. Existing statuses are preserved. `--apply` recomputes against current inputs, publishes a new version and keeps the old one. Use annual or monthly windows |
-| `fund-listing-dates` | Fill unknown listing dates from complete current SSE/SZSE ETF/LOF directories, independently of research eligibility. Preview also requests the sources; `--apply` archives responses and publishes through the repair gate, retaining known dates and old revisions. The first bar is never treated as a listing date |
 | `stock-listing-dates` | Use the first traded session of stocks lacking listing dates to locate CNINFO IPO calendar requests, or repeat `--event-date YYYY-MM-DD` for stocks without bars. Only explicit code/date-matched listed events establish dates; earlier real trades must not contradict them. Replays archives by default; `--refresh-sources` fetches evidence and `--max-sessions` bounds batches. `--apply` publishes while retaining known dates and old revisions; a stale delisting date earlier than the confirmed listing is cleared in the same revision |
 | `index-snapshots` | Replay complete, dated official membership and weight files; `--refresh-sources` refreshes archives and `--indices` selects indices. `--apply` replaces whole snapshots, converts percentages to ratios and preserves membership/weight file dates without backdating |
 | `financial-originals` | Select stocks with `--symbols` or `--all-stocks`, years with `--start-year/--end-year` and periods with `--quarter` (Q1/Q2/Q3/Q4; annual by default), and bound batches with `--max-reports`; pass `next_cursor` to `--after` to continue. Offline preview by default; `--refresh-sources` archives complete CNINFO queries and original PDFs, and `--apply` appends identifiable current-year consolidated figures. `--reparse` replays existing reports while retaining unchanged facts’ first observation times. Unidentified layouts/items remain missing; observation times are never backdated |
 | `adj-factors` | Unified stock factor and ETF/LOF unit conversion repair. Offline preview saves a plan; `--refresh-sources` explicitly fetches evidence and `--apply` rechecks inputs before publishing supported corrections. Supports `--symbols`, event window `--start/--end`, `--max-symbols` and `--plan`; unresolved events retain values and diagnostics. See [historical factor repair](../datasets/sources.md) |
-| `fund-factors` | Offline preview of missing recorded ETF/LOF split and transfer steps. Rebuilds full history from the original vendor series, preserving other vendor steps and the cash-distribution convention. `--apply` publishes `derived_fund_actions` through the repair gate and retains the old revision. Conflicting terms or absent original series are not guessed |
 | `fund-volume` | Repair zero-volume, positive-amount Shanghai and Shenzhen exchange-listed fund bars from complete SSE auction K-lines. `--refresh-sources` archives evidence; offline replay is the default. `--apply` replaces only rows within the listing window with matching OHLC and rounded amounts, retaining old revisions. When stored turnover conflicts, archived unadjusted EastMoney OHLC and amount must corroborate the complete official bar; peer whole-lot volume never supplies the quantity. Compatible raw archives are reused before sending another request. Volume is never inferred from turnover. Later zero-volume, positive-amount observations cannot overwrite a restored usable quantity. |
 | `fund-no-print` | Reconcile fund bar debts using explicit zero-yuan turnover in historical SZSE reports or SSE responses matching the security and date with explicitly absent auction prices and a positive reference price. Offline preview by default; `--refresh-sources` fetches and archives reports, and `--max-sessions` bounds sessions. `--apply` approves evidence and refreshes coverage watermarks. Missing responses do not prove absence; normal tradability does not imply an actual print. Rounded zero turnover alone is insufficient; SSE evidence proves absence of auction OHLC, not absence of all transactions. Creates no bars or halt rows. Unusable evidence reopens debts, and actual traded bars take precedence |
-| `daily-bar-coverage` | Recheck `bj_session_incomplete` session debts per security against committed positive-volume bars or independent suspension evidence within known listing spans. `--apply` updates coverage metadata and watermarks, retaining input-version receipts without changing bars. Also retires pre-listing debts proved by committed listing dates that do not contradict traded history. Unknown listing dates remain unverified in per-security coverage |
-| `misdated-valuation` | Replace push2 snapshot rows in `valuation_metrics` that carry a trading day other than the one they describe. The snapshot has no date and describes the last closed session at fetch time; a row whose fetch time maps to a different session is deleted with `--apply` and, in the same version, replaced by the EastMoney datacenter valuation published for that date. Keys the datacenter does not have no longer keep the wrong row. The plan stays offline; only `--apply` requests the datacenter |
-| `valuation-basis` | Unify `valuation_metrics` semantics: push2 dynamic P/E moves into `pe_dynamic`; Baostock float market cap is converted from the average-trade-price basis to the closing-price basis, and values that cannot be checked keep their original value and are labeled `vwap_x_turn_implied_shares`; total market cap is rebuilt from the total shares effective that day in `share_structure`, and rows without a record are labeled as year-end share estimates |
 
 ```bash
 cne repair layout futures_bars
@@ -646,11 +704,11 @@ When fetching, initialization, backfill, retry and derivation finish an attempt,
 | `publication_status` | `pending` / `published` / `partial` / `unchanged` / `none` / `rejected`, describing version publication by the current run |
 | `fallback` | When sources are limited, lists the readable data already present, registered source roles and switches, the requested range and the retry command; the source list does not mean those sources were tried or are currently reachable |
 | `reason_code` | Dataset receipts and batches keep a structured reason, for example `source_transient`, `source_unavailable`, `input_unavailable`, `storage_failure`, `execution_error` |
-| `usable_result` | There is a valid request result, a covered range, or explicit evidence of no data; it can be false when sources are limited and this run has 0 rows, and that alone does not mean execution failed |
+| `usable_result` | There is a valid request result, a covered range, or explicit evidence of no data; it can be false when sources are limited and this run has 0 rows. A daily run does not count that as an execution failure; `cne backfill` exits 1 then, see below |
 
-`completed + partial` can be a normal final state. Verified facts can be published, while missing ranges, unscanned securities, cooldowns and retry evidence stay in the ledger. A derivation missing inputs explains the skip; derived versions record input versions and coverage evidence and require a recompute when inputs change. When all sources are unavailable and this run has no valid request result, it also ends normally as insufficient coverage and keeps the existing lake; program, configuration, storage and integrity errors are still reported as failures.
+`completed + partial` can be a normal final state. Verified facts can be published, while missing ranges, unscanned securities, cooldowns and retry evidence stay in the ledger. A derivation missing inputs explains the skip; derived versions record input versions and coverage evidence and require a recompute when inputs change. When all sources are unavailable and this run has no valid request result, it also ends normally as insufficient coverage and keeps the existing lake (see below for the exit code of `cne backfill`); program, configuration, storage and integrity errors are still reported as failures.
 
-Fetch / write commands: `success` and source-limited `warning` / `degraded` (including 0 rows) return 0, `failed` returns 1. Explicit quality checks (`audit`, `verify`, `status --gate`) continue to return non-zero according to their own quality rules. Read-only reports return 0 once they have read and displayed successfully, regardless of whether the data in the report is fully healthy.
+Fetch / write commands: `success` and source-limited `warning` / `degraded` (including 0 rows) return 0, `failed` returns 1. The exception is `cne backfill` (including `--outstanding`): it returns 1 when the status is not `success`, `usable_result` is false and this run wrote 0 rows, because a backfill exists to fill that range and filling none of it is a failure. Unavailable sources and sources that cannot serve the range (`capability_limit`) both count; the JSON result and `fallback` are unchanged. Explicit quality checks (`audit`, `verify`, `status --gate`) continue to return non-zero according to their own quality rules. Read-only reports return 0 once they have read and displayed successfully, regardless of whether the data in the report is fully healthy.
 
 **Upgrading scheduling scripts:** if you previously relied on the exit code of `status --datasets` to trigger alerts, switch to `status --datasets --gate` (also add `--groups` when scheduling by group). Scripts that depend on daily-update / backfill exit code 2 should read `coverage_status`, or run an explicit quality gate separately. Existing data directories, manifests, checkpoints and successful batches do not need to be deleted; old metadata is migrated incrementally. Old partial staging without a verified seal stays under the conservative gate and is published after a retry over the original range.
 
@@ -672,7 +730,7 @@ The exit code is the worst of the three: 0 usable; 1 gaps or quality errors; 2 c
 
 | Option | Description |
 |------|------|
-| `--datasets` | Per-dataset freshness table (dataset / layer / freshness / coverage range / watermark); with `--gate`, exits 1 if anything is STALE. freshness values: `fresh` / `STALE` / `empty` (never fetched) / `no source` (source retired with no replacement, such as `economic_calendar`) / `retired` (source retired but the lake captured through its last day, such as `northbound_flows`) / `n/a` (disabled in configuration, or freshness not judged by day) |
+| `--datasets` | Per-dataset freshness table (dataset / layer / freshness / coverage range / watermark); with `--gate`, exits 1 if anything is STALE. freshness values: `fresh` / `STALE` / `empty` (never fetched) / `no source` (source retired with no replacement, such as `economic_calendar`) / `retired` (source retired but the lake captured through its last day, such as `northbound_flows`) / `removed` (taken out of the schedule on purpose with `steps_remove` or `enabled = false`, and no other group runs it; keeps its real last date, is not stale, and `cne check`, the audit and the gate do not count it) / `n/a` (disabled in configuration, or freshness not judged by day) |
 | `--gate` | Explicit quality acceptance: failure / unacceptable freshness returns 1, insufficient coverage or degradation returns 2; an ordinary read-only query returns 0 on success |
 | `--all-columns` | With `--datasets`: print all columns of `list_datasets` (contract fingerprint, revision, PIT storage columns, etc.) rather than only freshness |
 | `--groups` | With `--datasets`: in `--gate` mode, fail only on datasets owned by these schedule groups (space- or comma-separated). Datasets of other groups are still listed and still reported as schedule gaps, but do not trigger exit 1. A host that schedules only `core` should specify this scope, so optional groups with no scheduled collection do not keep tripping the gate. Datasets nobody schedules (`(unscheduled)`) still fail and must be handled explicitly |
@@ -714,31 +772,24 @@ Preview compacted terminal run staging, overage orphans, source snapshots, logs 
 | `--reconcile-after-seconds` | Override the reconciliation quiet window, default `[orchestrator].batch_stale_seconds` |
 | `--force` | Also include staging that is not cleanup-ready in the preview, without deleting or downgrading batches |
 
-Outputs `dry_run: true`, `confirmation_required: "serve_storage_page"`. Actual-deletion fields such as `removed` / `removed_run_ids` are empty or 0, and `bytes_freed` is always 0; candidates are in `candidate_run_ids`, `candidate_run_dirs` and `candidates`, and the logical size is in `logical_bytes_selected`. Old versions, registered experiments and terminal staging runs with successful compaction and no incomplete batches can be selected, reviewed and confirmed for deletion on the serve storage page. Confirmation rechecks run locks, holds, run state and per-file fingerprints. It processes only the original list and retains resumable deletion receipts. Orphan staging, uncompacted runs and runs with incomplete batches are excluded from web deletion. Source snapshots and logs are still report-only.
+Outputs `dry_run: true`, `confirmation_required: "serve_storage_page"`. Actual-deletion fields such as `removed` / `removed_run_ids` are empty or 0, and `bytes_freed` is always 0; candidates are in `candidate_run_ids`, `candidate_run_dirs` and `candidates`, and the logical size is in `logical_bytes_selected`. Old versions and terminal staging runs with successful compaction and no incomplete batches can be selected, reviewed and confirmed for deletion on the serve storage page. Confirmation rechecks run locks, holds, run state and per-file fingerprints. It processes only the original list and retains resumable deletion receipts. Orphan staging, uncompacted runs and runs with incomplete batches are excluded from web deletion. Source snapshots and logs are still report-only.
 
 The preview also returns `staging_inventory`, `staging_run_count`, and `skipped_reasons`, listing every run's status, size, age, incomplete batches, and candidate/retention reason. A run lock protects active retries; `--force` cannot bypass run locks or holds. Incomplete batches are not automatically retired based only on age or the existence of a newer successful run.
 
 ## cne storage
 
-The version lifecycle comprises reference registration, immutable plans, an in-place observation period, and physical reclamation within a maintenance window. Nothing is deleted automatically after 7 days. Experiment directories can be archived first and then retired from their original location; external readers must be stopped by the operator.
+The version lifecycle comprises reference registration, immutable plans, an in-place observation period, and physical reclamation within a maintenance window. Nothing is deleted automatically after 7 days. External readers must be stopped by the operator.
 
 | Command | Behavior |
 |---|---|
-| `inspect --keep 5` | Read-only listing of the versions that still exist, their retention reasons and registered experiments; without imported references it is only a first-pass screen |
+| `inspect --keep 5` | Read-only listing of the versions that still exist and their retention reasons; without imported references it is only a first-pass screen |
 | `explain OBJECT_ID` | Show the grounds for a version, such as current/recent/hold |
 | `import --manifest FILE` | Validate and merge a reviewed local reference manifest; never lifts existing protection automatically |
-| `hold OBJECT_ID --reason TEXT` | Add a retention reason for a version, experiment, artifact or cleanup resource, canceling the corresponding pending-deletion mark |
+| `hold OBJECT_ID --reason TEXT` | Add a retention reason for a version or cleanup resource, canceling the corresponding pending-deletion mark |
 | `plan --keep 5 --phase mark` | After validating reference sources, save a content-addressed mark plan and return a `plan_id` |
 | `plan --keep 5 --phase purge` | Select only candidates whose observation period has ended and whose content is unchanged, checking SHA-256 file by file; outputs `purge_ids` and `logical_bytes_to_purge` |
 | `apply PLAN_ID --phase mark` | Revalidate pointers, references, registrations and file identity, and start an in-place observation period of at least 7 days |
 | `apply PLAN_ID --phase purge` | Disabled; must go to the serve storage operations page to recheck and confirm |
-| `experiment-create --parent DIR --case-id ID` | Create an empty experiment directory with its own instance identity, registered as active |
-| `archive OBJECT_ID --destination DIR` | Independently copy a registered experiment and seal the artifact after file-by-file verification; the original directory is kept |
-| `experiment-seal OBJECT_ID --artifact-id ID` | Explicitly declare an experiment finished; registered as sealed after verifying that the source identity matches the archive |
-| `artifact-verify OBJECT_ID` | Verify an artifact's file set, sizes and SHA-256 |
-| `resolve OLD_PATH [--artifact-id ID]` | Verify and return the archive location corresponding to an old path; with multiple versions an explicit choice is required |
-| `experiment-plan --phase mark\|purge` | Generate a plan for original experiment directories that are non-active, have no references/hold, and whose original content matches the archive |
-| `experiment-apply PLAN_ID` | Runs mark only; purge must go through web confirmation in serve |
 
 Every subcommand accepts `--config`. A version `OBJECT_ID` is `revision/<dataset>/<revision_id>` within the current lake; a plan is additionally bound to the lake identity and the metadata root, and cannot be used directly on another lake. A version that is referenced but temporarily missing can also be protected through manifest registration, so it stays protected after it is restored.
 
@@ -755,10 +806,6 @@ Every candidate is revalidated before deletion. The executor first records its i
 `logical_bytes_deleted` only accumulates versions that were deleted completely; bytes from partial failures are not counted, and `partial_deletion_possible` is reported. File-system free space is recorded separately before and after, and may be affected by other system activity. Neither pending-deletion marks nor deletion receipts replace backups.
 
 `logical_bytes_selected` comes from the versions' file lists and is not the actual disk space freed; APFS clones and system snapshots can make the two differ greatly. During the mark phase all bytes stay in place.
-
-Experiments use `experiment/<id>`, archives use `artifact/<manifest-digest>`. Archiving copies with independent inodes, using file-system clones where supported; an interrupted copy is kept as `.incomplete-*` and is never registered as sealed. Archiving does not automatically stop source writes or lift old holds, nor does it prove that a full replay is available. A managed experiment leaves active only through an explicit `experiment-seal`; archiving by itself does not change this state. Later changes to the source content block cleanup against the old archive.
-
-Old reports stay unchanged. Readers need to call `ArtifactStore.resolve()` explicitly or use the result of `storage resolve`. Resolving an archive directory verifies the whole artifact; resolving a file verifies that file. When a reference to the original directory is found, the original location is kept; it can enter the observation period only after consumers have been migrated and references re-reviewed. Experiment cleanup receipts are in `meta/lifecycle/experiment-purges/`; what is deleted is the redundant original location, and the sealed artifact stays available. Retrying the same plan after a failure verifies the leftovers; it stops when the path has been reused by a new experiment.
 
 The other existing cleaners share holds: `staging/<run_id>`, `source_snapshot/<dataset>/source=<source>/data_version=<version>/run_id=<run>`, `log/<cne-*.log filename>`. Existing objects can be protected with `storage hold`, or through a case's `requires_bytes`. Age, compact/readiness and newest-snapshot-per-type rules still apply; `--force` does not bypass holds. When a registered reference source changes or becomes unreadable, these cleaners also stop and require the manifest to be refreshed.
 
@@ -796,7 +843,7 @@ Changing the time only changes `[job.daily] run_at` and `[job.stale] run_at` in 
 
 Job logs and backfill previews use UTF-8 throughout, with no need to set an encoding separately for the Windows terminal. On Windows, cancel checks the PID and the process creation time; when the record lacks identity information (for example a job started before an update) or cannot be checked, the page refuses to send the termination signal; handle it through the system Task Manager. After a forced cancel, you can check the published data from the associated run and retry the unfinished work.
 
-When the default configuration `configs/cnequity.toml` does not yet exist and there is no explicit `--config` / `CNE_CONFIG`, the dashboard enters first-time setup: fill in the data directory, review `cne doctor`, then start `cne init`. Initialization cannot start before the checkup finishes. The page shows the command to be run first and starts it only after confirmation. When the directory already contains a data lake, it first explains that it will take over the lake and not wipe it. Explicitly pointing at a file that does not exist still raises an error and is not generated automatically. When the lake has no curated data yet, daily and manual updates are tucked into a secondary position, and the primary action is initialization. An initialization that has not finished, whose missing steps no later run has completed successfully, can be resumed directly. When the missing steps were later completed successfully, the page no longer prompts to continue initialization. A scheduled daily update that is due but has not run names that trading day. The daily-update form explains whether today is a trading day, which session is pending, and whether this manual run counts as that scheduled one. After initialization or a daily update ends, the page offers the overview or a retry entry point.
+When no configuration is found and there is no explicit `--config` / `CNE_CONFIG`, the dashboard enters first-time setup: fill in the data directory, review `cne doctor`, then start `cne init`. Initialization cannot start before the checkup finishes. The page shows the command to be run first and starts it only after confirmation. When the directory already contains a data lake, it first explains that it will take over the lake and not wipe it. Explicitly pointing at a file that does not exist still raises an error and is not generated automatically. When the lake has no curated data yet, daily and manual updates are tucked into a secondary position, and the primary action is initialization. An initialization that has not finished, whose missing steps no later run has completed successfully, can be resumed directly. When the missing steps were later completed successfully, the page no longer prompts to continue initialization. A scheduled daily update that is due but has not run names that trading day. The daily-update form explains whether today is a trading day, which session is pending, and whether this manual run counts as that scheduled one. After initialization or a daily update ends, the page offers the overview or a retry entry point.
 
 When opened from another machine (`--host` is not a loopback address), browsing and storage cleanup use `--token`; the operations page cannot start commands by default, and `--allow-remote-ops` must be given as well. First-time setup always accepts only the local machine.
 
@@ -898,7 +945,7 @@ Connect this lake to AI agents (MCP, stdio by default, `--http` switches to Stre
 
 | Option | Description |
 |------|------|
-| `--config` | Configuration file path, **an absolute path is recommended** (which directory the client launches the process from is unpredictable) |
+| `--config` | Configuration file path; when omitted, the shared lookup order applies (the client launches the process from an unpredictable directory, and the per-user config is found from any of them). When given, **an absolute path is recommended** |
 | `--live` | Fetch on the fly what is not in the lake, without writing it to disk. Supports only `resolve_symbol` and unadjusted daily bars; other tools refuse explicitly |
 | `--http` | Switch to Streamable HTTP, listening on `/mcp`. For clients that only accept a remote URL (ChatGPT), used together with a tunnel |
 | `--host` / `--port` | Listen address and port for `--http`, default `127.0.0.1:8788`. A non-loopback address must be paired with `--token` |

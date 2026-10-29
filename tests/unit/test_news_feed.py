@@ -14,6 +14,16 @@ from cnequity.steps import news_feed
 CST = news_feed.CST
 
 
+@pytest.fixture(autouse=True)
+def _fresh_fetch_cache():
+    """`shared_fetch` caches by run id for the process; tests reuse ids like `run-2`."""
+    news_feed._CACHE.clear()
+    news_feed._STAGED.clear()
+    yield
+    news_feed._CACHE.clear()
+    news_feed._STAGED.clear()
+
+
 def _item(code: str, when: str, title: str = "消息") -> dict:
     return {
         "code": code,

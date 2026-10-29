@@ -26,9 +26,21 @@ export async function renderSchedule(ctx, home, alive) {
   const writable = home.mode.ops_enabled;
   const disabled = writable ? "" : "disabled";
   const datasets = (value.backup_choices || []).map((name) => `<option value="${esc(name)}" ${(value.backup_datasets || []).includes(name) ? "selected" : ""}>${esc(dsWithCode(name))}</option>`).join("");
+  // [[job.events.schedules]] in the config replace the single group/interval fields.
+  const schedules = value.event_schedules || [];
+  const describeSchedule = (item) => {
+    const group = item.group ? esc(item.group) : tr("全部事件组", "all event groups");
+    let text = tr(`${group} 每 ${esc(item.every_minutes)} 分钟`, `${group} every ${esc(item.every_minutes)} min`);
+    if (item.jitter_seconds) text += tr(`，随机延后至多 ${esc(item.jitter_seconds)} 秒`, `, up to ${esc(item.jitter_seconds)}s later at random`);
+    if (item.quiet_hours) text += tr(`，北京时间 ${esc(item.quiet_hours)} 点每 ${esc(Math.max(item.every_minutes, item.quiet_every_minutes))} 分钟`, `, every ${esc(Math.max(item.every_minutes, item.quiet_every_minutes))} min during ${esc(item.quiet_hours)} Beijing time`);
+    return text;
+  };
+  const eventFields = schedules.length
+    ? `<div class="panel-note">${tr("事件流计划（在配置的 [[job.events.schedules]] 中修改）：", "Event schedules (edit them in the config's [[job.events.schedules]]):")}<ul class="ops-list">${schedules.map((item) => `<li>${describeSchedule(item)}</li>`).join("")}</ul></div>`
+    : null;
   const eventGroups = (value.events_groups || []).map((name) => `<option value="${esc(name)}" ${value.events_group === name ? "selected" : ""}>${esc(name)}</option>`).join("");
   const last = value.last_tick;
-  const links = (last?.jobs || []).map((job) => `<a href="#/ops/jobs/${encodeURIComponent(job.job_id)}">${esc(job.job)} · ${esc(job.session)}</a>`).join(" · ");
+  const links = (last?.jobs || []).map((job) => `<a href="#/ops/jobs/${encodeURIComponent(job.job_id)}">${esc(job.job)} ${esc(job.session)}</a>`).join(" ");
   const status = native.error ? tr("系统状态未知", "System status unknown") : value.enabled ? tr("已启用", "Enabled") : tr("已暂停 / 未启用", "Paused / not enabled");
   const tickLabels = {
     idle: tr("已检查，当前无到期任务", "Checked; nothing due"),
@@ -38,13 +50,13 @@ export async function renderSchedule(ctx, home, alive) {
     busy: tr("另一检查正在运行", "Another check is running"),
   };
   host.innerHTML = `<div class="panel-header"><h2>${tr("定时任务", "Schedule")}</h2><span class="status-pill">${esc(status)}</span></div>
-    <p class="panel-note">${esc(value.backend)} · ${esc(pick(value, "note"))}</p>
+    <p class="panel-note">${esc(value.backend)} ${esc(pick(value, "note"))}</p>
     ${native.error ? `<p class="panel-note err">${esc(native.error)}</p>` : ""}
     ${value.warning ? `<p class="panel-note err">${esc(value.warning)}</p>` : ""}
     ${value.timer_health === "stale" ? `<p class="panel-note err">${tr("超过 20 分钟未收到系统触发，请检查登录状态、休眠或 cron 服务，再刷新状态。", "No system trigger for over 20 minutes. Check the login session, sleep settings, or the cron service, then refresh the status.")}</p>` : ""}
     ${value.timer_health === "not_seen" ? `<p class="panel-note">${tr("已注册，等待首次系统检查（最多约 1 分钟）。", "Registered; waiting for the first system check (up to about 1 minute).")}</p>` : ""}
     ${native.installed && (!native.active || !native.matches) ? `<p class="panel-note err">${tr("系统任务未加载或定义与当前安装不符，请核对后重新设置。", "The system job is not loaded or does not match this installation. Check it and set the schedule again.")}</p>` : ""}
-    ${last ? `<p class="panel-note">${tr(`最近检查：${esc(last.at)}`, `Last check: ${esc(last.at)}`)} · ${esc(tickLabels[last.status] || last.status)} ${esc(last.message || "")} ${links}</p>` : `<p class="panel-note">${tr("尚无调度检查记录。", "No scheduler checks recorded yet.")}</p>`}
+    ${last ? `<p class="panel-note">${tr(`最近检查 ${esc(last.at)}`, `Last check ${esc(last.at)}`)} ${esc(tickLabels[last.status] || last.status)} ${esc(last.message || "")} ${links}</p>` : `<p class="panel-note">${tr("尚无调度检查记录。", "No scheduler checks yet.")}</p>`}
     <form id="schedule-fields" class="ops-fields">
       <label class="ops-check"><input id="schedule-daily" type="checkbox" ${value.daily ? "checked" : ""} ${writable ? "" : "disabled"}> ${tr("自动日更（未选研究包时跑全部日更组与事件流）", "Automatic daily update (runs every daily update group and event stream when no research pack is selected)")}</label>
       <fieldset class="ops-fields">
@@ -61,8 +73,8 @@ export async function renderSchedule(ctx, home, alive) {
       <label>${tr("备份数据集", "Backup datasets")}<select id="schedule-backup-datasets" multiple size="4" ${disabled}>${datasets}</select><small class="muted">${tr("只复制所选已发布数据及对应元数据，不包含配置、凭据或完整运行数据库。", "Copies only the selected published data and its metadata; excludes config, credentials, and the full run database.")}</small></label>
       <label>${tr("备份目录（绝对路径）", "Backup directory (absolute path)")}<input id="schedule-backup-root" value="${esc(value.backup_root)}" ${disabled}><small class="muted">${tr("建议选择外部磁盘。备份占用空间，不自动删除旧备份。", "An external disk is recommended. Backups take space; old backups are not deleted automatically.")}</small></label>
       <label class="ops-check"><input id="schedule-events" type="checkbox" ${value.events ? "checked" : ""} ${disabled}> ${tr("独立事件流（含周末和节假日）", "Standalone event stream (includes weekends and holidays)")}</label>
-      <label>${tr("事件组", "Event group")}<select id="schedule-events-group" ${disabled}><option value="">${tr("请选择", "Select…")}</option>${eventGroups}</select></label>
-      <label>${tr("事件流间隔（分钟）", "Event stream interval (minutes)")}<input id="schedule-events-interval" type="number" min="1" max="1440" required value="${esc(value.events_interval_minutes || 60)}" ${disabled}><small class="muted">${tr("按上次尝试开始时间计算间隔，任务占用时等待下一次检查。", "The interval counts from the last attempt's start; if the lake is busy, it waits for the next check.")}</small></label>
+      ${eventFields || `<label>${tr("事件组", "Event group")}<select id="schedule-events-group" ${disabled}><option value="">${tr("请选择", "Select…")}</option>${eventGroups}</select></label>
+      <label>${tr("事件流间隔（分钟）", "Event stream interval (minutes)")}<input id="schedule-events-interval" type="number" min="1" max="1440" required value="${esc(value.events_interval_minutes || 60)}" ${disabled}><small class="muted">${tr("按上次尝试开始时间计算间隔，任务占用时等待下一次检查。", "The interval counts from the last attempt's start; if the lake is busy, it waits for the next check.")}</small></label>`}
       <div class="action-row"><button class="button button-primary" type="submit" ${writable ? "" : "disabled"}>${tr("预览定时设置", "Preview schedule")}</button><button class="button button-ghost" id="schedule-refresh" type="button">${tr("刷新状态", "Refresh status")}</button></div>
     </form><div id="schedule-preview"></div>`;
   const form = document.getElementById("schedule-fields");
@@ -87,8 +99,8 @@ export async function renderSchedule(ctx, home, alive) {
       backup_datasets: [...(document.getElementById("schedule-backup-datasets").selectedOptions || [])].map((option) => option.value),
       backup_root: document.getElementById("schedule-backup-root").value.trim() || null,
       events: document.getElementById("schedule-events").checked,
-      events_group: document.getElementById("schedule-events-group").value || null,
-      events_interval_minutes: Number(document.getElementById("schedule-events-interval").value || value.events_interval_minutes || 60),
+      events_group: eventFields ? null : document.getElementById("schedule-events-group").value || null,
+      events_interval_minutes: eventFields ? value.events_interval_minutes || 60 : Number(document.getElementById("schedule-events-interval").value || value.events_interval_minutes || 60),
       daily_packs: ["market", "fundamentals", "universe"].filter((name) => document.getElementById(`schedule-pack-${name}`).checked),
     };
     try {
@@ -97,10 +109,10 @@ export async function renderSchedule(ctx, home, alive) {
         body: JSON.stringify(settings),
       });
       if (!alive() || current !== previewGeneration) return;
-      target.innerHTML = `<p class="panel-note">${esc(pick(preview, "action"))} · ${esc(preview.backend)}${tr("（时间均为北京时间）", " (all times are Beijing time)")}</p>
-        <ul class="ops-list"><li>${tr("日更：", "Daily update: ")}${preview.daily ? esc(preview.daily_run_at) : tr("关闭", "off")}${preview.daily_packs?.length ? ` · ${tr(`研究包 ${esc(preview.daily_packs.join("、"))}`, `research packs ${esc(preview.daily_packs.join(", "))}`)}` : ""}${tr("；补抓：", "; catch-up: ")}${preview.stale ? esc(preview.stale_run_at) : tr("关闭", "off")}</li>
-        <li>${tr("每日备份", "Daily backup")}: ${preview.backup ? `${esc(preview.backup_run_at)} · ${esc((preview.backup_datasets || []).map(dsWithCode).join(", "))} → ${esc(preview.backup_root)}` : tr("关闭", "off")}</li>
-        <li>${tr("独立事件流：", "Standalone event stream: ")}${preview.events ? `${esc(preview.events_group)} · ${tr(`每 ${esc(preview.events_interval_minutes)} 分钟`, `every ${esc(preview.events_interval_minutes)} min`)}` : tr("关闭", "off")}</li></ul>
+      target.innerHTML = `<p class="panel-note">${esc(pick(preview, "action"))} ${esc(preview.backend)}${tr("，时间均为北京时间", ", Beijing time")}</p>
+        <ul class="ops-list"><li>${tr("日更 ", "Daily update ")}${preview.daily ? esc(preview.daily_run_at) : tr("关闭", "off")}${preview.daily_packs?.length ? tr(`，研究包 ${esc(preview.daily_packs.join("、"))}`, `, packs ${esc(preview.daily_packs.join(", "))}`) : ""}${tr("；补抓 ", "; catch-up ")}${preview.stale ? esc(preview.stale_run_at) : tr("关闭", "off")}</li>
+        <li>${tr("每日备份 ", "Daily backup ")}${preview.backup ? `${esc(preview.backup_run_at)} ${esc((preview.backup_datasets || []).map(dsWithCode).join(", "))} → ${esc(preview.backup_root)}` : tr("关闭", "off")}</li>
+        <li>${tr("事件流 ", "Event stream ")}${!preview.events ? tr("关闭", "off") : schedules.length ? schedules.map(describeSchedule).join(tr("；", "; ")) : `${esc(preview.events_group)} ${tr(`每 ${esc(preview.events_interval_minutes)} 分钟`, `every ${esc(preview.events_interval_minutes)} min`)}`}</li></ul>
         <details><summary>${tr("查看系统任务定义", "View system job definition")}</summary><pre class="ops-log">${esc(preview.artifact || tr("移除本页面创建的定时触发。", "Removes the schedule triggers this page created."))}</pre></details>
         <label class="ops-check"><input id="schedule-ack" type="checkbox"> ${esc(pick(preview, "confirmation"))}</label>
         <div class="action-row"><button class="button button-primary" id="schedule-apply" type="button" disabled>${tr(`确认${esc(preview.action)}`, esc(pick(preview, "action")))}</button></div>

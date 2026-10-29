@@ -2,6 +2,87 @@
 
 这里记录面向用户的主要功能、修复与兼容性变化。历史版本中的命令名反映当时的接口；当前用法以 [CLI 参考](docs/zh/reference/cli.md)为准。升级前阅读[升级与兼容性](docs/zh/getting-started/installation.md#升级与兼容性)。
 
+## [0.20.0] — 2026-10-25
+
+- **升级步骤：** `pip install -U cnequity` 后重启 `cne serve` 和已在运行的 `cne mcp`。数据集契约只有兼容变更：`industry_members` 升到 schema 版本 2，新增 6 列层级列（见下文），新写入的东财行 `industry_code` 固定为三级行业；按固定层级统计请读 `l1_*`..`l3_*`。旧湖运行 `cne migrate` 预览、再 `cne migrate --apply`，补齐本版四步一次性迁移：`industry-levels`（在线读取东财当前板块层级）、`sw-delisted`、`offshore-final`（在线读取新浪 COMEX 黄金最终日线）和 `sw-never-listed`。基金派生状态行要标为非 ST 的，另按窗口运行 `cne repair status-traded --start … --end … --apply`。时点读取的截点改按北京时间日期判定，`as_of=T` 不再包含 T 日公告。EquityLab 等下游的消费契约无需改动。
+- `load_profile` 新增 `pit_mode="published"`：只认记录了发布时间的值，不用公告日或入湖日代替，且不早于值生效日；`cutoff` 指定截至日的北京时间截点（收盘信号用 15:00），过了截点的发布从下一天起可见。另加 `canonical`（按当日生效代码匹配）、`data_root` 和 `revision_map`（固定版本读取）。
+- 新增 `cnequity.query.load_profile`：一次取多只证券、多个截至日的多项时点资料（上市、交易状态与 ST、股本、股东户数、财报科目、申万/东财各级行业），每个值带它描述的日期、最早可知日、来源和时点质量（`strict` / `reconstructed` / `snapshot_only`），缺失的值给出原因（上市前、退市后、超出覆盖、尚未公布、值未知、无时点证据、无记录），过旧的值标 `stale`。每个数据集只读一次，全市场 12 个截至日 8 个字段约 19 秒。
+- 申万行业快照不再包含从未上市的证券：申万在 IPO 审核阶段就给公司定行业，且文件没有剔除日期，IPO 未完成的公司会一直留在之后每个月的快照里。本湖有 12 个这样的代码（2010–2023 年定类，如 002525.SZ、601206.SH、874090.BJ），在证券主表、日线、交易状态和公告里都没有任何记录，东财也不列出。只有四类记录全都没有才剔除；回填时剔除，旧湖用 `cne migrate --apply` 删除。剔除的证券记在 `meta/sw_never_listed.json`，`cne verify --industry` 以 `excluded_never_listed` 继续列出。
+- 新增 `cne migrate` 一步 `offshore-final`：替换 COMEX 黄金（`GC0.CMX`）在 CME 交易时段结束前存入的日线。写入端已改为收盘后才写、并重读最近 7 天，但更早的盘中值没有被替换；本湖 1,758 行中有 23 行收盘价与新浪最终值不同，最大差 3.5%（2026-08-19 存 4425.6，最终 4580.7），另缺 2026-09-25 一行。迁移在线读取新浪最终日线一次，只改有差异或缺失的行。
+- 新增 `cne derive industry_crosswalk`：在申万与东财都有完整快照的同一天，按层级比较两边行业的成员，写出每对行业的成员数、重叠数、Jaccard、相互包含比例和关系（等价、被包含、部分重叠）到 `meta/industry_crosswalk.parquet`。只用同日证据、只比较两边当天都有的股票；0.20 之前的东财快照层级不全，不作证据。每次运行追加当天证据、保留更早的日期，不合并任何行业。
+- 申万行业和国证指数成分按月回填只取已经结束的月份：此前当月最后一个已知交易日也被当作“月末”，周日运行会生成日期为下一个（尚未开盘的）交易日的快照。
+- 新增 `cne derive industry_taxonomy`：为每个行业写一个稳定身份 `industry_id = 体系:版本:代码` 到 `meta/industry_taxonomy.parquet`，带层级、名称、上级、首末出现日期和最大成员数。申万 2021 年 7 月换代时复用了代码字符串（两版都有的 161 个三级代码下，只有 54% 的股票代码没变），单凭代码分不清是哪一版，所以版本是身份的一部分：`sw:2014:480101` 与 `sw:2021:480101` 是两个行业。东财板块代码在所有快照里名称不变，身份为 `eastmoney:board:代码`。申万文件不发布名称，名称列为空。
+- 申万行业历史展开为月度快照时按 `instruments` 的退市日剔除已退市股票：申万文件只有计入日期、没有剔除日期，退市股票的最后一个行业会一直带到之后每个月，全湖有 338 只股票、16,896 行在退市后仍出现（有的退市已近二十年，还带着申万 2014 的旧代码）。旧湖用 `cne migrate --apply` 删除这些行；东财行是来源当天的实际观察，不改。`cne verify --industry` 新增 `unexpected_members`，按原因（退市后、未知证券、非股票、上市前）列出不该出现的成员；上市前的行是申万在首个交易日前就给新股定了行业，只报告、不判为缺口。CDR 同样计入应有集合。
+- 新增 `cne verify --industry`：只读检查 `industry_members` 的完整性。每个分类体系的每个快照对照当天上市的股票（沪深、北交所分开），每个层级的每个行业对照上一个快照，报出成员缺失、整个行业消失或成员减半以上；分类体系整体换代（如申万 2014→2021，2021-07-30 有 66% 股票换码）单独列出，不当作缺失；0.20 之前写入的东财快照层级不全，标为部分快照、不参与行业对比。有缺口时退出码为 1。
+- **数据集契约变更：** `industry_members` 升到 schema 版本 2、`data_version=v2`，新增 `l1_code`..`l3_name` 六列，`industry_code`/`industry_name` 固定为三级行业。此前东财每只股票的三个行业板块只留一个，留哪个取决于分页顺序，同一只股票逐日在一、二、三级之间跳动，按行业统计时看起来像整组行业漏采（47 个快照日里 1,790 只股票跳动 9,085 次）。现在三级都保存。旧湖运行 `cne migrate --apply` 为已有行补层级列（东财行需在线读取当前板块层级）；旧东财行只能补出所存板块及其上级，其余为空。迁移说明见 `contracts/migrations/0.20.0/industry_members.md`。
+- `cne repair status-traded` 补的 ETF/基金状态行写 `risk_warning=false`：ST 制度不适用于基金，此前写成未知（null），下游把整个基金池当成“ST 未知”。股票行仍为未知。已入湖的基金派生行用同一命令按窗口预览、`--apply` 改正。
+- 时点（PIT）读取按北京时间日期比较 `available_at`、`source_published_at` 和观察时间，不再按 UTC 日期。此前巨潮公告标为次日 00:00（北京时间）起可用，却会出现在当天 `as_of` 的结果里；修复后 `as_of=T` 不再看到 T 日公告。严格模式下，UTC 16:00 以后（即北京时间已到次日）抓取的行，观察日按北京时间算作次日，当天的 `as_of` 不再收录。
+- 资产负债表恒等式检查改为每个来源各自核对：此前按条目取最新值，会把巨潮原始年报（首次披露）的资产和数据商重述后的权益拼在一起，真实湖上 672 个报告期中约 660 个是这种误报，改后只剩来源自身不平的。
+- 巨潮原始报表解析能识别折行的权益标签（「所有者权益（或股东权 / 益）合计」），此前约 5,600 个报告期因此缺 `total_equity`，查询视图会把原始年报的资产与重述后的权益配在同一期。已入湖的数据用 `cne repair financial-originals --reparse --apply` 补齐。
+- 分钟线与日线成交量核对允许整手取整误差：通达信成交量以 100 股为单位，日线截掉零股、每根分钟线各自取整，冷门 LOF 一天只成交几百股时比值会偏离 5% 以上，而成交额完全一致。差额不超过每根有成交的分钟线一手（再加一手）时不再报 `minute_bars_daily_outliers`；10-16 至 10-23 报出的 9 个样本都是这种情况。
+- `cne run maintain` 每天先对欠账里还有键的数据集运行 `cne backfill <数据集> --outstanding`，再做审计和门禁。此前欠账只有手动修复才会重试，来源晚几天才有数据（如 Baostock 停牌记录约晚一周）的键会一直挂着；重试失败只报告，不判维护失败。
+- 日线覆盖判断停牌时，上市公司自己的停牌公告也算证据：停牌公告与之后 10 个交易日内的进展或复牌公告之间的交易日（不含公告当天）视为停牌，第一手的交易记录仍可否决。push2 不可用期间沪市停牌不再要等约一周后的 Baostock 核对才从欠账里消掉。提示性公告、风险警示停牌、临时停牌和可转债转股停牌不计入；在 2015–2026 全湖上回测，3,929 个由公告推出的停牌日没有一天有成交。
+- 数据集来源登记补齐：`adj_factors` 的派生因子（北交所与基金份额变动）登记为补充来源，`financial_statement_items` 的巨潮原始报表与 `index_constituents` 的交易所指数快照登记为修复来源。审计不再对它们报 `unrouted_source`，`cne sources` 列出的条款也包含这些写入方。
+
+## [0.19.0] — 2026-10-25
+
+- **升级步骤：** `pip install -U cnequity` 后重启 `cne serve` 和已在运行的 `cne mcp`。数据集契约没有变化。旧湖先运行 `cne migrate` 预览、再 `cne migrate --apply` 补齐一次性迁移（取代已移除的 11 个 `cne repair` 迁移命令）；调度或脚本里用到下文已移除命令和 `cne backfill` 开关的，按对应替代改写。现有完整配置照旧可用，可用 `cne config upgrade --minimize --dry-run` 预览改为继承默认值；用 `scripts/scheduler/` 的，先运行 `uninstall_scheduler.sh` 再 `cne schedule install`。不在项目目录运行时，配置可放在 `~/.config/cnequity/config.toml`，`cne config path` 显示实际使用的配置。
+- **移除不再使用的命令与开关（不兼容）：**
+  - 11 个一次性 `cne repair` 迁移命令（`missing-values`、`financial-announcements`、`daily-bar-coverage`、`fund-factors`、`fund-listing-dates`、`valuation-basis`、`orphan-symbols`、`stale-suspensions`、`status-outages`、`status-listing-window`、`misdated-valuation`）：0.17 及更早版本的湖用 `cne migrate` 修正；
+  - `cne derive bse_code_migration` 和 `cne derive valuation_orphans`（`valuation_metrics` 回填会自动清理孤立行）；
+  - `cne backfill` 的 `--eastmoney-bj-repair`、`--bj-amount-repair`、`--tdx-volume-repair`，以及已迁出的开关（`--payment-date-repair` 等改用 `cne repair <名称>`，`--shfe-annual-archive` 改用 `cne import shfe-archive`，`--refresh`/`--force` 改用 `--refetch`，`--margin-source` 改用 `--source`，`--retry-failed` 不再需要）；
+  - 仓库 `scripts/migrations/`：分区改写改为随包提供的 `cne repair repartition`（默认预览，`--apply` 改写）；0.12 及更早版本写入的湖请先用 0.19 或更早版本迁移再升级。
+- 期货/期权最新交易日截面可以证明完整了：交易所有当天的官方合约文件、且文件里当天在市的合约都有行情时判为 `OK`（此前即使一个不缺也只能是 UNVERIFIED，`cne check` 因此一直 ✗）。默认走新浪的大商所无法证明，作为限制写在结果旁，不判失败；缺当天官方文件时仍为 UNVERIFIED。
+- `cne run maintain` 检查最近收盘交易日各日更组的运行：`[job.maintenance] gate_groups`（默认 `core`）失败立即判失败，其他组连续失败 `soft_fail_max_days`（默认 3）个交易日才判失败，与旧日更脚本的规则一致并沿用其计数。
+- 配置用 `steps_remove` 或 `enabled = false` 有意移出调度、且没有别的组再跑的数据集，新鲜度显示为 `removed`（保留真实的最后日期），不再判为 STALE；`cne check`、`cne status --gate`、审计、`cne run maintain`、收尾补抓和控制台对此一致。把 step 加回调度后又会按期判断。
+- 新增 `[[job.events.schedules]]`：在配置里写多条事件流计划，每条有自己的事件组、间隔、随机延迟和北京时间静默时段，打包定时任务按计划运行（`cne schedule install --events`），控制台只读展示。没写计划时仍用控制台设置的单个事件组。
+- 新增 `[source_health] vantage`：在配置里写一次网络出口标签，源探针、源健康记录和 `cne run maintain` 都会带上它；`CNE_SOURCE_VANTAGE` 和 `--vantage` 仍可在单次运行时覆盖。
+- `fund_flow_ths` / `sector_fund_flow_ths` 默认仍是不判新鲜度的兜底表；配置的日更调度组里排了它们（push2 不可用时用 `steps_add` 换入）时，改为要求最近收盘交易日有数据，收尾补抓会重试缺的那天，新鲜度门禁也会报出来。
+- `cne backfill` 只保留通用选项（帮助里的选项从 32 个减到 11 个）。数据集专属的修复改为 `cne repair` 子命令，默认预览、`--apply` 运行：`payment-dates`、`delisted-actions`、`ex-dates`、`bar-amounts`、`bar-turnover`、`bse-tip-turnover`、`valuation-outage`；上期所年度包导入改为 `cne import shfe-archive`。新增通用的 `--refetch`（取代衍生品的 `--refresh` 和 `sector_bars` 的 `--force`）和 `--source`（取代 `--margin-source`）；`--retry-failed` 本来就是默认行为，不再需要。旧开关已移除（见下文）。
+- 新增 `cne migrate`：一次找出并运行这个湖还欠的一次性数据迁移（默认预览，`--apply` 运行），结果记在 `meta/state/lake.json`。新建的湖会记下建湖版本，不欠早于它的迁移；`cne doctor` 会提示还没检查的迁移。弃用的一次性 `cne repair` 命令改由它统一运行（命令本身已移除，见下文）。
+- 新增 `cne schedule install|status|remove`：在命令行为当前用户安装、查看、移除定时任务（macOS launchd、Linux crontab、Windows 任务计划程序），与 `cne serve` 操作页是同一个任务；没给出的选项保留面板里的设置。
+- 新增 `cne run maintain`，定时任务在每个交易日日更后自动运行：运行审计（`[job.maintenance] full_audit_weekday` 那天做全湖审计）、新鲜度门禁、源探针与 SLO、运行证据核验、元数据备份和过期预览。此前只有仓库脚本做元数据备份，用 `cne init --schedule` 或控制台装定时任务的湖没有 manifest 备份；备份改用 SQLite 备份接口，不再依赖 `sqlite3` 命令。
+- `scripts/scheduler/` 弃用，打包定时任务覆盖它的全部功能（多条事件流计划、出口标签、按日核对的兜底表）并经过真实湖验证后才移除；迁移时先运行 `uninstall_scheduler.sh`，再 `cne schedule install`。`backup_meta.sh` 已改为调用同一份备份代码。
+- 凭证读取顺序改为环境变量 → 文件 → 配置里的值：新增 `[sources.tushare].token_file` 和 `[sources.ths_official].api_key_file`（定时任务读不到 shell 环境变量时用它），环境变量现在优先于配置里直接写的值。`cne doctor` 会提示写在配置里的凭证和其他用户可读的配置文件。
+- 修复同花顺官方 API Key 参与配置指纹计算的问题：所有凭证字段只按「是否设置」计入指纹，轮换 Key 不再改变指纹。设置了这个 Key 的湖，指纹会在升级后变化一次。东财代理地址也不再出现在 `Config` 的 repr 里。
+- 配置可以继承内置默认值：`cne config create` 和首次 `cne init` 写出的配置只有 `extends = "builtin"` 和 `[data].root`，其余设置来自当前安装版本，新版本的设置和调度 step 升级后直接生效，不再需要 `cne config upgrade`。调度组新增 `steps_add` / `steps_remove` / `enabled = false`，换掉一个 step 不会冻结整组。没有 `extends` 的完整配置照旧工作。
+- 新增 `cne config show`（生效配置，标出文件里写的值，凭证打码；`--defaults` 打印全部设置）和 `cne config upgrade --minimize`（把完整配置改写成继承默认值的形式，先列出加载后会变化的设置，`--dry-run` 只预览，原文件自动备份）。
+- 配置查找统一：未给 `--config` 时依次找 `CNE_CONFIG`、当前目录的 `configs/cnequity.toml`、用户级 `~/.config/cnequity/config.toml`（Windows 为 `%APPDATA%\cnequity\config.toml`）。CLI、`load()`、MCP 用同一套规则，在任何目录运行都指向同一个湖。首次 `cne init` / `cne config create` 在当前目录没有项目配置时写用户级配置；新增 `cne config path` 显示实际生效的配置、选中原因和数据目录。
+- 配置里的相对路径（`data.root`、`duckdb.path`）改为按配置文件所在目录解析，不再随工作目录变化。旧配置按工作目录写的相对 `data.root` 在新位置不存在时继续沿用并警告；运行 `cne config upgrade` 会把它固定为原来的绝对路径，湖不会移动。
+- 兼容 DuckDB 2.0 与 Polars 2.0：查询结果改用两边都支持的 Arrow 接口（DuckDB 2.0 移除了 `.pl()` / `.arrow()`），依赖下限改为 `duckdb>=1.5`。
+- 恢复 0.18.0 误删的 `cnequity.domain.security_identifiers`（证券代码延续注册表）。它是下游直接导入的公开接口，0.18.0 删除后 EquityLab 无法导入；内容与 0.17.1 逐字节相同，见 [Python API](docs/zh/reference/python-api.md#证券代码延续)。
+- 东财走本地代理时，代理没启动（如 Clash 随登出退出）导致的连接被拒不再被当作东财拒绝本机 IP：push2 和 datacenter 的熔断器不会触发，报错直接写明代理地址。
+- 东财不可用的日更里，`trading_status` 现在用沪深交易所的基金行情板块给当日有成交的 ETF/LOF 补写 `normal` 行（`source=exchange`）。无成交的基金仍不写行，不会被记为停牌；此前东财不可用时约 2,000 只 ETF 没有状态行，健康检查因此持续报错。已缺失的历史日期仍可用 `cne repair status-traded` 补派生行。
+- 修复增量 `adj_factors` 派生在停牌期间断档：停牌第二个交易日起，当日只有零成交占位行，派生误判为从未交易而跳过，停牌期 hfq 因子从此缺失，自愈检查也看不到。现在会沿用上一个因子，自愈检查也覆盖停牌占位行；已有缺口在下次日更时自动重取补齐。在补齐之前，`load(adjust=...)` 对这些停牌行沿用最近一个因子，hfq、qfq、total_return 三种口径结果一致（此前 qfq 和 total_return 会按 1.0 回退为原价并标记为不精确）。
+- 东财不可用时，`trading_status` 从深交所行情板块读出的停牌股不再被写成 `normal`：深交所对停牌股的开高低收都填前收、成交量为 0，此前只按开高低为 0（上交所的写法）判断停牌。2026-09-23 起东财不可用期间的深市停牌行会在后续 Baostock 停牌核对中改正，也可对相应日期重跑 `trading_status`。
+- 日线「两个独立来源都返回空」和「代码尚未上市」的证据不再在同一次日更里失效：此前证据绑定全市场证券表和 `trading_status` 文件，同一 run 的入湖整理一改写交易状态，证据就作废，`cne check` 因此把已核实无数据的证券（如摘牌当天的 000016.SZ、尚未上市的 001381.SZ）报成覆盖缺口，下一次日更也会把它们重新向各来源请求一遍。现在证据只随该证券自己的上市、退市日期失效；由交易状态推出的无数据证据仍随交易状态文件变化而失效。`cne check` 读取证据时也不再改写状态文件。
+- 没有上市日期、也从未成交的新代码，若数据源只返回成交量为 0 的占位 K 线（通达信在上市前按发行价给出），不再被当作已上市写入日线，也不再为窗口内更早的交易日记欠账；这些占位行转入隔离区，代码按「尚未上市」处理。
+- 证券从证券列表中消失后推断的 `delist_date` 改为它首次缺席前最后一根日线的日期，即最后一个上市交易日，不再是确认缺席的那次快照日期；此前会晚 1–4 个交易日（如信达证券 10-19 摘牌，最后上市日 10-16，曾记为 10-20）。已记录的日期不自动改写。查询指南中的在市条件更正为 `delist_date >= trade_date`。
+- 期货「待补交易日」不再包含补不回的日期：郑商所官方档案缺 2010-06-21、2010-07-01、2010-08-13 三个交易日的文件（当天 404、前后正常），与上期所 2004-06-25、2007-06-04 一样豁免；2019 年起上期能源合约随上期所文件发布，旧路由留下的 INE 回执不再记欠账；交易所文件本身不自洽的行（如 2021-07-28 LU2108 收盘价 3450 高于最高价 3180）仍隔离不入湖，但不再让该交易日一直欠着。
+- `cne audit` 对已落盘 Parquet 的行情检查改为与写入时同一套规则：新增覆盖 `minute_bars_15m/30m/60m`、`pre_close <= 0` 以及期货/期权 bar 的不变量。旧湖里此前漏检的坏行现在会报出，按提示重取对应分区即可。
+- 每日交易所状态快照（仅写入快照库，不改变 `trading_status` 的权威来源）现在也记录当日有成交的沪深 ETF/LOF；无成交的基金不写行。
+- 东财本地代理探测到未运行后，30 秒内不再逐个请求重复探测；代理恢复后第一次成功响应即解除。
+- MCP 的 stdio 与 HTTP 传输使用同一套批量请求规则：空数组 `[]` 返回 JSON-RPC Invalid Request 错误（此前 HTTP 返回 202、stdio 不回复），批量里的非法成员只让该成员报错。
+- 东财热门榜中被标成 `SZ920xxx` 的北交所股票按 BJ 代码保留，不再丢弃；榜单不足所需条数时按数据源载荷错误上报。东财 clist 翻页失败保留底层错误类别，运行结果里的失败原因不再统一显示为 execution_error。
+- 整数字段转换不再经过浮点，超过 2^53 的整数保持精度，越界值不会被舍入回 Int64 范围内。
+- CLI 遇到数据湖生命周期冲突（如 `cne clean` 时引用已变化）只打印原因，不再输出 traceback。
+- 移除若干无调用方的内部辅助函数（如 `sweep_stock_bars`、`fetch_adj_factor_series_baostock_many`、`finish_metrics`）。下游公开导入面由测试锁定，见 [Python API](docs/zh/reference/python-api.md#证券代码延续)。
+
+## [0.18.0] — 2026-10-19
+
+- **升级步骤：** `pip install -U cnequity` 后重启 `cne serve` 和已在运行的 `cne mcp`。数据集契约没有变化，不需要迁移数据或改配置。调度或脚本里依赖 `cne backfill` 退出 0 的，按下方「退出码变化」改为读取 `usable_result` / `coverage_status`；调用了已移除的 `cne storage` 试验与归档子命令的，需要删去这些调用；仍需运行已弃用迁移命令的旧湖，请在升级到 0.20.0 之前完成。
+- **弃用：** 11 个一次性迁移命令 `cne repair missing-values`、`financial-announcements`、`fund-factors`、`daily-bar-coverage`、`fund-listing-dates`、`valuation-basis`、`orphan-symbols`、`stale-suspensions`、`status-outages`、`status-listing-window`、`misdated-valuation` 已弃用，将在 0.20.0 移除。它们只修 0.17 及更早版本写入的数据，当前版本采集时已不再产生这些问题，新建的湖不需要运行。旧湖如需迁移（包括 0.17.0 升级步骤里的 `status-outages` 和 `misdated-valuation`），请在升级到 0.20.0 之前用 0.18 或 0.19 运行。`cne repair --help` 中这些命令标有「已弃用」，运行时在 stderr 打印警告，stdout 的 JSON 报告不变。
+- **弃用：** `cne derive bse_code_migration`、`cne derive valuation_orphans`，以及 `cne backfill` 的 `--eastmoney-bj-repair`、`--tdx-volume-repair`、`--bj-amount-repair` 同样将在 0.20.0 移除，规则同上；`--bj-amount-repair` 请改用 `--tdx-amount-repair`，孤立估值行在 `valuation_metrics` 回填时会自动清理。`--ths-repair` 和 `--bse-tip-repair` 对新建的湖仍然有用，继续保留，帮助中去掉了「历史迁移用」的说法。
+- **移除：** `cne storage` 的试验与归档子命令（`experiment-create`、`archive`、`experiment-seal`、`artifact-verify`、`resolve`、`experiment-plan`、`experiment-apply`），以及 serve 存储页的「试验目录」清理。版本保留、标记与网页确认删除不受影响；旧注册表里登记的试验照常读取，其目录不会被删除，不再需要时可自行处理。
+- 新增 `cne storage raw-external`：把财报 PDF 等大原文登记到独立磁盘或 iCloud Drive 等外置目录，本地保留来源、观察时间和哈希记录；只登记，不移动或删除已有文件。
+- `cne init` 与日更、事件任务不再同时运行；Ctrl-C 中断写湖命令时说明已完成的部分会保留，以及如何续跑。`cne serve` 把进程已退出、仍记为运行中的 run 显示为中断。
+- `cne query` 和 MCP 改为在内存中建立 DuckDB 视图，不再依赖磁盘上的视图库；配置文件 TOML 写错时报错指明行号和列号。
+- `cne init --profile sample` 默认写入 `data/cnequity-sample/` 与 `configs/cnequity.sample.toml`，不再与 demo 共用目录和配置。
+- 事件任务的启动时间加入随机偏移，北京时间 01–07 点改为每小时一次；新闻连续 3 次被拒后暂停到本地午夜。
+- 修复新用户和小数据湖上的一批问题：`--profile demo --research` 因新浪未启用而崩溃；空数据集预览修复时报错或登记版本；缺少输入数据集时打印堆栈而不是一行说明；`--only`、`--symbols` 等选项重复给出时只保留最后一个；`backfill --symbols` 在未分标的数据集上崩溃；demo 湖误报事件数据集过期，或对 demo 湖执行 `run daily --stale-only` 时抓取全市场快照。
+- **退出码变化（升级须知）：** `cne backfill`（含 `--outstanding`）一行都没补上时改为退出 1：状态不是 `success`、`usable_result` 为 false 且写入 0 行，包括数据源全部不可用，以及数据源无法提供该范围（如对只有快照的数据集做历史回填、北交所 `trading_status`）。以前这类回填退出 0，结尾还打印「✓ 日线没有变化，无需重算」；现在改为说明没有取到可用数据。JSON 结果不变。依赖回填退出 0 的脚本请改为读取 `usable_result` / `coverage_status`；日更和其他取数命令的退出码不变。`cne sources substitutes` 在所有来源都被跳过时说明没有可比较的探测结果，不再显示「所有端点可用」。
+- `cne verify` 和 `cne status` 按最近一次完整查询来源的时间判断事件数据是否新鲜，补抓没有新数据时不再一直报过期；`cne run retry` 遇到已成功的 run 时说明无需重试，不再重跑整个任务；指标正确统计步骤发出的东财请求数。
+
 ## [0.17.1] — 2026-10-18
 
 - **升级步骤：** `pip install -U cnequity` 后重启 `cne serve`。数据集契约没有变化，不需要迁移数据或改配置。

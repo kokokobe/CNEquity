@@ -1941,3 +1941,112 @@ def test_an_unchanged_factor_partition_is_not_rewritten(tmp_path):
     assert dict(zip(written["symbol"], written["source"], strict=True))["000001.SZ"] == (
         "derived_stock_actions"
     )
+
+
+# --- suspensions across daily runs -------------------------------------------
+# From the second suspended session on, the incremental slice holds only
+# zero-volume placeholders. The derive used to read that as "never traded" and
+# skip the symbol, and the traded-only self-heal could not see the hole, so a
+# suspension kept no factor past its first session.
+
+
+def _write_suspended_bar(cfg, symbol: str, trade_date: date) -> None:
+    bars_dir = cfg.curated_root / "daily_bars" / f"trade_date={trade_date.isoformat()}"
+    bars_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": [symbol],
+            "trade_date": [trade_date],
+            "open": [1.0],
+            "high": [1.0],
+            "low": [1.0],
+            "close": [1.0],
+            "volume": [0],
+            "amount": [0.0],
+        }
+    ).write_parquet(bars_dir / f"{symbol.replace('.', '_')}.parquet")
+
+
+def _factor_dates(cfg, symbol: str) -> list[date]:
+    root = cfg.derived_root / "adj_factors"
+    frame = pl.concat(
+        [
+            pl.read_parquet(path, columns=["symbol", "trade_date"])
+            for path in root.rglob("*.parquet")
+        ]
+    )
+    return sorted(frame.filter(pl.col("symbol") == symbol)["trade_date"].to_list())
+
+
+def test_daily_runs_keep_carrying_the_factor_through_a_suspension(adj_config):
+    _write_factor_cache(adj_config, "600519.SH", date(2024, 6, 28), factor=0.5)
+    compute_adj_factors(adj_config)
+    for day in (date(2024, 7, 1), date(2024, 7, 2), date(2024, 7, 3)):
+        _write_suspended_bar(adj_config, "600519.SH", day)
+        compute_adj_factors(adj_config)
+
+    assert _factor_dates(adj_config, "600519.SH") == [
+        date(2024, 6, 28),
+        date(2024, 7, 1),
+        date(2024, 7, 2),
+        date(2024, 7, 3),
+    ]
+
+
+def test_uncovered_symbols_finds_a_suspension_behind_the_watermark(adj_config):
+    from cnequity.derive.adj_factors import _uncovered_symbols
+
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_suspended_bar(adj_config, "600519.SH", date(2024, 7, 1))
+    for day in (date(2024, 7, 1), date(2024, 7, 2)):
+        _write_bar(adj_config, "000001.SZ", day)
+        _write_adj_partition(adj_config, "000001.SZ", day)
+
+    assert _uncovered_symbols(adj_config) == {"600519.SH"}
+
+
+def test_a_suspension_after_the_watermark_is_left_to_the_incremental_path(adj_config):
+    from cnequity.derive.adj_factors import _uncovered_symbols
+
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_suspended_bar(adj_config, "600519.SH", date(2024, 7, 1))
+
+    assert _uncovered_symbols(adj_config) == set()
+
+
+def test_placeholders_after_delisting_do_not_mark_a_symbol_uncovered(adj_config):
+    from cnequity.derive.adj_factors import _uncovered_symbols
+
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_suspended_bar(adj_config, "600519.SH", date(2024, 7, 1))
+    for day in (date(2024, 7, 1), date(2024, 7, 2)):
+        _write_bar(adj_config, "000001.SZ", day)
+        _write_adj_partition(adj_config, "000001.SZ", day)
+    instruments = adj_config.curated_root / "instruments"
+    instruments.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH", "000001.SZ"],
+            "asset_type": ["stock", "stock"],
+            "delist_date": [date(2024, 6, 28), None],
+        }
+    ).write_parquet(instruments / "part-merged.parquet")
+
+    assert _uncovered_symbols(adj_config) == set()
+
+
+def test_one_incremental_derive_heals_a_suspension_hole_and_settles(adj_config):
+    from cnequity.derive.adj_factors import _uncovered_symbols
+
+    _write_adj_partition(adj_config, "600519.SH", date(2024, 6, 28))
+    _write_suspended_bar(adj_config, "600519.SH", date(2024, 7, 1))
+    for day in (date(2024, 7, 1), date(2024, 7, 2)):
+        _write_bar(adj_config, "000001.SZ", day)
+        _write_adj_partition(adj_config, "000001.SZ", day, factor=1.0)
+    _write_factor_cache(adj_config, "000001.SZ", date(2024, 7, 1), factor=1.0)
+
+    compute_adj_factors(adj_config)
+
+    assert date(2024, 7, 1) in _factor_dates(adj_config, "600519.SH")
+    # A healed symbol must not be refetched again on every later run.
+    assert _uncovered_symbols(adj_config) == set()

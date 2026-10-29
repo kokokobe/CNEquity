@@ -24,7 +24,7 @@ from cnequity.quality.decision_gaps import (
     check_research_window,
     save_immutable,
 )
-from cnequity.query.reader import load
+from cnequity.query.reader import ReaderError, load
 from cnequity.storage.raw_archive import RawPayloadArchive
 from cnequity.storage.revisions import committed_revision
 
@@ -76,7 +76,9 @@ def reviewed_rights_inventory(
         meta_root=root / "meta",
     )
     if revision is None:
-        raise ValueError("corporate_actions has no committed revision")
+        raise ReaderError(
+            "corporate_actions has no committed revision; build it with `cne backfill corporate_actions`"
+        )
     pinned_id = revision_id or revision[1]
     actions = load("corporate_actions", data_root=root, start=start, end=end, revision=pinned_id)
     by_key = {

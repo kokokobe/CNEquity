@@ -216,15 +216,16 @@ def trading_calendar_horizon_findings(config: Config, trade_date: date) -> list[
     and a year of "trading days" that are not would land in every window,
     watermark and backtest built on them.
 
-    Verified against the current table (ends 2027-10-07): asking for 2028-01-26,
-    the first day of that 春节, returns is_trading=True.
+    The table's end is the seed's last covered date, not its last closure: the
+    final holiday of a year is followed by weekdays that are real sessions.
     """
+    from cnequity.adapters.calendar.exchange_calendar import calendar_seed_end
     from cnequity.adapters.calendar.holidays_cn import CLOSED_DATES
 
     cal_root = config.curated_root / "trading_calendar"
     if not dataset_has_parquet(cal_root) or not CLOSED_DATES:
         return []
-    table_end = date.fromisoformat(max(CLOSED_DATES))
+    table_end = calendar_seed_end()
 
     written = (
         dedupe_lazy_by_primary_key(scan_parquet_root(cal_root), "trading_calendar")
@@ -411,8 +412,8 @@ def valuation_bars_coverage_findings(config: Config, trade_date: date) -> list[d
                 "message": (
                     f"{len(no_bar_ever)} valuation symbol(s) have no daily_bars row "
                     f"anywhere (delisted/non-tradable; "
-                    f"e.g. {', '.join(no_bar_ever[:_SAMPLE])}) — filter the valuation "
-                    "step to the bar universe"
+                    f"e.g. {', '.join(no_bar_ever[:_SAMPLE])}) — `cne backfill "
+                    "valuation_metrics` drops them"
                 ),
                 "orphan_count": len(no_bar_ever),
                 "orphan_sample": no_bar_ever[:_SAMPLE],
@@ -1086,7 +1087,7 @@ def adj_factor_reconciliation_findings(
         repair_hint = (
             " Explicit Baostock repair can cover "
             f"{baostock_repairable} delisted SH/SZ symbol(s); run "
-            "`cne backfill corporate_actions --baostock-repair --symbols ...` "
+            "`cne repair delisted-actions --source baostock --symbols ... --apply` "
             "for a scoped repair."
             if baostock_repairable
             else ""
@@ -1954,11 +1955,10 @@ def balance_sheet_identity_findings(config: Config) -> list[dict]:
     root = config.curated_root / "financial_statement_items"
     if not dataset_has_parquet(root):
         return []
+    # Not the canonical dedupe: it picks one source per item, which is the
+    # cross-source mix this check must not judge.
     frame = (
-        dedupe_lazy_by_primary_key(
-            scan_parquet_root(root, partition_col="report_period"),
-            "financial_statement_items",
-        )
+        scan_parquet_root(root, partition_col="report_period")
         .filter(
             (pl.col("statement_type") == "balance")
             & pl.col("item_code").is_in(["total_assets", "total_liabilities", "total_equity"])
@@ -1970,13 +1970,17 @@ def balance_sheet_identity_findings(config: Config) -> list[dict]:
 
     # The primary key carries announce_date and every observed vintage is
     # kept, so a restated period holds several rows per item; compare the
-    # latest reading of each, in disclosure then observation order.
+    # latest reading of each, in disclosure then observation order, within
+    # one source. Across sources the three totals can be different vintages:
+    # 600301.SH's 2022 filing shows assets of 466m, the vendors' restatement
+    # after its 2023 reverse acquisition 6.64bn, and pairing one's assets
+    # with the other's equity is a breach of nothing.
     order = [c for c in ("announce_date", "observed_at", "fetched_at") if c in frame.columns]
     latest = (
-        frame.sort(["symbol", "report_period", "item_code", *order], nulls_last=False)
-        .group_by("symbol", "report_period", "item_code", maintain_order=True)
-        .agg(pl.col("item_value").last().alias("value"), pl.col("source").last().alias("source"))
-        .pivot(on="item_code", index=["symbol", "report_period"], values="value")
+        frame.sort(["symbol", "report_period", "source", "item_code", *order], nulls_last=False)
+        .group_by("symbol", "report_period", "source", "item_code", maintain_order=True)
+        .agg(pl.col("item_value").last().alias("value"))
+        .pivot(on="item_code", index=["symbol", "report_period", "source"], values="value")
     )
     for column in ("total_assets", "total_liabilities", "total_equity"):
         if column not in latest.columns:
@@ -1995,12 +1999,18 @@ def balance_sheet_identity_findings(config: Config) -> list[dict]:
     ).filter(pl.col("_rel") > BALANCE_IDENTITY_TOLERANCE)
     if breached.is_empty():
         return []
+    # Counted per period: a period two sources both break is one defect.
+    breached = breached.sort("_rel", descending=True).unique(
+        ["symbol", "report_period"], keep="first", maintain_order=True
+    )
+    periods_checked = checked.select("symbol", "report_period").unique().height
 
     def _sample(frame: pl.DataFrame) -> list[dict]:
         return [
             {
                 "symbol": row["symbol"],
                 "report_period": row["report_period"],
+                "source": row["source"],
                 "total_assets": row["total_assets"],
                 "total_liabilities": row["total_liabilities"],
                 "total_equity": row["total_equity"],
@@ -2053,12 +2063,12 @@ def balance_sheet_identity_findings(config: Config) -> list[dict]:
                 "severity": "warning",
                 "check": "balance_sheet_identity",
                 "message": (
-                    f"{modern.height} of {checked.height} balance-sheet periods from "
+                    f"{modern.height} of {periods_checked} balance-sheet periods from "
                     f"{MODERN_STATEMENT_YEAR} on break assets = liabilities + equity by more "
                     "than a basis point"
                 ),
                 "rows": modern.height,
-                "checked": checked.height,
+                "checked": periods_checked,
                 "since_year": MODERN_STATEMENT_YEAR,
                 "sample": _sample(modern),
                 # Every breached period, so a refetch can name exactly these;
@@ -2082,7 +2092,7 @@ def balance_sheet_identity_findings(config: Config) -> list[dict]:
                     "than chased"
                 ),
                 "rows": historical.height,
-                "checked": checked.height,
+                "checked": periods_checked,
                 "before_year": MODERN_STATEMENT_YEAR,
                 "source_limited": True,
                 "by_report_year": by_era,
@@ -2101,7 +2111,7 @@ def balance_sheet_identity_findings(config: Config) -> list[dict]:
                     "partial, so they are counted rather than chased"
                 ),
                 "rows": pre_listing.height,
-                "checked": checked.height,
+                "checked": periods_checked,
                 "source_limited": True,
                 "sample": _sample(pre_listing),
             }
@@ -2387,8 +2397,8 @@ def adj_factor_arbitration_findings(config: Config) -> list[dict]:
         remediation = (
             f" Missing actions span {len(reachable)} distinct ex-date(s) before the EastMoney backfill "
             f"floor {EASTMONEY_BACKFILL_FLOOR.isoformat()}, which the sweep cannot reach; ask "
-            "the report for them by exact date with `cne backfill corporate_actions "
-            f"--eastmoney-date-repair --ex-dates {shown}`{more}. It answers one date at a time "
+            "the report for them by exact date with `cne repair ex-dates "
+            f"--ex-dates {shown} --apply`{more}. It answers one date at a time "
             "and does not carry every older event, so a date it has nothing for stays open."
         )
     against_factors = silent_yes + baseless_no

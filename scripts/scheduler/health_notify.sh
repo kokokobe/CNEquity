@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# DEPRECATED: `cne schedule install` installs the packaged,
+# cross-platform timer, which runs `cne run daily` and then `cne run maintain`.
+# Run scripts/scheduler/uninstall_scheduler.sh before switching, or both update the lake.
 # B2 — Freshness SLO check with a local notification on failure.
 # Runs the whole-lake health snapshot and per-dataset freshness gate; if either
 # reports a problem (non-zero exit), pops a macOS notification and exits 1 so a

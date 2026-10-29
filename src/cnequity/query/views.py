@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import tempfile
 from pathlib import Path
 
 import duckdb
@@ -14,7 +17,10 @@ from cnequity.domain.market_profile import OTC_SCOPED_DATASETS, otc_quote_sql
 from cnequity.domain.partitions import uses_hive
 from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
 from cnequity.domain.trading_status import evidence_rank_sql
+from cnequity.storage.atomic import replace_with_retry
 from cnequity.storage.revisions import resolve_committed_root
+
+logger = logging.getLogger(__name__)
 
 
 def _duckdb_type(dtype: pl.DataType) -> str:
@@ -202,14 +208,69 @@ def _view_select_sql(
     )
 
 
+def views_connection(config: Config, *, require_data: bool = False) -> duckdb.DuckDBPyConnection:
+    """An in-memory connection holding every lake view, for one reader.
+
+    Readers used to rebuild the views inside ``{data.root}/duckdb/cnequity.duckdb``
+    and then reopen it read-only. DuckDB lets one process hold that file while
+    it writes, so two `cne query` at once, a query beside an MCP agent, or any
+    query while a run finished its compact failed with "Could not set lock on
+    file". Views are only definitions over the Parquet files, so each reader
+    now keeps its own and never opens the shared file.
+    """
+    con = duckdb.connect(":memory:")
+    try:
+        _define_views(con, config, require_data=require_data)
+    except BaseException:
+        con.close()
+        raise
+    return con
+
+
 def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
+    """Rewrite the on-disk view database for tools outside cnequity.
+
+    Built beside the target and swapped in with one rename, so a DuckDB
+    session or notebook holding the previous file keeps reading it and nothing
+    here ever waits for, or fights over, that file's lock. Where the rename is
+    refused (Windows, while the file is open) the previous views stay: they
+    read Parquet by glob, so they still see every new partition.
+    """
     db_path = config.duckdb_path or (config.data_root / "duckdb" / "cnequity.duckdb")
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    handle, name = tempfile.mkstemp(dir=db_path.parent, prefix=f".{db_path.name}.", suffix=".tmp")
+    os.close(handle)
+    building = Path(name)
+    building.unlink()  # DuckDB refuses to open an empty file as a database
+    try:
+        con = duckdb.connect(str(building))
+        try:
+            _define_views(con, config, require_data=require_data)
+            con.execute("CHECKPOINT")
+        finally:
+            con.close()
+        # A write-ahead log left by an older version's crash would be replayed
+        # against the new file.
+        Path(f"{db_path}.wal").unlink(missing_ok=True)
+        try:
+            replace_with_retry(building, db_path)
+        except OSError as exc:
+            if not db_path.exists():
+                raise
+            logger.warning(
+                "Kept the previous DuckDB views at %s; replacing them failed: %s", db_path, exc
+            )
+    finally:
+        building.unlink(missing_ok=True)
+        Path(f"{building}.wal").unlink(missing_ok=True)
+    return db_path
+
+
+def _define_views(con: duckdb.DuckDBPyConnection, config: Config, *, require_data: bool) -> None:
     # as_posix() keeps Windows drive letters (`C:/…`) while turning `\` into
     # `/`, which is what the SQL literals below and DuckDB's glob both want.
     root = config.data_root.resolve().as_posix()
 
-    con = duckdb.connect(str(db_path))
     con.execute(f"SET memory_limit='{config.duckdb_memory_limit}'")
     con.execute(f"SET threads={config.duckdb_threads}")
 
@@ -462,5 +523,3 @@ def ensure_duckdb_views(config: Config, *, require_data: bool = False) -> Path:
         )
         """
     )
-    con.close()
-    return db_path

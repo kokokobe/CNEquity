@@ -8,10 +8,9 @@ from cnequity.storage.state import StateStore
 
 
 @pytest.mark.parametrize("legacy_version", [None, 2])
-def test_legacy_daily_bar_empty_votes_are_invalidated(tmp_path, monkeypatch, legacy_version):
+def test_legacy_daily_bar_empty_votes_are_invalidated(tmp_path, legacy_version):
     cfg = Config(data_root=tmp_path / "lake", negative_evidence_ttl_days=7)
     clock = datetime(2026, 10, 11, tzinfo=timezone.utc)
-    monkeypatch.setattr("cnequity.steps.common._instrument_identity", lambda *args: {"catalog": 1})
     entry = {
         "symbol": "600519.SH",
         "window_start": "2026-10-09",

@@ -953,8 +953,9 @@ def test_absence_does_not_delist_a_security_that_never_traded(tmp_path, pending_
 
     out = pl.read_parquet(curated / "instruments" / "part-merged.parquet")
     marks = dict(zip(out["symbol"].to_list(), out["delist_date"].to_list(), strict=True))
-    # The traded name is still inferred delisted after two absences.
-    assert marks["600519.SH"] == date(2026, 9, 10)
+    # The traded name is still inferred delisted after two absences, on its
+    # last listed day: the final bar, not the snapshot that confirmed it.
+    assert marks["600519.SH"] == date(2026, 9, 8)
     # The pending listing is left alone.
     assert marks["301688.SZ"] is None
 
@@ -1050,3 +1051,49 @@ def test_existing_normal_named_etf_auxiliary_codes_do_not_enter_capture_scope(tm
     # Remove existing stubs before lifecycle comparison, so absence from the
     # next vendor roster cannot manufacture a delisting event for them.
     assert set(_strip_subscription_placeholders(frame)["symbol"]) == {"530060.SH", "159915.SZ"}
+
+
+def test_inferred_delist_date_is_the_last_bar_before_the_first_absence(tmp_path):
+    """601059.SH: halted from 2026-10-15, 摘牌 on 10-19, absent from the 10-19
+    and 10-20 snapshots. It was stamped 10-20; its last listed day is 10-16."""
+    curated = tmp_path / "curated"
+    staging = tmp_path / "staging"
+    (curated / "instruments").mkdir(parents=True)
+
+    def row(symbol):
+        return {
+            "symbol": symbol,
+            "name": symbol[:6],
+            "exchange": "SH",
+            "asset_type": "stock",
+            "list_date": date(2023, 2, 1),
+            "delist_date": None,
+            "prev_symbol": None,
+            "source": "tdx_protocol",
+            "data_version": "v1",
+            "fetched_at": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        }
+
+    filler = [row(f"6011{i:02d}.SH") for i in range(60)]
+    pl.DataFrame([*filler, row("601059.SH")]).write_parquet(
+        curated / "instruments" / "part-merged.parquet"
+    )
+    for day, volume in (
+        (date(2026, 10, 14), 500),
+        (date(2026, 10, 15), 0),
+        (date(2026, 10, 16), 0),
+    ):
+        part = curated / "daily_bars" / f"trade_date={day}"
+        part.mkdir(parents=True)
+        pl.DataFrame(
+            {"symbol": ["601059.SH"], "trade_date": [day], "close": [15.56], "volume": [volume]}
+        ).write_parquet(part / "part-merged.parquet")
+
+    writer = StagingWriter(staging)
+    for run, day in (("run-1", date(2026, 10, 19)), ("run-2", date(2026, 10, 20))):
+        writer.write_batch("instruments", run, "batch-0", pl.DataFrame(filler))
+        compact_instruments(staging, curated, run, day)
+
+    out = pl.read_parquet(curated / "instruments" / "part-merged.parquet")
+    marks = dict(zip(out["symbol"].to_list(), out["delist_date"].to_list(), strict=True))
+    assert marks["601059.SH"] == date(2026, 10, 16)

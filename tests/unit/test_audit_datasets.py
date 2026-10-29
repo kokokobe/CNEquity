@@ -1,11 +1,16 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import polars as pl
 import pytest
 
 from cnequity.config import Config
 from cnequity.domain.datasets import PARTITION_COLS, is_dataset_enabled
-from cnequity.domain.schemas import MOCK_SOURCE
+from cnequity.domain.schemas import (
+    DATASET_SCHEMAS,
+    MOCK_SOURCE,
+    SchemaValidationError,
+    validate_dataframe,
+)
 from cnequity.quality.audit import run_audit
 from cnequity.quality.dataset_checks import (
     audit_curated_dataset,
@@ -104,6 +109,23 @@ def test_audit_on_a_demo_lake_judges_only_the_datasets_it_holds(tmp_path):
     )
     exists_checks = {f["dataset"] for f in payload["findings"] if f.get("check") == "exists"}
     assert exists_checks == set(), "a dataset this profile never ingests is not a finding"
+
+
+@pytest.mark.parametrize(("profile", "expected"), [("demo", False), (None, True)])
+def test_fragmented_partitions_are_not_flagged_on_a_demo_lake(tmp_path, profile, expected):
+    from cnequity.quality.audit import _collect_lake_findings
+
+    cfg = Config(data_root=tmp_path / "data", lake_profile=profile)
+    for offset in range(31):
+        day = date(2024, 5, 1) + timedelta(days=offset)
+        part = cfg.curated_root / "daily_bars" / f"trade_date={day.isoformat()}"
+        part.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame([_bar_row("600519.SH", day)]).write_parquet(part / "part-0.parquet")
+
+    findings = _collect_lake_findings(cfg, date(2024, 6, 28), full=True)
+
+    flagged = any(f.get("check") == "partition_fragmentation" for f in findings)
+    assert flagged is expected
 
 
 def test_row_count_mutation_warns_on_partial_market_drop():
@@ -275,6 +297,90 @@ def test_full_audit_scans_historical_schema_contract(tmp_path):
     assert contract[0]["sample"][0]["file"].endswith(
         f"trade_date={old_date.isoformat()}/part-merged.parquet"
     )
+
+
+def _market_contract_frame(dataset: str) -> pl.DataFrame:
+    schema = DATASET_SCHEMAS[dataset]
+    row = {
+        **dict.fromkeys(schema),
+        **_bar_row("600519.SH", date(2024, 6, 28)),
+        "bar_time": datetime(2024, 6, 28, 15),
+        "frequency": "15m",
+        "resampled_from": "1m",
+        "exchange": "CFE",
+        "exchange_code": "IF2407",
+        "product": "IF",
+        "underlying_symbol": "IF2407.CFE",
+        "option_type": "C",
+        "strike": 10.0,
+        "settle": 10.5,
+        "pre_settle": 10.0,
+        "open_interest": 10,
+        "fetched_at": datetime(2024, 6, 28, tzinfo=timezone.utc),
+    }
+    return validate_dataframe(
+        pl.DataFrame([{key: row[key] for key in schema}], schema=schema), dataset
+    )
+
+
+@pytest.mark.parametrize(
+    ("dataset", "column", "value"),
+    [
+        ("daily_bars", "pre_close", 0.0),
+        ("minute_bars_15m", "high", 9.0),
+        ("minute_bars_30m", "close", -1.0),
+        ("minute_bars_60m", "volume", -1),
+        ("futures_bars", "settle", 0.0),
+        ("futures_bars", "high", 9.0),
+        ("futures_minute_bars", "open_interest", -1),
+        ("option_bars", "settle", -1.0),
+        ("option_bars", "option_type", "unknown"),
+        ("option_bars", "delta", 1.01),
+    ],
+)
+@pytest.mark.parametrize("full", [False, True])
+def test_stored_market_contract_rejects_the_same_impossible_rows_as_writers(
+    tmp_path, dataset, column, value, full
+):
+    frame = _market_contract_frame(dataset).with_columns(pl.lit(value).alias(column))
+    with pytest.raises(SchemaValidationError, match="invariants"):
+        validate_dataframe(frame, dataset)
+    root = tmp_path / dataset
+    part = root / "trade_date=2024-06-28"
+    part.mkdir(parents=True)
+    frame.write_parquet(part / "part.parquet")
+
+    findings = audit_curated_dataset(dataset, "trade_date", root, date(2024, 6, 28), full=full)
+
+    contract = [finding for finding in findings if finding["check"] == "schema_contract"]
+    assert len(contract) == 1
+    assert contract[0]["invalid_files"] == 1
+    assert contract[0]["unreadable_files"] == 0
+    assert "invariants" in contract[0]["sample"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    ("dataset", "updates", "omit"),
+    [
+        ("minute_bars_15m", {"volume": 0, "high": 9.0}, []),
+        ("futures_bars", {"open": None, "high": None, "low": None}, ["oi_change", "amount"]),
+        ("option_bars", {"settle": 0.0}, ["delta", "implied_vol", "series_implied_vol"]),
+    ],
+)
+def test_stored_market_contract_preserves_valid_placeholders_and_nullable_evolution(
+    tmp_path, dataset, updates, omit
+):
+    frame = _market_contract_frame(dataset).with_columns(
+        pl.lit(value).alias(column) for column, value in updates.items()
+    )
+    validate_dataframe(frame, dataset)
+    root = tmp_path / dataset
+    root.mkdir()
+    frame.drop(omit).write_parquet(root / "part.parquet")
+
+    findings = audit_curated_dataset(dataset, "trade_date", root, date(2024, 6, 28), full=True)
+
+    assert not [finding for finding in findings if finding["check"] == "schema_contract"]
 
 
 def test_full_audit_isolates_an_unreadable_historical_parquet(tmp_path):
@@ -817,3 +923,27 @@ def test_an_unregistered_source_that_is_not_only_mock_stays_an_error():
     ]
 
     assert _profile_adjusted_findings(_Cfg(), findings)[0]["severity"] == "error"
+
+
+def test_trading_status_coverage_warning_names_the_keys_it_left_out(tmp_path):
+    from cnequity.quality.trading_status_coverage import trading_state_coverage_findings
+
+    cfg = Config(data_root=tmp_path / "data")
+    part = cfg.curated_root / "daily_bars" / "trade_date=2024-06-28"
+    part.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame([_bar_row("600519.SH", date(2024, 6, 28))]).write_parquet(part / "part-0.parquet")
+    inst = cfg.curated_root / "instruments"
+    inst.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": ["600519.SH"],
+            "asset_type": ["stock"],
+            "list_date": pl.Series([None], dtype=pl.Date),
+            "delist_date": pl.Series([None], dtype=pl.Date),
+        }
+    ).write_parquet(inst / "part-0.parquet")
+
+    [finding] = trading_state_coverage_findings(cfg, date(2024, 6, 28))
+
+    assert finding["severity"] == "warning"
+    assert "unknown_listing_date: 1" in finding["message"]

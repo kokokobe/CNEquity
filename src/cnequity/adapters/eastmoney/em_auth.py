@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import random
+import socket
 import threading
 import time
 from typing import TYPE_CHECKING
@@ -42,6 +43,7 @@ from cnequity.adapters.eastmoney.host_guard import (  # noqa: F401 — re-export
 )
 from cnequity.domain.http_policy import record_http_response, record_request_event
 from cnequity.domain.rate_limit import source_request
+from cnequity.domain.request_meter import count_request
 
 if TYPE_CHECKING:
     from cnequity.config import Config
@@ -208,6 +210,46 @@ def rate_limit_if_unconfigured(client: object, config: Config | None) -> None:
         config.rate_limit("eastmoney")
 
 
+def _proxy_accepts_connections(proxy: str) -> bool:
+    """Whether a TCP connection to the proxy itself succeeds."""
+    parsed = urlparse(proxy)
+    default_port = {"https": 443, "socks5": 1080, "socks5h": 1080}.get(parsed.scheme, 80)
+    try:
+        with socket.create_connection(
+            (parsed.hostname or "127.0.0.1", parsed.port or default_port), timeout=2.0
+        ):
+            return True
+    except OSError:
+        return False
+
+
+# A proxy that refused a probe stays "dead" this long: every request through a
+# dead proxy would otherwise pay its own probe, and a proxy that comes back
+# mid-window must not have its first failures blamed on EastMoney.
+_PROXY_DEAD_TTL_SECONDS = 30.0
+_proxy_dead_until: dict[str, float] = {}
+_proxy_state_lock = threading.Lock()
+
+
+def _proxy_is_dead(proxy: str) -> bool:
+    """Whether *proxy* refused a probe now or within the last TTL window."""
+    with _proxy_state_lock:
+        if _proxy_dead_until.get(proxy, 0.0) > time.monotonic():
+            return True
+    if _proxy_accepts_connections(proxy):
+        return False
+    with _proxy_state_lock:
+        _proxy_dead_until[proxy] = time.monotonic() + _PROXY_DEAD_TTL_SECONDS
+    return True
+
+
+def _proxy_answered(proxy: str | None) -> None:
+    """A response came back through *proxy*: it is running again."""
+    if proxy is not None:
+        with _proxy_state_lock:
+            _proxy_dead_until.pop(proxy, None)
+
+
 def is_transport_fail_fast(exc: BaseException) -> bool:
     """True for failures that retrying the same request will not fix.
 
@@ -318,6 +360,7 @@ class EastMoneyClient:
                 host_guard.admit(self.config, url)
                 direct_client = self._get_direct_client()
                 record_request_event(self.config, _request_source(url), "fallback")
+                count_request()
                 response = direct_client.get(url, headers=headers, **kwargs)
                 record_http_response(
                     self.config, _request_source(url), response, expected_json=True
@@ -327,6 +370,26 @@ class EastMoneyClient:
             raise
         self._note_outcome(url, status_code=response.status_code)
         return response
+
+    def _proxy_failure(self, exc: BaseException) -> BaseException:
+        """Name a refused connection to the proxy itself.
+
+        A proxy that is not running (Clash gone after a logout) raises a plain
+        ``ConnectError``, which the breaker would read as EastMoney refusing
+        this IP and close every host until midnight. The proxy is probed
+        directly so a genuine refusal from EastMoney is never relabelled; a
+        failed probe is remembered briefly (see ``_proxy_is_dead``).
+        """
+        if (
+            self._proxy is None
+            or not isinstance(exc, httpx.ConnectError)
+            or isinstance(exc, host_guard.EastMoneyHostBlockedError)
+            or not _proxy_is_dead(self._proxy)
+        ):
+            return exc
+        return host_guard.EastMoneyProxyUnreachableError(
+            f"EastMoney proxy {self._proxy} is unreachable (is it running?): {exc}"
+        )
 
     def _note_outcome(
         self, url: str, *, status_code: int | None = None, exc: BaseException | None = None
@@ -381,6 +444,7 @@ class EastMoneyClient:
                 host_guard.admit(self.config, url)
                 if request_event is not None:
                     record_request_event(self.config, _request_source(url), request_event)
+                count_request(retry=request_event == "retry")
                 response = self._client.get(url, headers=headers, **kwargs)
                 record_http_response(
                     self.config, _request_source(url), response, expected_json=True
@@ -391,10 +455,13 @@ class EastMoneyClient:
             httpx.ProxyError,
             httpx.RemoteProtocolError,
         ) as exc:
-            self.last_route_outcome["primary_error"] = type(exc).__name__
-            self._note_outcome(url, exc=exc)
+            failure = self._proxy_failure(exc)
+            self.last_route_outcome["primary_error"] = type(failure).__name__
+            self._note_outcome(url, exc=failure)
             if not self._can_fallback_direct(url):
-                raise
+                if failure is exc:
+                    raise
+                raise failure from exc
             self.last_route_outcome["proxy_failed"] = True
             try:
                 direct = self._get_direct(url, headers=headers, **kwargs)
@@ -410,6 +477,7 @@ class EastMoneyClient:
             self._note_outcome(url, exc=exc)
             raise
         self._note_outcome(url, status_code=response.status_code)
+        _proxy_answered(self._proxy)
         if response.status_code in _DIRECT_FALLBACK_STATUS_CODES and self._can_fallback_direct(url):
             self.last_route_outcome["proxy_failed"] = True
             self.last_route_outcome["primary_status_code"] = response.status_code
@@ -439,9 +507,13 @@ class EastMoneyClient:
                     self.config, _request_source(url), response, expected_json=True
                 )
         except Exception as exc:
-            self._note_outcome(url, exc=exc)
-            raise
+            failure = self._proxy_failure(exc)
+            self._note_outcome(url, exc=failure)
+            if failure is exc:
+                raise
+            raise failure from exc
         self._note_outcome(url, status_code=response.status_code)
+        _proxy_answered(self._proxy)
         return response
 
     def close(self) -> None:

@@ -29,7 +29,7 @@ from cnequity.domain.datasets import DATASETS
 from cnequity.domain.partitions import partition_value
 from cnequity.domain.schemas import PRIMARY_KEYS, sanitize_dataset_rows, validate_dataframe
 from cnequity.file_lock import lake_mutation_lock
-from cnequity.query.parquet_scan import list_partitions, partition_dir
+from cnequity.query.parquet_scan import list_partitions
 from cnequity.storage.atomic import swap_with_backup, write_parquet_atomic
 
 logger = logging.getLogger(__name__)
@@ -250,9 +250,3 @@ def repartition_candidates(config: Config) -> list[str]:
         if any(p.value != partition_value(p.start, spec.partition_granularity) for p in parts):
             out.append(name)
     return out
-
-
-def partition_dir_for(config: Config, dataset: str, value: str) -> Path:
-    spec = DATASETS[dataset]
-    root = (config.derived_root if spec.layer == "derived" else config.curated_root) / dataset
-    return partition_dir(root, spec.partition_col or "", value)

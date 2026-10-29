@@ -32,7 +32,7 @@ meta = list_datasets()  # or list_datasets(config=cfg)
 # snapshot_only → no honest history; coverage_start is the start of the on-disk partitions
 ```
 
-Config resolution order: `config=` → `data_root=` → `configs/cnequity.toml`
+Config resolution order: `config=` → `data_root=` → `CNE_CONFIG` → `configs/cnequity.toml` in the current directory → the per-user `~/.config/cnequity/config.toml`
 
 Domestic equity index ETFs use a separate current snapshot, `etf_profiles`. Filter out snapshots later than the research date,
 then pick each fund's latest record as of that date; only `eligibility_status="eligible"` may enter this scope.
@@ -93,7 +93,7 @@ Choose by purpose: unadjusted prices for price action; `hfq` for split-comparabl
 
 - `daily_bars` in the lake stores **unadjusted** prices
 - `adj_factors` lives in `derived/` and stores only `hfq` (`adjust_type="hfq"`)
-- Recorded ETF/LOF splits and share transfers are corrected during daily factor derivation; historical omissions can be rebuilt with `cne repair fund-factors --apply`, using source `derived_fund_actions`. Other vendor steps are preserved, while cash distributions remain separately included by total-return reads.
+- Recorded ETF/LOF splits and share transfers are corrected during daily factor derivation; omissions left by 0.17 or earlier are rebuilt by `cne migrate`, using source `derived_fund_actions`. Other vendor steps are preserved, while cash distributions remain separately included by total-return reads.
 - The DuckDB views `daily_bars_adj` / `daily_bars_hfq` / `daily_bars_qfq` follow the semantics above; the table macro `daily_bars_total_return(start, end)` corresponds to `adjust="total_return"` and outputs `tr_*` and `adj_close`
 
 ## Universe filtering
@@ -115,7 +115,7 @@ For how to use profile versions and hashes see [Universe profiles](../reference/
 The old `universe="all_a"` / `"all_a_sh_sz"` parameters remain available for compatibility; the former emits a
 `DeprecationWarning`, and neither automatically becomes a strict profile. Base rules of the compatibility filter:
 
-1. **instruments**: `list_date <= trade_date`, and either not delisted or `delist_date > trade_date`
+1. **instruments**: `list_date <= trade_date`, and either not delisted or `delist_date >= trade_date` (`delist_date` is the last listed session)
 2. Exclude CDRs (689xxx.SH)
 3. **trading_status** (only on dates with data): drop ST/*ST and suspended securities
 
@@ -135,8 +135,8 @@ The default compatibility read is fine for exploration but should not be used di
 `all_a` covers Shanghai, Shenzhen and Beijing. The BSE securities list and short names are filled from the BSE quote board during the daily update; do not conflate TDX list enumeration with the market capabilities of the TDX daily-bar protocol.
 
 - BJ daily-bar history goes through the dedicated TDX path first (market id 2); the current tip can use the BSE board snapshot, with Sina filling the parts not covered. Explicit small-scope history requests skip the irrelevant full-market snapshot.
-- Sina history rows may lack `amount`. `--tdx-amount-repair` fills turnover only when OHLC agrees and the volume difference is less than one lot; rows TDX does not serve, such as old codes, keep the missing value and the finding.
-- `--bse-tip-repair` only checks stored current-day bars against the BSE snapshot and fills volume and turnover; it does not re-request Sina history. It cannot recover past BSE snapshots.
+- Sina history rows may lack `amount`. `cne repair bar-amounts` fills turnover only when OHLC agrees and the volume difference is less than one lot; rows TDX does not serve, such as old codes, keep the missing value and the finding.
+- `cne repair bse-tip-turnover` only checks stored current-day bars against the BSE snapshot and fills volume and turnover; it does not re-request Sina history. It cannot recover past BSE snapshots.
 
 These routes fill market data; BJ historical ST still needs separate evidence. For the full sources and repair entry points see [Data sources](sources.md#daily_bars).
 

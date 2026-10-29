@@ -4,7 +4,9 @@
 # Keep both identical — `cne config create` ships the packaged file.
 
 [data]
-root = "./data/cnequity"
+# A relative root is read against this file's directory. `cne init` and
+# `cne config create` write an absolute path here.
+root = "../data/cnequity"
 
 [orchestrator]
 # `workers` remains the legacy/global process budget.  The TDX and HTTP pools
@@ -146,6 +148,11 @@ push2_max_concurrency = 1
 # a refusal), or at once when "busy" survives every backoff.
 datacenter_breaker = true
 datacenter_breaker_strikes = 3
+# Fast-news lane (handshake + list host): after news_breaker_strikes refused
+# sweeps in a row it stays closed until local midnight, instead of sending one
+# more probe on every 15-minute tick. A dead proxy or a timeout does not count.
+news_breaker = true
+news_breaker_strikes = 3
 # 0 = count requests per day (meta/rate_limits/eastmoney_guard.json) without a cap;
 # set a cap from the measured count.
 datacenter_daily_budget = 0
@@ -266,16 +273,19 @@ batch_rest_seconds = 120
 # Optional Tushare Pro — historical BJ ST evidence (stock_st).
 # stock_st starts at 2017-01-01; 2016 uses bak_basic name evidence. Both need a
 # token; older BJ bars remain unresolved instead of certifying them as normal.
-# Prefer the environment variable TUSHARE_TOKEN so the credential never enters config.
+# Credential lookup: TUSHARE_TOKEN, then token_file, then token. A file (chmod 600)
+# also reaches launchd/cron runs, which do not see your shell's environment;
+# `cne doctor` warns about a token written inline here.
 [sources.tushare]
 enabled = false
 min_interval_seconds = 1.0
-# token = "..."
+# token_file = "~/.config/cnequity/tushare_token"
 
 # Optional 同花顺 official API (fuyao.aicubes.cn) — a licensed peer source, never
 # a primary. With no key every path that uses it degrades to silence and the lake
 # keeps its existing sources, so leaving this section out costs only the extra
-# cross-checks. Prefer HITHINK_FINANCE_API_KEY so the credential never enters config.
+# cross-checks. Key lookup: HITHINK_FINANCE_API_KEY, then api_key_file, then api_key
+# (as for [sources.tushare] above).
 #
 # `verify` and `backfill` are deliberately separate. Verification writes source
 # snapshots and findings and never touches curated rows, so it is safe whenever a
@@ -286,7 +296,7 @@ enabled = false
 min_interval_seconds = 0.4
 verify = true
 backfill = false
-# api_key = "..."
+# api_key_file = "~/.config/cnequity/ths_official_key"
 
 [margin_trading]
 # "exchange" reads 融资融券 detail from the SSE and SZSE, which compile it from
@@ -296,7 +306,7 @@ backfill = false
 #   * SSE does not publish 融券余额, so `short_balance` is null on SH rows.
 #   * SZSE lands a business day after SSE, and a day is only written once both
 #     have published, so the dataset trails the vendor path by ~one session.
-# A one-off historical repair may use `cne backfill margin_trading --margin-source
+# A one-off historical repair may use `cne backfill margin_trading --source
 # eastmoney|exchange --start YYYY-MM-DD --end YYYY-MM-DD`; this leaves this
 # default and each source's configured limiter unchanged.
 source = "exchange"
@@ -544,6 +554,29 @@ run_at = "17:30"
 [job.stale]
 # Only retries the snapshot datasets the day's run missed.
 run_at = "21:00"
+# `cne run maintain`, which the scheduled timer runs once after each session's
+# daily update: run audit (whole lake on full_audit_weekday), freshness gate,
+# source probes and SLO, run-evidence check, metadata backup, expiry preview.
+[source_health]
+# Label of this machine's network egress, carried by every source probe and health
+# record ("cn", "overseas", or your own, e.g. "cn-sh"). Some sources refuse
+# non-mainland egress, so results are read per label. CNE_SOURCE_VANTAGE and
+# `--vantage` override it for one run.
+# vantage = "cn"
+
+[job.maintenance]
+# ISO weekday (1 = Monday … 7 = Sunday) of the whole-lake audit, which reads
+# every Parquet file and can take hours on a large lake; 0 never runs it.
+full_audit_weekday = 6
+# Metadata archives (manifest DB, receipts, quality findings); default
+# {data.root}/backups. Keep it on another disk if you can.
+# backup_dir = "/path/to/backups"
+backup_retention_days = 14
+backup_retention_count = 30
+# A failed run of these daily groups fails maintenance at once. Any other group
+# only warns, until it has failed this many sessions in a row (0 = never).
+gate_groups = ["core"]
+soft_fail_max_days = 3
 
 # Per-group fetch frequency (docs/zh/getting-started/configuration.md, 取数频率):
 #   cadence = "daily"   (default) or "weekly"
@@ -674,6 +707,24 @@ steps = ["regulatory_events", "compact"]
 at = "21:00"
 parallel = true
 steps = ["news_headlines", "flash_news_wire", "compact"]
+
+# How often the packaged timer (`cne schedule install --events`) runs event
+# groups. Without schedules here it uses the single group and interval set on the
+# dashboard. `group` left out runs every group above in order. Inside
+# `quiet_hours` (Beijing hours; "23-6" wraps midnight) the spacing is
+# `quiet_every_minutes`; each run pushes the next one out by up to
+# `jitter_seconds` at random.
+#
+# [[job.events.schedules]]
+# group = "news_wire"
+# every_minutes = 15
+# jitter_seconds = 120
+# quiet_hours = "1-7"
+# quiet_every_minutes = 60
+#
+# [[job.events.schedules]]
+# every_minutes = 360
+# jitter_seconds = 300
 
 [job.init.phases]
 names = [

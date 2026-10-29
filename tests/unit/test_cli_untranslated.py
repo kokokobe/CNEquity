@@ -35,8 +35,9 @@ SURFACES = (
     PACKAGE / "storage" / "lifecycle",
 )
 # Reference tables whose Chinese is the data itself: product names, the
-# sentiment lexicon.
+# sentiment lexicon, announcement-title patterns.
 DATA_MODULES = {
+    PACKAGE / "domain" / "announced_halts.py",
     PACKAGE / "domain" / "futures_products.py",
     PACKAGE / "domain" / "sentiment.py",
 }

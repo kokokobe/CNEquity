@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
+from cnequity.config.errors import ConfigError
 from cnequity.domain.rate_limit import RateLimitSpec
 from cnequity.domain.symbols import INGEST_UNIVERSES
 
@@ -44,6 +45,28 @@ class ScheduleGroup:
 
 
 @dataclass
+class EventSchedule:
+    """One ``[[job.events.schedules]]`` entry: how often the timer runs an event group.
+
+    ``group`` None runs every event group in config order, as ``cne run events``
+    does. Inside ``quiet_hours`` (Beijing hours, ``"1-7"`` = 01:00-06:59,
+    ``"23-6"`` wraps midnight) the spacing is ``quiet_every_minutes``. Each run
+    pushes the next one out by a random 0..``jitter_seconds``, so a 15-minute
+    feed does not reach the upstream on a metronome.
+    """
+
+    every_minutes: int
+    group: str | None = None
+    jitter_seconds: int = 0
+    quiet_hours: str | None = None
+    quiet_every_minutes: int = 60
+
+    @property
+    def id(self) -> str:
+        return self.group or "all"
+
+
+@dataclass
 class FailoverDatasetSpec:
     name: str
     primary: str
@@ -71,7 +94,7 @@ class Config:
     data_root: Path
     # "demo" / "sample" for the tiny lakes `cne init --profile demo|sample`
     # writes. Whole-lake judgements read it: a five-symbol lake measured
-    # against the 42-dataset registry reports forty absences and exits 1,
+    # against the full dataset registry reports forty absences and exits 1,
     # which tells a new user their first run failed when it did exactly what
     # it promised. Nothing else branches on it, and a production config has
     # no reason to set it.
@@ -110,7 +133,9 @@ class Config:
     source_intervals: dict[str, float] = field(default_factory=dict)
     # Optional HTTP(S) proxy for EastMoneyClient (e.g. mainland egress for push2his).
     # Env HTTPS_PROXY / HTTP_PROXY still work when this is unset.
-    eastmoney_proxy: str | None = None
+    # Hidden from repr like the credentials below: a proxy URL can carry
+    # user:password.
+    eastmoney_proxy: str | None = field(default=None, repr=False)
     # Per-request timeout for EastMoneyClient (connect+read). Keep modest so
     # overseas daily groups fail fast instead of 30s × max_retries hangs.
     eastmoney_timeout_sec: float = 15.0
@@ -121,16 +146,18 @@ class Config:
     # explicit `cne backfill trading_status` removes this bound and checkpoints
     # the full sweep while retaining the provider pacing above.
     st_history_symbols_per_run: int = 400
-    # Optional Tushare Pro token for historical BJ ST evidence.  The token is
-    # read from [sources.tushare].token or TUSHARE_TOKEN and is never written
-    # to manifests, checkpoints, or provenance.
+    # Optional Tushare Pro token for historical BJ ST evidence: TUSHARE_TOKEN,
+    # then [sources.tushare].token_file, then .token (see `_credential`). Never
+    # written to manifests, checkpoints, or provenance.
     tushare_token: str | None = field(default=None, repr=False)
     tushare_timeout_sec: float = 30.0
-    # Optional 同花顺 official API key. Read from [sources.ths_official].api_key
-    # or HITHINK_FINANCE_API_KEY, and never written to manifests, checkpoints,
-    # or provenance. The whole source is optional: with no key every path that
+    # Optional 同花顺 official API key: HITHINK_FINANCE_API_KEY, then
+    # [sources.ths_official].api_key_file, then .api_key. Never written to
+    # manifests, checkpoints, or provenance. The whole source is optional: with no key every path that
     # uses it degrades to silence and the lake keeps its existing sources.
     ths_official_api_key: str | None = field(default=None, repr=False)
+    #: Dotted keys of credentials written inline in the config file (`cne doctor` warns).
+    inline_credentials: tuple[str, ...] = ()
     ths_official_timeout_sec: float = 30.0
     # Verification (arbitration, cross-checks) is safe to run whenever a key is
     # present — it writes source snapshots and findings, never curated rows.
@@ -169,11 +196,26 @@ class Config:
     # timezone and daylight saving never enter into it.
     daily_run_at: str = "17:30"
     stale_run_at: str = "21:00"
+    # [job.maintenance]: what `cne run maintain` does after a session's daily run.
+    # ISO weekday (1-7) of the whole-lake audit; 0 never runs it.
+    maintenance_full_audit_weekday: int = 6
+    maintenance_backup_dir: Path | None = None
+    maintenance_backup_retention_days: int = 14
+    maintenance_backup_retention_count: int = 30
+    # Daily groups whose failed run fails maintenance at once; any other failed
+    # group fails it after this many consecutive sessions (0 never escalates).
+    maintenance_gate_groups: tuple[str, ...] = ("core",)
+    maintenance_soft_fail_max_days: int = 3
+    # [source_health].vantage: the egress label probes and health records carry.
+    source_vantage: str | None = None
     # Continuous event streams. Same shape as a daily schedule group, but the
     # job they belong to runs on the natural calendar and takes its own
     # ingestion lock, so a disclosure or news sweep neither waits for the
     # evening batch nor is skipped because the market was closed.
     events_groups: dict[str, ScheduleGroup] = field(default_factory=dict)
+    event_schedules: list[EventSchedule] = field(default_factory=list)
+    #: Steps the config removed on purpose (``steps_remove``, ``enabled = false``).
+    opted_out_steps: frozenset[str] = frozenset()
     init_phases: list[str] = field(default_factory=list)
     on_demand_enabled: bool = True
     on_demand_datasets: list[str] = field(default_factory=list)
@@ -270,11 +312,8 @@ class Config:
     _backfill_symbols: list[str] | None = None
     _corporate_actions_baostock_repair: bool = False
     _corporate_actions_ths_repair: bool = False
-    _corporate_actions_eastmoney_bj_repair: bool = False
     _bse_tip_repair: bool = False
-    _bj_amount_repair: bool = False
     _tdx_amount_repair: bool = False
-    _tdx_volume_repair: bool = False
     _turnover_repair: bool = False
     _turnover_peer_review: bool = False
     _sector_bars_force: bool = False
@@ -357,6 +396,10 @@ class Config:
     # once on "busy" through every backoff. It serves most EastMoney datasets.
     eastmoney_datacenter_breaker: bool = True
     eastmoney_datacenter_breaker_strikes: int = 3
+    # Fast-news lane (handshake + list host): after this many refused sweeps in a
+    # row it is closed until local midnight instead of probing on every tick.
+    eastmoney_news_breaker: bool = True
+    eastmoney_news_breaker_strikes: int = 3
     # Requests per local day; 0 counts them (meta/rate_limits/eastmoney_guard.json)
     # without a cap. Set a cap from measured usage, not a guess: backfills of the
     # large reports legitimately need thousands.
@@ -625,9 +668,46 @@ class Config:
     def meta_root(self) -> Path:
         return self.data_root / "meta"
 
+    @property
+    def backup_root(self) -> Path:
+        """Where `cne run maintain` writes metadata archives."""
+        return self.maintenance_backup_dir or self.data_root / "backups"
 
-def _expand(path_str: str, data_root: Path) -> Path:
-    return Path(path_str.replace("{data.root}", str(data_root))).expanduser().resolve()
+
+def _expand(path_str: str, data_root: Path, base: Path | None = None) -> Path:
+    path = Path(path_str.replace("{data.root}", str(data_root))).expanduser()
+    if base is not None and not path.is_absolute():
+        path = base / path
+    return path.resolve()
+
+
+def _credential(
+    sources_raw: dict, table: str, key: str, env: str, base: Path
+) -> tuple[str | None, bool]:
+    """A credential, and whether the config file holds it inline.
+
+    The environment variable wins, then ``<key>_file`` (read relative to the
+    config's directory), then the inline value. A file is what a scheduled run
+    needs: launchd and cron do not start from the login shell, so a credential
+    exported in ``~/.zshrc`` never reaches them, while an inline one sits in a
+    file that gets copied, backed up and pasted into bug reports.
+    """
+    section = sources_raw.get(table)
+    section = section if isinstance(section, dict) else {}
+    inline = str(section.get(key) or "").strip() or None
+    value = os.environ.get(env, "").strip() or None
+    if value is None and section.get(f"{key}_file"):
+        path = Path(str(section[f"{key}_file"])).expanduser()
+        if not path.is_absolute():
+            path = base / path
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            raise ConfigError(f"[sources.{table}].{key}_file: cannot read {path}") from None
+        value = lines[0].strip() if lines and lines[0].strip() else None
+        if value is None:
+            raise ConfigError(f"[sources.{table}].{key}_file: {path} is empty")
+    return value or inline, inline is not None
 
 
 def _absolute(path: Path) -> Path:
@@ -669,8 +749,49 @@ def push2_paused_by_env() -> bool:
     return os.environ.get("CNE_PUSH2_PAUSED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _data_root(raw: dict) -> Path:
-    return _absolute(Path(raw.get("data", {}).get("root", "./data/cnequity")).expanduser())
+_WARNED_LEGACY_ROOTS: set[Path] = set()
+
+
+def _data_root(raw: dict, base: Path | None = None) -> Path:
+    """``[data].root``, a relative value read against *base* (the config's directory).
+
+    Relative roots used to resolve against the working directory, so the same
+    file named a different lake depending on where the command ran — a cron
+    line without its ``cd`` built a second, empty lake. Anchoring them to the
+    file is what every other config format does. A root written under the old
+    rule keeps working while only its working-directory reading exists, with
+    a warning until ``cne config upgrade`` pins it.
+    """
+    value = Path(raw.get("data", {}).get("root", "./data/cnequity")).expanduser()
+    if value.is_absolute() or base is None:
+        return _absolute(value)
+    anchored = _absolute(base / value)
+    legacy = legacy_relative_root(value, base)
+    if legacy is not None:
+        if legacy not in _WARNED_LEGACY_ROOTS:
+            # Once per process: `cne serve` re-reads the root on every poll.
+            _WARNED_LEGACY_ROOTS.add(legacy)
+            logger.warning(
+                "[data].root = %r is relative and now resolves against the config file's "
+                "directory (%s), which does not exist; using %s, where it resolved before. "
+                "Run `cne config upgrade` to write the absolute path.",
+                value.as_posix(),
+                anchored,
+                legacy,
+            )
+        return legacy
+    return anchored
+
+
+def legacy_relative_root(value: Path, base: Path) -> Path | None:
+    """The working-directory reading of a relative root, when only that one exists."""
+    if value.is_absolute():
+        return None
+    anchored = _absolute(base / value)
+    legacy = _absolute(value)
+    if anchored != legacy and not anchored.exists() and legacy.exists():
+        return legacy
+    return None
 
 
 def configured_data_root(path: str | Path) -> Path:
@@ -679,16 +800,20 @@ def configured_data_root(path: str | Path) -> Path:
     A long-running process holds the lake it started on; this lets it notice
     the file has since been pointed somewhere else without loading the rest.
     """
-    with open(Path(path).expanduser().resolve(), "rb") as f:
-        return _data_root(tomllib.load(f))
+    config_path = Path(path).expanduser().resolve()
+    with open(config_path, "rb") as f:
+        return _data_root(tomllib.load(f), config_path.parent)
 
 
 def load_config(path: str | Path) -> Config:
+    from cnequity.config.layers import OPTED_OUT_KEY, effective_raw
+
     config_path = Path(path).expanduser().resolve()
     with open(config_path, "rb") as f:
-        raw = tomllib.load(f)
+        raw = effective_raw(tomllib.load(f))
+    opted_out_steps = frozenset(raw.pop(OPTED_OUT_KEY, ()))
 
-    data_root = _data_root(raw)
+    data_root = _data_root(raw, config_path.parent)
     lake_profile = raw.get("data", {}).get("profile") or None
     orch = raw.get("orchestrator", {})
     tdx = raw.get("tdx_protocol", {})
@@ -741,6 +866,8 @@ def load_config(path: str | Path) -> Config:
     eastmoney_push2_shared_snapshot = True
     eastmoney_datacenter_breaker = True
     eastmoney_datacenter_breaker_strikes = 3
+    eastmoney_news_breaker = True
+    eastmoney_news_breaker_strikes = 3
     eastmoney_datacenter_daily_budget = 0
     eastmoney_daily_budget = 0
     # datacenter's own lane (source "eastmoney_dc"). It ran at 0.5 s / 4 in
@@ -755,9 +882,21 @@ def load_config(path: str | Path) -> Config:
     eastmoney_timeout_sec = 15.0
     baostock_batch_size = 20
     baostock_batch_rest_seconds = 120.0
-    tushare_token: str | None = os.environ.get("TUSHARE_TOKEN") or None
+    tushare_token, tushare_inline = _credential(
+        sources_raw, "tushare", "token", "TUSHARE_TOKEN", config_path.parent
+    )
     tushare_timeout_sec = 30.0
-    ths_official_api_key: str | None = os.environ.get("HITHINK_FINANCE_API_KEY") or None
+    ths_official_api_key, ths_official_inline = _credential(
+        sources_raw, "ths_official", "api_key", "HITHINK_FINANCE_API_KEY", config_path.parent
+    )
+    inline_credentials = tuple(
+        name
+        for name, inline in (
+            ("sources.tushare.token", tushare_inline),
+            ("sources.ths_official.api_key", ths_official_inline),
+        )
+        if inline
+    )
     ths_official_timeout_sec = 30.0
     ths_official_verify_enabled = True
     ths_official_backfill_enabled = False
@@ -797,6 +936,10 @@ def load_config(path: str | Path) -> Config:
                 eastmoney_datacenter_breaker = bool(val["datacenter_breaker"])
             if name == "eastmoney" and val.get("datacenter_breaker_strikes") is not None:
                 eastmoney_datacenter_breaker_strikes = int(val["datacenter_breaker_strikes"])
+            if name == "eastmoney" and val.get("news_breaker") is not None:
+                eastmoney_news_breaker = bool(val["news_breaker"])
+            if name == "eastmoney" and val.get("news_breaker_strikes") is not None:
+                eastmoney_news_breaker_strikes = int(val["news_breaker_strikes"])
             if name == "eastmoney" and val.get("datacenter_daily_budget") is not None:
                 eastmoney_datacenter_daily_budget = int(val["datacenter_daily_budget"])
             if name == "eastmoney" and val.get("daily_budget") is not None:
@@ -819,13 +962,9 @@ def load_config(path: str | Path) -> Config:
                 if val.get("batch_rest_seconds") is not None:
                     baostock_batch_rest_seconds = float(val["batch_rest_seconds"])
             if name == "tushare":
-                if val.get("token"):
-                    tushare_token = str(val["token"]).strip() or None
                 if val.get("timeout_sec") is not None:
                     tushare_timeout_sec = float(val["timeout_sec"])
             if name == "ths_official":
-                if val.get("api_key"):
-                    ths_official_api_key = str(val["api_key"]).strip() or None
                 if val.get("timeout_sec") is not None:
                     ths_official_timeout_sec = float(val["timeout_sec"])
                 if val.get("verify") is not None:
@@ -866,6 +1005,11 @@ def load_config(path: str | Path) -> Config:
     schedule_groups: dict[str, ScheduleGroup] = {}
     daily_run_at = str(raw.get("job", {}).get("daily", {}).get("run_at", "17:30")).strip()
     stale_run_at = str(raw.get("job", {}).get("stale", {}).get("run_at", "21:00")).strip()
+    maintenance_raw = raw.get("job", {}).get("maintenance", {}) or {}
+    backup_dir_raw = str(maintenance_raw.get("backup_dir") or "").strip()
+    maintenance_backup_dir = (
+        _expand(backup_dir_raw, data_root, config_path.parent) if backup_dir_raw else None
+    )
     groups_raw = raw.get("job", {}).get("daily", {}).get("groups", {})
     for name, group in groups_raw.items():
         schedule_groups[name] = ScheduleGroup(
@@ -885,10 +1029,25 @@ def load_config(path: str | Path) -> Config:
             parallel=bool(group.get("parallel", True)),
         )
 
+    event_schedules: list[EventSchedule] = []
+    for entry in raw.get("job", {}).get("events", {}).get("schedules", []) or []:
+        if not isinstance(entry, dict):
+            raise ValueError("[[job.events.schedules]] entries must be tables")
+        group = entry.get("group")
+        event_schedules.append(
+            EventSchedule(
+                every_minutes=int(entry.get("every_minutes", 60)),
+                group=str(group) if group not in (None, "", "all") else None,
+                jitter_seconds=int(entry.get("jitter_seconds", 0)),
+                quiet_hours=str(entry["quiet_hours"]) if entry.get("quiet_hours") else None,
+                quiet_every_minutes=int(entry.get("quiet_every_minutes", 60)),
+            )
+        )
+
     duckdb_raw = raw.get("duckdb", {})
     duckdb_path_str = duckdb_raw.get("path")
     duckdb_path = (
-        _expand(duckdb_path_str, data_root)
+        _expand(duckdb_path_str, data_root, config_path.parent)
         if duckdb_path_str
         else data_root / "duckdb" / "cnequity.duckdb"
     )
@@ -1017,6 +1176,8 @@ def load_config(path: str | Path) -> Config:
         eastmoney_push2_shared_snapshot=eastmoney_push2_shared_snapshot,
         eastmoney_datacenter_breaker=eastmoney_datacenter_breaker,
         eastmoney_datacenter_breaker_strikes=eastmoney_datacenter_breaker_strikes,
+        eastmoney_news_breaker=eastmoney_news_breaker,
+        eastmoney_news_breaker_strikes=eastmoney_news_breaker_strikes,
         eastmoney_datacenter_daily_budget=eastmoney_datacenter_daily_budget,
         eastmoney_daily_budget=eastmoney_daily_budget,
         ths_js_runtime=ths_js_runtime,
@@ -1026,6 +1187,7 @@ def load_config(path: str | Path) -> Config:
         tushare_token=tushare_token,
         tushare_timeout_sec=tushare_timeout_sec,
         ths_official_api_key=ths_official_api_key,
+        inline_credentials=inline_credentials,
         ths_official_timeout_sec=ths_official_timeout_sec,
         ths_official_verify_enabled=ths_official_verify_enabled,
         ths_official_backfill_enabled=ths_official_backfill_enabled,
@@ -1039,7 +1201,18 @@ def load_config(path: str | Path) -> Config:
         schedule_groups=schedule_groups,
         daily_run_at=daily_run_at,
         stale_run_at=stale_run_at,
+        maintenance_full_audit_weekday=int(maintenance_raw.get("full_audit_weekday", 6)),
+        maintenance_backup_dir=maintenance_backup_dir,
+        maintenance_backup_retention_days=int(maintenance_raw.get("backup_retention_days", 14)),
+        maintenance_backup_retention_count=int(maintenance_raw.get("backup_retention_count", 30)),
+        maintenance_gate_groups=tuple(
+            str(g) for g in maintenance_raw.get("gate_groups", ["core"]) or []
+        ),
+        maintenance_soft_fail_max_days=int(maintenance_raw.get("soft_fail_max_days", 3)),
+        source_vantage=str((raw.get("source_health") or {}).get("vantage") or "").strip() or None,
         events_groups=events_groups,
+        event_schedules=event_schedules,
+        opted_out_steps=opted_out_steps,
         init_phases=init_phases,
         on_demand_enabled=bool(on_demand.get("enabled", True)),
         on_demand_datasets=list(on_demand.get("datasets", [])),
@@ -1155,6 +1328,46 @@ def validate_config(cfg: Config) -> list[str]:
         if not match or int(match.group(1)) > 23 or int(match.group(2)) > 59:
             section = "job.daily" if key == "daily_run_at" else "job.stale"
             errors.append(f"{section}.run_at must be Beijing time HH:MM; got {value!r}")
+    seen_schedules: set[str] = set()
+    for spec in getattr(cfg, "event_schedules", None) or []:
+        where = f"job.events.schedules[{spec.id}]"
+        if spec.id in seen_schedules:
+            errors.append(f"{where}: two schedules for the same event group")
+        seen_schedules.add(spec.id)
+        if spec.group is not None and spec.group not in (cfg.events_groups or {}):
+            errors.append(f"{where}: unknown event group {spec.group!r}")
+        if not 1 <= spec.every_minutes <= 1440 or not 1 <= spec.quiet_every_minutes <= 1440:
+            errors.append(f"{where}: every_minutes and quiet_every_minutes must be 1-1440")
+        if not 0 <= spec.jitter_seconds <= 3600:
+            errors.append(f"{where}: jitter_seconds must be 0-3600")
+        if spec.quiet_hours is not None:
+            match = _re.fullmatch(r"(\d{1,2})-(\d{1,2})", spec.quiet_hours)
+            if not match or int(match[1]) > 23 or int(match[2]) > 23 or match[1] == match[2]:
+                errors.append(f"{where}: quiet_hours must be Beijing hours like '1-7' or '23-6'")
+    vantage = getattr(cfg, "source_vantage", None)
+    if vantage:
+        from cnequity.diagnostics.source_health import validate_vantage
+
+        try:
+            validate_vantage(vantage)
+        except ValueError as exc:
+            errors.append(f"source_health.vantage: {exc}")
+    if not 0 <= int(getattr(cfg, "maintenance_full_audit_weekday", 6)) <= 7:
+        errors.append("job.maintenance.full_audit_weekday must be 0 (never) or an ISO weekday 1-7")
+    unknown_gate = sorted(
+        set(getattr(cfg, "maintenance_gate_groups", ()) or ())
+        - set(getattr(cfg, "schedule_groups", {}) or {})
+    )
+    # The default names `core`; only a list someone wrote is held to the schedule.
+    explicit_gate = tuple(getattr(cfg, "maintenance_gate_groups", ())) != ("core",)
+    if unknown_gate and explicit_gate and getattr(cfg, "schedule_groups", None):
+        errors.append(
+            "job.maintenance.gate_groups names groups the schedule does not have: "
+            + ", ".join(unknown_gate)
+        )
+    for key in ("backup_retention_days", "backup_retention_count", "soft_fail_max_days"):
+        if int(getattr(cfg, f"maintenance_{key}", 0)) < 0:
+            errors.append(f"job.maintenance.{key} must be 0 (no limit) or positive")
     for name, group in (getattr(cfg, "schedule_groups", None) or {}).items():
         if getattr(group, "cadence", "daily") not in {"daily", "weekly"}:
             errors.append(

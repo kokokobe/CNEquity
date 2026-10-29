@@ -113,11 +113,10 @@ def repair_status_listing_window(config: Config, *, apply: bool = False) -> dict
 
 def _repair_locked(config: Config, *, apply: bool) -> dict:
     store = RevisionStore(config.meta_root, config.curated_root, config.derived_root)
-    store.ensure_current(DATASET)
-    base = store.current_root(DATASET)
+    base = store.repair_base(DATASET, register=apply)
     report: dict = {"applied": False, "rows": 0}
     if base is None:
-        report["note"] = "no committed trading_status"
+        report["note"] = "no trading_status data; nothing to repair"
         return report
     rows = scan_parquet_root(base, partition_col="trade_date").select(_KEY).collect()
     spans = instrument_spans(store, config)

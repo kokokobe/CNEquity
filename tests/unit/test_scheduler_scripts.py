@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -154,6 +155,139 @@ def test_events_pipeline_forwards_group_and_date_and_returns_cne_failure(tmp_pat
         "news_wire",
     ]
     assert "FAILED" in result.stdout
+
+
+def _recording_sleep(tmp_path: Path, env: dict[str, str]) -> Path:
+    """Put a ``sleep`` that only records its argument first on PATH."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "sleeps"
+    stub = bin_dir / "sleep"
+    stub.write_text('#!/bin/sh\necho "$1" >> "$CNE_SLEEP_LOG"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["CNE_SLEEP_LOG"] = str(log)
+    return log
+
+
+def test_scheduled_events_start_at_a_random_offset_before_the_lock(tmp_path):
+    cne = _stub_cne(tmp_path)
+    calls = tmp_path / "calls"
+    env = _stale_env(tmp_path, cne, calls)
+    sleeps = _recording_sleep(tmp_path, env)
+    env["CNE_EVENTS_JITTER_SEC"] = "120"
+
+    offsets = []
+    for _ in range(12):
+        result = _run(EVENTS, env=env)
+        assert result.returncode == 0
+        offsets.append(int(result.stdout.split("start offset ")[1].split("s")[0]))
+
+    assert all(0 <= offset <= 120 for offset in offsets)
+    assert len(set(offsets)) > 1, "a fixed offset is still a metronome"
+    # The offset is slept before the sweep runs, and it is the first sleep.
+    assert sleeps.read_text(encoding="utf-8").splitlines()[0] == str(offsets[0])
+    assert _call_args(calls)[:2] == ["run", "events"]
+
+
+def test_events_offset_is_off_by_default_and_for_explicit_dates(tmp_path):
+    cne = _stub_cne(tmp_path)
+    calls = tmp_path / "calls"
+    env = _stale_env(tmp_path, cne, calls)
+    sleeps = _recording_sleep(tmp_path, env)
+
+    unset = _run(EVENTS, env=env)
+    env["CNE_EVENTS_JITTER_SEC"] = "120"
+    dated = _run(EVENTS, "2026-08-30", env=env)
+
+    assert unset.returncode == dated.returncode == 0
+    assert "start offset" not in unset.stdout + dated.stdout
+    assert set(sleeps.read_text(encoding="utf-8").split()) == {"0"}  # the stub cne's own sleep
+
+
+def _quiet_env(tmp_path: Path, *, beijing: str, last_ago: int | None) -> tuple[dict, Path]:
+    """Env that pretends it is Beijing ``beijing`` (HH:MM) on 2026-10-18."""
+    cne = _stub_cne(tmp_path)
+    calls = tmp_path / "calls"
+    env = _stale_env(tmp_path, cne, calls)
+    hour, minute = map(int, beijing.split(":"))
+    now = datetime(2026, 10, 18, hour, minute, tzinfo=timezone(timedelta(hours=8)))
+    env.update(
+        {
+            "CNE_EVENTS_NOW_EPOCH": str(int(now.timestamp())),
+            "CNE_EVENTS_STATE_DIR": str(tmp_path / "state"),
+            "CNE_EVENTS_QUIET_HOURS": "1-7",
+            "CNE_EVENTS_QUIET_GAP_SEC": "3600",
+            "CNE_EVENTS_GROUP": "news_wire",
+        }
+    )
+    if last_ago is not None:
+        marker = tmp_path / "state" / "events-last-news_wire"
+        marker.parent.mkdir()
+        marker.write_text(f"{int(now.timestamp()) - last_ago}\n", encoding="utf-8")
+    return env, calls
+
+
+@pytest.mark.parametrize(
+    ("beijing", "last_ago", "runs"),
+    [
+        ("03:07", 900, False),  # quiet hours, swept 15 min ago
+        ("03:07", 3300, True),  # an hour tick, 5 minutes of slack
+        ("03:07", 7200, True),
+        ("03:07", None, True),  # never swept: run
+        ("00:52", 900, True),  # before the window
+        ("07:00", 900, True),  # the window is [01:00, 07:00)
+        ("06:59", 900, False),
+        ("01:00", 900, False),
+    ],
+)
+def test_events_quiet_hours_thin_the_ticks_without_dropping_the_hour(
+    tmp_path, beijing, last_ago, runs
+):
+    env, calls = _quiet_env(tmp_path, beijing=beijing, last_ago=last_ago)
+
+    result = _run(EVENTS, env=env)
+
+    assert result.returncode == 0
+    assert calls.exists() is runs
+    if not runs:
+        log = next((tmp_path / "logs").glob("events-*.log")).read_text(encoding="utf-8")
+        assert "quiet hours" in log and "skipping" in log
+
+
+def test_events_quiet_hours_count_from_the_start_of_each_attempt(tmp_path):
+    env, calls = _quiet_env(tmp_path, beijing="03:07", last_ago=7200)
+
+    assert _run(EVENTS, env=env).returncode == 0
+    assert calls.exists()
+    calls.unlink()
+    # 15 minutes later: the attempt above reset the clock.
+    later = datetime(2026, 10, 18, 3, 22, tzinfo=timezone(timedelta(hours=8)))
+    env["CNE_EVENTS_NOW_EPOCH"] = str(int(later.timestamp()))
+    assert _run(EVENTS, env=env).returncode == 0
+    assert not calls.exists()
+
+
+def test_events_quiet_hours_may_wrap_midnight_and_ignore_explicit_dates(tmp_path):
+    env, calls = _quiet_env(tmp_path, beijing="23:30", last_ago=900)
+    env["CNE_EVENTS_QUIET_HOURS"] = "23-6"
+
+    assert _run(EVENTS, env=env).returncode == 0
+    assert not calls.exists()
+    # A backfill by date is never thinned.
+    assert _run(EVENTS, "2026-10-17", env=env).returncode == 0
+    assert calls.exists()
+
+
+def test_event_templates_ask_for_a_start_offset():
+    news = plistlib.loads(NEWS_PLIST.read_bytes())["EnvironmentVariables"]
+    events = plistlib.loads(EVENTS_PLIST.read_bytes())["EnvironmentVariables"]
+    assert 0 < int(news["CNE_EVENTS_JITTER_SEC"]) < 15 * 60
+    assert 0 < int(events["CNE_EVENTS_JITTER_SEC"]) < 60 * 60
+    # Overnight thinning belongs to the 15-minute news agent only.
+    assert news["CNE_EVENTS_QUIET_HOURS"] == "1-7"
+    assert int(news["CNE_EVENTS_QUIET_GAP_SEC"]) > 15 * 60
+    assert "CNE_EVENTS_QUIET_HOURS" not in events
 
 
 def test_an_event_sweep_is_not_blocked_by_the_daily_wrapper(tmp_path):

@@ -168,6 +168,54 @@ def test_process_pool_interrupt_cancels_queued_batches(worker_config, monkeypatc
     assert all(future.cancelled() for future in pool.futures[1:])
 
 
+def test_interrupt_says_it_is_waiting_for_batches_in_flight(worker_config, monkeypatch, caplog):
+    """Ctrl-C waits for lanes already talking to the source, and says so.
+
+    A hundred-symbol batch takes tens of seconds; silent, that wait looked
+    like a hang and drew a second Ctrl-C.
+    """
+    monkeypatch.setattr("sys.platform", "linux")
+    init_data_layout(worker_config)
+    run_id = Manifest(worker_config.manifest_path).start_run("test")
+
+    class _Pool:
+        def __init__(self, *args, **kwargs):
+            self.futures: list[Future] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def submit(self, fn, task):
+            future = Future()
+            if not self.futures:
+                future.set_exception(KeyboardInterrupt())
+            else:
+                future.set_running_or_notify_cancel()
+            self.futures.append(future)
+            return future
+
+        def shutdown(self, *, wait=True, cancel_futures=False):
+            pass
+
+    monkeypatch.setattr("cnequity.orchestrator.worker_pool.ProcessPoolExecutor", _Pool)
+    monkeypatch.setattr(
+        "cnequity.orchestrator.worker_pool.as_completed", lambda futures: list(futures)
+    )
+    with caplog.at_level("WARNING"), pytest.raises(KeyboardInterrupt):
+        fetch_daily_bars_parallel(
+            worker_config,
+            ["600519.SH", "000001.SZ", "600000.SH"],
+            date(2024, 6, 27),
+            date(2024, 6, 27),
+            run_id,
+            "daily_bars",
+        )
+    assert "letting 2 daily_bars batch(es) already in flight finish" in caplog.text
+
+
 def test_process_pool_interrupt_during_submission_cancels_submitted_batches(
     worker_config, monkeypatch
 ):

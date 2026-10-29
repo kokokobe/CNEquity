@@ -4,13 +4,41 @@ For users who already have a production lake: scheduling, health gates, backup a
 
 | Task | Entry point |
 |---|---|
-| Using only the PyPI package | Have the system scheduler call `cne run daily` once a day (weekends included): trading days run all daily-update groups, and the event stream runs every day |
-| Using the repository's operations scripts | Install the scheduler as below; the scripts additionally handle gates, notifications and metadata backups |
+| Scheduled updates | `cne schedule install`: each trading day's update, then maintenance (audit, gates, metadata backup); see [Installing the schedule](#install-schedule) |
 | Transient failure | [Troubleshooting](troubleshooting.md): first identify the failed run / batch, then retry by scope |
 | Extending history | [Initialization and resume](../getting-started/initialization.md); review `--plan` before a backfill |
 
 
-## Components
+## Installing the schedule {#install-schedule}
+
+```bash
+cne schedule install        # registers the current user's timer after confirmation
+cne schedule status         # installed? active? when did it last check?
+cne schedule remove         # pauses and unregisters it; running jobs finish
+```
+
+The timer belongs to the current user: launchd on macOS, the crontab on Linux, Task Scheduler on Windows. It checks once a minute; on each trading day, once `[job.daily] run_at` (Beijing time) has passed, it runs `cne run daily` and then `cne run maintain`; after `[job.stale] run_at` it retries only the snapshot data the day missed. Each trading day counts once: it runs after `run_at` and the day stays due until 09:15 on the next trading day. The local time zone and daylight saving do not matter; nothing runs while the machine sleeps, and the next check after waking catches up.
+
+`--pack` updates only the selected research packs' schedule groups (without event streams); `--events` runs event streams on the config's [`[[job.events.schedules]]`](../getting-started/configuration.md#event-schedules) (several entries, each with its own interval, jitter and quiet hours); without schedules in the config, `--events-group` runs one event group every `--events-every` minutes; `--no-stale` leaves out the closing catch-up. Options not given keep their current settings, so installing from the command line never undoes a backup or event schedule set on the dashboard. It is the same timer the `cne serve` operations page manages, and either place shows and changes it. When legacy `scripts/scheduler` launchd jobs are installed it asks you to remove them first, or the lake is updated twice.
+
+### Maintenance after the daily update (`cne run maintain`) {#maintain}
+
+The timer runs `cne run maintain` once after each trading day's update; you can also run it by hand:
+
+1. the last closed session's daily group runs: a failed `[job.maintenance] gate_groups` group (default `core`) fails at once; any other failed group is reported and fails after `soft_fail_max_days` (default 3) sessions in a row, counted under `meta/state/soft_streak/` (the shell pipeline's counts carry over);
+2. the run audit; on `[job.maintenance] full_audit_weekday` (Saturday by default) the whole-lake `audit --full --quality-only` instead, which reads every Parquet file and can take hours on a large lake;
+3. the freshness gate `status --datasets --gate`, failing only on the schedule groups the timer actually runs (`--groups` overrides);
+4. source probes `sources probe --stale-only` (labelled with the `[source_health] vantage` egress) and `sources slo`;
+5. run evidence over the last 20 trading days, `verify --runs --days 20`;
+6. a metadata backup: the manifest database (a consistent copy through SQLite's backup API), incremental state, revision and source receipts and quality findings, written as `meta-<time>.tar.gz` to `[job.maintenance] backup_dir` (default `{data.root}/backups`) and rotated by `backup_retention_days` / `backup_retention_count`;
+7. the expiry preview of `cne run clean`.
+
+It exits 1 when a gate group failed, another group reached its consecutive-failure limit, or the audit, the freshness gate or the backup fails; source probe and run evidence problems are reported without failing. On macOS the timer adds `--notify` for a desktop notification on problems.
+
+## Legacy repository scripts (deprecated) {#legacy-scripts}
+
+`scripts/scheduler/` exists only in a source checkout and is deprecated; it is removed only after the packaged timer covers everything it does and has been verified on a real lake, announced in the changelog beforehand. To migrate, run `scripts/scheduler/uninstall_scheduler.sh` to remove the launchd jobs (delete cron entries by hand), then run `cne schedule install`. `backup_meta.sh` now calls the same backup code as `cne run maintain`.
+
 
 | Capability | Script | Purpose |
 |------|------|------|
@@ -23,7 +51,7 @@ For users who already have a production lake: scheduling, health gates, backup a
 
 The scripts use the repository's `.venv/bin/cne`, and resolve paths relative to the repository root on their own.
 
-## Installing the scheduler
+### Installing the launchd jobs (legacy)
 
 ```bash
 cd /path/to/cnequity
@@ -97,7 +125,7 @@ macOS uses the current user's launchd and Windows uses the current logged-in use
 
 Daily update and catch-up times are saved in the original configuration's `[job.daily] run_at` / `[job.stale] run_at`; a `.schedule.bak` is saved before the first change, and other settings and comments are preserved. Backup and event stream settings are stored with the lake; backups never delete old copies automatically, so keep an eye on storage space. Pausing blocks subsequent automatic runs; a task that has already started is cancelled separately in the task details. Even if the system task cannot be removed because of a permission change, the pause setting still stops the package entry point from fetching; the page then prompts you to check the system task manually.
 
-The web UI manages only the system tasks it created itself and does not take over existing launchd scripts or other cron / Windows tasks. Check for and disable duplicate entry points before migrating. The web daily update runs `cne run daily`, the daily backup runs `cne snapshot create` for the selected datasets, and the standalone event stream runs `cne run events` for the selected groups. The repository scripts' extra health notifications and metadata tar archives remain the job of the original scheduler; the web UI does not attach these scripts automatically. System tasks are pinned to the Python environment, working directory and configuration path in effect when they were created; set them up again after moving the environment, and the configuration that data sources require must also be available in the unattended environment.
+The web UI manages only the system tasks it created itself and does not take over existing launchd scripts or other cron / Windows tasks. Check for and disable duplicate entry points before migrating. The web daily update runs `cne run daily` and then `cne run maintain` (audit, gates, metadata backup), the daily backup runs `cne snapshot create` for the selected datasets, and the standalone event stream runs `cne run events` for the selected groups. `cne schedule install|status|remove` manages the same task from the command line. System tasks are pinned to the Python environment, working directory and configuration path in effect when they were created; set them up again after moving the environment, and the configuration that data sources require must also be available in the unattended environment.
 
 **Linux cron (manual setup)**:
 

@@ -66,9 +66,9 @@ def parser_identity() -> str:
     files = sorted(
         path
         for path in (package / "adapters" / "futures_exchange").glob("*.py")
-        # These readers never parse daily bars. Their independent changes must
+        # This reader never parses daily bars. Its independent changes must
         # not invalidate daily receipts and trigger a historical redownload.
-        if path.name not in {"shfe_archive.py", "shfe_parameters.py"}
+        if path.name != "shfe_archive.py"
     )
     files += [
         package / "adapters" / "sina" / "dce_futures.py",
@@ -206,7 +206,22 @@ def _committed_frames(config, dataset: str, dates: list[date]) -> dict:
 
 
 def owed_sessions(config, dataset: str, through: date) -> list[date]:
-    pending = _pending(config, dataset, through)
+    from cnequity.adapters.futures_exchange.shfe import INE_DIRECT_LAST_SESSION
+    from cnequity.domain.derivatives import UNPUBLISHED_FUTURES_SESSIONS
+
+    # A day the exchange never published is not a debt any fetch can pay, and
+    # neither is an INE receipt after INE's own route ended: from 2019 its
+    # contracts arrive in the SHFE file, whose SHF receipt covers them. One such
+    # receipt, left on 2021-07-28 by an older routing, stayed owed forever.
+    unpublished = UNPUBLISHED_FUTURES_SESSIONS if dataset == "futures_bars" else {}
+
+    def owes(path: Path) -> bool:
+        day = date.fromisoformat(path.parent.name)
+        if path.stem == "INE" and day > INE_DIRECT_LAST_SESSION:
+            return False
+        return day not in unpublished.get(path.stem, ())
+
+    pending = [(p, r) for p, r in _pending(config, dataset, through) if owes(p)]
     dates = [date.fromisoformat(p.parent.name) for p, r in pending if r.get("state") == "captured"]
     frames = _committed_frames(config, dataset, dates)
     return sorted(

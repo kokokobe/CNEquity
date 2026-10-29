@@ -148,7 +148,7 @@ function openRunForm(ctx, home, current, state, closeHref) {
   const host = document.getElementById("run-form");
   if (!host || !state.op || !opsIsCurrent(current)) return;
   if (!home) {
-    host.innerHTML = `<p class="panel-note">${ctx.esc(tr("手跑入口暂时不可用。记录仍可查看。", "Manual runs are unavailable right now. History is still listed."))}</p>`;
+    host.innerHTML = `<p class="panel-note">${ctx.esc(tr("手动运行暂不可用。记录仍可查看。", "Manual runs are unavailable. History is still listed."))}</p>`;
     return;
   }
   const card = home.operations?.find((item) => item.id === state.op);
@@ -247,33 +247,28 @@ export async function renderRuns(ctx) {
         ? tr("没有正在运行的任务。", "Nothing is running.")
         : state.view === "success"
           ? tr("没有成功的运行。", "No successful runs.")
-          : tr("还没有运行记录。用上面的命令开始一次。", "No runs yet. Start one with the commands above.");
-  const range = !total ? tr("共 0 条。", "0 runs.") : tr(
-    `第 ${ctx.fmt(start)}–${ctx.fmt(end)} 条，${state.view === "all" ? "共" : "筛选后"} ${ctx.fmt(total)} 条。点任务名看时间线。`,
-    `Rows ${ctx.fmt(start)}–${ctx.fmt(end)} of ${ctx.fmt(total)}${state.view === "all" ? "" : " matching"}. Open a job for the timeline.`,
+          : tr("尚无运行记录。", "No runs yet.");
+  const range = !total ? tr("共 0 条", "0 runs") : tr(
+    `第 ${ctx.fmt(start)}–${ctx.fmt(end)} 条，${state.view === "all" ? "共" : "筛选后"} ${ctx.fmt(total)} 条`,
+    `${ctx.fmt(start)}–${ctx.fmt(end)} / ${ctx.fmt(total)}`,
   );
   ctx.setPage(`
-    <section class="page-heading"><div class="eyebrow">${tr("数据湖控制台 / 跑批", "Lake console / Runs")}</div>
-      <div class="heading-row"><div><h1>${tr("跑批", "Runs")}</h1>
-        <p class="sub">${range}${legacy ? tr(" 当前服务还是旧接口，重启 cne serve 后才能按状态筛选、翻到更早的记录。", " This serve process still has the old API. Restart cne serve to filter by status and page further back.") : ""}</p></div></div></section>
+    <section class="page-heading">
+      <div class="heading-row"><div><h1>${tr("运行", "Runs")}</h1>
+        <p class="meta-row"><span>${range}</span>${legacy ? `<span>${tr("当前服务是旧接口，重启后才能筛选和翻页。", "This serve process has the old API. Restart it to filter and page.")}</span>` : ""}</p></div></div></section>
     ${attention}
     <section class="surface-panel report-panel run-launch">
-      <div class="panel-header"><div><div class="eyebrow">${tr("手跑", "Manual")}</div><h2>${tr("现在跑", "Run now")}</h2></div>
-        <span class="panel-meta">${tr("先预览再启动", "Preview, then start")}</span></div>
-      <p class="ops-hint">${tr(
-        `这里只放手跑会留下一条 run 的命令，打开的是操作页同一张表单。体检、备份、巡检和取数设置仍在<a href="#/ops">操作页</a>。`,
-        `Only commands that record a run are here, and they open the same form as Operations. Environment checks, backups, audits, and fetch settings stay on <a href="#/ops">Operations</a>.`,
-      )}</p>
+      <div class="panel-header"><h2>${tr("启动", "Start")}</h2></div>
       ${notes.join("")}
       <div class="run-launch-grid">${launcher.items.map((item) => launcherButton(item, state, ctx.esc)).join("")}${retryGroups}</div>
       <div id="run-form" class="run-form-host"></div>
     </section>
-    <section class="metric-grid run-metrics" aria-label="${tr("跑批关键指标", "Run metrics")}">
-      ${metricLink(countText(allTotal, ctx.num), tr("全部运行", "All runs"), tr("清单", "Manifest"), ctx.esc(runsHref({ view: "all", offset: 0 }, state)), state.view === "all" ? " on" : "")}
-      ${metricLink(countText(runningTotal, ctx.num), tr("运行中", "Running"), tr("清单里", "In the manifest"), ctx.esc(runsHref({ view: "running", offset: 0 }, state)), `${state.view === "running" ? " on" : ""}${runningTotal ? " metric-card-live" : ""}`)}
-      ${metricLink(countText(attentionTotal, ctx.num), tr("需要处理", "Needs attention"), tr("仍待处理", "Still open"), ctx.esc(runsHref({ view: "attention", offset: 0 }, state)), `${state.view === "attention" ? " on" : ""}${attentionTotal ? " metric-card-alert" : ""}`)}
+    <section class="metric-grid run-metrics" aria-label="${tr("运行指标", "Run metrics")}">
+      ${metricLink(countText(allTotal, ctx.num), tr("全部", "All"), "", ctx.esc(runsHref({ view: "all", offset: 0 }, state)), state.view === "all" ? " on" : "")}
+      ${metricLink(countText(runningTotal, ctx.num), tr("运行中", "Running"), "", ctx.esc(runsHref({ view: "running", offset: 0 }, state)), `${state.view === "running" ? " on" : ""}${runningTotal ? " metric-card-live" : ""}`)}
+      ${metricLink(countText(attentionTotal, ctx.num), tr("待处理", "Open"), "", ctx.esc(runsHref({ view: "attention", offset: 0 }, state)), `${state.view === "attention" ? " on" : ""}${attentionTotal ? " metric-card-alert" : ""}`)}
     </section>
-    <section class="surface-panel table-panel"><div class="panel-header"><div><div class="eyebrow">Run history</div><h2>${tr("运行记录", "Run history")}</h2></div>
+    <section class="surface-panel table-panel"><div class="panel-header"><h2>${tr("记录", "History")}</h2>
       <div class="run-views"><a class="${state.view === "success" ? "on" : ""}" href="${successHref}">${tr("只看成功", "Success only")}</a></div></div>
     ${ctx.dataTable(
       [tr("任务", "Job"), tr("状态", "Status"), tr("开始", "Started"), { h: tr("耗时", "Duration"), n: true }, { h: tr("写入", "Written"), n: true }, tr("批次", "Batches"), tr("原因", "Reason"), tr("操作", "Action")],
@@ -304,10 +299,11 @@ function startRunTicker(ctx) {
 
 function paintRunStatus(detail, ctx) {
   const live = detail.status === "running";
-  document.getElementById("run-status").innerHTML =
-    `${ctx.esc(statusText(detail.status))}${live ? ` <span class="live">● ${tr("实时", "live")}</span>` : ""}
-     · ${duration(detail.started_at, detail.finished_at)}
-     · ${ctx.fmt(detail.rows_written)} ${tr("行", "rows")}`;
+  document.getElementById("run-status").innerHTML = [
+    `<span>${ctx.esc(statusText(detail.status))}${live ? ` <span class="live">${tr("实时", "Live")}</span>` : ""}</span>`,
+    `<span>${duration(detail.started_at, detail.finished_at)}</span>`,
+    `<span>${ctx.fmt(detail.rows_written)} ${tr("行", "rows")}</span>`,
+  ].join("");
 }
 
 function paintRun(detail, ctx) {
@@ -337,7 +333,7 @@ function paintRun(detail, ctx) {
       )
     : "";
   document.getElementById("run-errors").innerHTML = failed.length || summary
-    ? `<section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Failures</div><h2>${tr("失败原因", "Failures")}</h2></div><span class="panel-meta">${failed.length || 1}</span></div>
+    ? `<section class="surface-panel report-panel"><div class="panel-header"><h2>${tr("失败原因", "Failures")}</h2><span class="panel-meta">${failed.length || 1}</span></div>
        ${summary}
        ${failureTable}</section>`
     : "";
@@ -353,7 +349,7 @@ export async function renderRunDetail(runId, ctx) {
   if (!opsIsCurrent(current)) return;
   const hrefFor = (op, params) => detailHref(runId, { op, ...params });
   const links = runActions(detail, hrefFor, true);
-  const actions = [`<a class="button button-ghost" href="#/runs">${tr("← 返回跑批", "← Runs")}</a>`];
+  const actions = [`<a class="button button-ghost" href="#/runs">${tr("返回运行", "Runs")}</a>`];
   if (links.length) actions.push(actionHtml(links, ctx.esc, true));
   if (detail.launch_id) {
     actions.push(`<a class="button button-ghost" href="#/ops/jobs/${encodeURIComponent(detail.launch_id)}">${tr("面板任务", "Panel job")}</a>`);
@@ -361,19 +357,19 @@ export async function renderRunDetail(runId, ctx) {
   const title = jobTitle(detail.job_name);
   const raw = String(detail.job_name || "");
   ctx.setPage(`
-    <section class="page-heading"><div class="eyebrow">${tr("数据湖控制台 / 跑批 / 运行详情", "Lake console / Runs / Detail")}</div>
-      <div class="heading-row"><div><h1>${ctx.esc(title)}</h1><p class="sub"><span id="run-status"></span> · <code>${ctx.esc(detail.run_id)}</code>${title === raw ? "" : ` · <code>${ctx.esc(raw)}</code>`}</p></div>
+    <section class="page-heading">
+      <div class="heading-row"><div><h1>${ctx.esc(title)}</h1><p class="meta-row" id="run-status"></p><p class="meta-row"><code>${ctx.esc(detail.run_id)}</code>${title === raw ? "" : `<code>${ctx.esc(raw)}</code>`}</p></div>
       <div class="action-row">${actions.join("")}</div></div></section>
     ${state.op ? `<div id="run-form" class="run-form-host"></div>` : ""}
-    <section class="metric-grid detail-metrics" aria-label="${tr("运行关键指标", "Run metrics")}">
-      ${ctx.kpi(duration(detail.started_at, detail.finished_at), tr("耗时", "Duration"), detail.status === "running" ? tr("持续更新", "Updating") : tr("已结束", "Finished"))}
+    <section class="metric-grid detail-metrics" aria-label="${tr("运行指标", "Run metrics")}">
+      ${ctx.kpi(duration(detail.started_at, detail.finished_at), tr("耗时", "Duration"))}
       ${ctx.kpi(`<span title="${ctx.fmt(detail.rows_written)} ${tr("行", "rows")}">${ctx.compact(detail.rows_written)}</span>`, tr("写入", "Written"), tr("行", "rows"))}
-      ${ctx.kpi(ctx.num(detail.batches.length), "Batch", tr("数据集任务", "Dataset tasks"))}
+      ${ctx.kpi(ctx.num(detail.batches.length), tr("批次", "Batches"))}
       ${ctx.kpi(ago(detail.started_at), tr("开始", "Started"), ctx.esc((detail.started_at || "").slice(0, 19)))}
     </section>
     <div id="run-note"></div>
     <div id="run-errors" class="report-stack"></div>
-    <section class="surface-panel report-panel"><div class="panel-header"><div><div class="eyebrow">Timeline</div><h2>${tr("Batch 时间线", "Batch timeline")}</h2></div><span class="panel-meta">${tr("按数据集分道", "One lane per dataset")}</span></div><div id="run-gantt"></div>
+    <section class="surface-panel report-panel"><div class="panel-header"><h2>${tr("时间线", "Timeline")}</h2></div><div id="run-gantt"></div>
     <p class="legend">
       <span><i class="swatch" style="background:var(--cell-covered)"></i> ${tr("成功", "success")}</span>
       <span><i class="swatch" style="background:var(--series-1)"></i> ${tr("运行中", "running")}</span>

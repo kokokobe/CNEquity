@@ -218,3 +218,83 @@ def test_strict_transport_failure_is_not_treated_as_empty_history():
             client=client,
             strict=True,
         )
+
+
+def _bar(d: str, close: str) -> dict:
+    return {"date": d, "open": close, "high": close, "low": close, "close": close, "volume": "0"}
+
+
+def _client(payload: list[dict]) -> MagicMock:
+    client = MagicMock()
+    client.get.return_value = MagicMock(
+        raise_for_status=MagicMock(), json=MagicMock(return_value=payload)
+    )
+    return client
+
+
+def test_unfinished_session_row_is_not_emitted():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ny = ZoneInfo("America/New_York")
+    payload = [_bar("2026-10-22", "4039.8"), _bar("2026-10-23", "4036.8")]
+    # 10:49 UTC on 10-23 is 06:49 New York: the 10-23 session is still trading.
+    intraday = datetime(2026, 10, 23, 6, 49, tzinfo=ny)
+    df = fetch_offshore_commodity_bars_range(
+        date(2026, 10, 22), date(2026, 10, 23), client=_client(payload), now=intraday
+    )
+    assert df["trade_date"].to_list() == [date(2026, 10, 22)]
+
+    closed = datetime(2026, 10, 23, 18, 0, tzinfo=ny)
+    df = fetch_offshore_commodity_bars_range(
+        date(2026, 10, 23), date(2026, 10, 23), client=_client(payload), now=closed
+    )
+    assert date(2026, 10, 23) in df["trade_date"].to_list()
+
+
+def test_daily_step_rereads_recent_offshore_sessions(monkeypatch):
+    from cnequity.steps import commodity
+
+    calls = []
+    writes = []
+
+    def fake_range(start, end, *, config=None):
+        calls.append((start, end))
+        return pl.DataFrame({"trade_date": [date(2026, 10, 16)], "symbol": ["GC0.CMX"]})
+
+    def fake_write(config, run_id, dataset, df, *, source, batch_id):
+        writes.append((dataset, source, batch_id, df.height))
+        return {"rows_read": df.height, "rows_written": df.height}
+
+    monkeypatch.setattr(commodity, "fetch_offshore_commodity_bars_range", fake_range)
+    monkeypatch.setattr(commodity, "write_fetched", fake_write)
+    monkeypatch.setattr(
+        commodity,
+        "run_incremental_fetched",
+        lambda *a, **k: {"rows_read": 15, "rows_written": 15},
+    )
+    config = MagicMock(sources={"eastmoney": True, "sina": True}, _backfill=False)
+
+    result = commodity.step_commodity_bars(config, date(2026, 10, 19), "run-1", {})
+
+    # The run-day validator only accepts 10-19, so the trailing window is a
+    # separate batch that ends the day before.
+    assert calls == [(date(2026, 10, 12), date(2026, 10, 18))]
+    assert writes[0][:2] == ("commodity_bars", "sina")
+    assert writes[0][2].startswith("offshore-recheck-")
+    assert result == {"rows_read": 16, "rows_written": 16}
+
+
+def test_offshore_recheck_failure_does_not_fail_daily_step(monkeypatch):
+    from cnequity.steps import commodity
+
+    def boom(*a, **k):
+        raise RuntimeError("sina down")
+
+    monkeypatch.setattr(commodity, "fetch_offshore_commodity_bars_range", boom)
+    monkeypatch.setattr(
+        commodity, "run_incremental_fetched", lambda *a, **k: {"rows_read": 15, "rows_written": 15}
+    )
+    config = MagicMock(sources={"eastmoney": True, "sina": True}, _backfill=False)
+    result = commodity.step_commodity_bars(config, date(2026, 10, 19), "run-1", {})
+    assert result == {"rows_read": 15, "rows_written": 15}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from calendar import monthrange
 from datetime import date
 
 import polars as pl
@@ -21,6 +22,7 @@ from cnequity.adapters.sw.industry_history import (
     fetch_sw_industry_intervals,
 )
 from cnequity.config import Config
+from cnequity.domain.market_time import last_closed_session
 from cnequity.orchestrator.outcomes import SourceUnavailableError
 from cnequity.orchestrator.registry import register_step
 from cnequity.orchestrator.source_gaps import record_source_gap
@@ -45,14 +47,23 @@ _MIN_DAILY_INDUSTRY_CODES = 50
 
 
 def _month_end_trading_days(config: Config, start: date, end: date) -> list[date]:
-    """Last trading day of each calendar month in [start, end]."""
-    days = list_trading_dates(config, start, end)
-    if not days:
+    """Last trading day of each calendar month in [start, end] that has closed.
+
+    The calendar is read to the end of ``end``'s month, so an unfinished month
+    contributes nothing: reading only to ``end`` made its last session so far
+    a "month end", and a backfill run on a Sunday wrote a snapshot dated the
+    next (unopened) session. Nothing after the last closed session counts.
+    """
+    closed = last_closed_session()
+    cap = min(end, closed) if closed else end
+    if cap < start:
         return []
+    month_last = date(cap.year, cap.month, monthrange(cap.year, cap.month)[1])
+    days = list_trading_dates(config, start, month_last)
     by_month: dict[tuple[int, int], date] = {}
     for d in days:
         by_month[(d.year, d.month)] = d
-    return [by_month[k] for k in sorted(by_month)]
+    return [by_month[k] for k in sorted(by_month) if by_month[k] <= cap]
 
 
 def _existing_as_of_dates(
@@ -404,7 +415,8 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
         if "unexpected keyword argument 'config'" not in str(exc):
             raise
         intervals = fetch_sw_industry_intervals()
-    df = expand_sw_industry_as_of(intervals, todo)
+    df = expand_sw_industry_as_of(intervals, todo, _delist_dates(config))
+    df = _drop_never_listed(config, df)
     if df.is_empty():
         raise SourceUnavailableError("industry_members backfill: Shenwan expansion produced 0 rows")
     # A month with far fewer names than typical means the XLS window does not
@@ -459,6 +471,38 @@ def _backfill_industry_members(config: Config, trade_date: date, run_id: str) ->
             }
         ]
     return result
+
+
+def _drop_never_listed(config: Config, df: pl.DataFrame) -> pl.DataFrame:
+    """Drop Shenwan classes of securities the lake has no record of ever listing."""
+    from cnequity.query.parquet_scan import dataset_has_parquet
+    from cnequity.storage.repairs.sw_never_listed import never_listed, record_never_listed
+
+    # Without a security master there is no evidence either way.
+    if df.is_empty() or not dataset_has_parquet(config.curated_root / "instruments"):
+        return df
+    gone = never_listed(config, df["symbol"].unique().to_list())
+    if not gone:
+        return df
+    hits = df.filter(pl.col("symbol").is_in(sorted(gone)))
+    record_never_listed(
+        config,
+        hits.group_by("symbol").agg(
+            pl.col("as_of_date").min().alias("first_class_date"),
+            pl.col("industry_code").sort_by("as_of_date").last(),
+        ),
+    )
+    return df.filter(~pl.col("symbol").is_in(sorted(gone)))
+
+
+def _delist_dates(config: Config) -> pl.DataFrame | None:
+    from cnequity.query.reader import ReaderError, load
+
+    try:
+        inst = load("instruments", config=config)
+    except ReaderError:
+        return None
+    return inst.filter(pl.col("delist_date").is_not_null()).select("symbol", "delist_date")
 
 
 def _existing_sw_as_of_dates(config: Config, *, min_rows: int | None = None) -> set[date]:

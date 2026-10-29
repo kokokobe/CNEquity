@@ -53,16 +53,21 @@ def repair_orphan_symbols(config: Config, *, apply: bool = False) -> dict:
 
 def _repair_locked(config: Config, *, apply: bool) -> dict:
     store = RevisionStore(config.meta_root, config.curated_root, config.derived_root)
-    bars = store.current_root("daily_bars") or config.curated_root / "daily_bars"
-    priced = _symbols(bars, "trade_date")
+    bars = store.repair_base("daily_bars", register=False)
+    priced = _symbols(bars, "trade_date") if bars is not None else set()
     report: dict = {"applied": False, "datasets": {}}
     if not priced:
-        report["note"] = "no daily_bars; nothing can be reconciled"
+        report["note"] = "no daily_bars data; nothing to repair"
         return report
     for dataset, partition_col in _DATASETS.items():
-        store.ensure_current(dataset)
-        base = store.current_root(dataset)
+        base = store.repair_base(dataset, register=apply)
         if base is None:
+            report["datasets"][dataset] = {
+                "orphan_symbols": 0,
+                "sample": [],
+                "rows": 0,
+                "note": "no data; nothing to repair",
+            }
             continue
         orphans = sorted(_symbols(base, partition_col) - priced)
         entry: dict = {"orphan_symbols": len(orphans), "sample": orphans[:20], "rows": 0}
@@ -205,11 +210,11 @@ def _repair_stale_locked(config: Config, *, apply: bool) -> dict:
     from cnequity.domain.trading_status import DERIVED_BAR_GAP_SOURCE
 
     store = RevisionStore(config.meta_root, config.curated_root, config.derived_root)
-    store.ensure_current("trading_status")
-    base = store.current_root("trading_status")
-    bars_root = store.current_root("daily_bars")
+    base = store.repair_base("trading_status", register=apply)
+    bars_root = store.repair_base("daily_bars", register=False)
     report: dict = {"applied": False, "rows": 0}
     if base is None or bars_root is None:
+        report["note"] = "no trading_status or daily_bars data; nothing to repair"
         return report
     derived = (
         scan_parquet_root(base, partition_col="trade_date")

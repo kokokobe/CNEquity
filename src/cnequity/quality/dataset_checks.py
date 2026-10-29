@@ -21,6 +21,8 @@ from cnequity.domain.schemas import (
     MOCK_SOURCE,
     PRIMARY_KEYS,
     SchemaValidationError,
+    derivative_bar_violations,
+    market_bar_violations,
     required_columns_for_dataset,
 )
 from cnequity.query.parquet_scan import (
@@ -138,6 +140,14 @@ def _validate_parquet_file(path: Path, dataset: str) -> None:
         else:
             casts.append(pl.col(col).cast(dtype, strict=False))
 
+    derivative_predicate = derivative_bar_violations(dataset)
+    if derivative_predicate is not None:
+        # The shared derivative predicate names optional exchange fields too.
+        # Older files may predate them; typed nulls preserve that contract
+        # without materializing any rows or skipping the present fields.
+        casts.extend(
+            pl.lit(None, dtype=schema[col]).alias(col) for col in schema if col not in columns
+        )
     normalized = pl.scan_parquet(path).select(casts)
     expressions = [pl.len().alias("_rows")]
     expressions.extend(pl.col(col).null_count().alias(f"_null_{col}") for col in required)
@@ -153,38 +163,11 @@ def _validate_parquet_file(path: Path, dataset: str) -> None:
         for col in float_columns
     )
 
-    bar_datasets = {
-        "daily_bars",
-        "index_bars",
-        "minute_bars",
-        "minute_bars_5m",
-        "commodity_bars",
-        "sector_bars",
-        "trade_ticks",
-    }
-    price_columns = [col for col in ("open", "high", "low", "close", "price") if col in columns]
-    semantic_checks = [pl.col(col) <= 0 for col in price_columns]
-    if "volume" in columns:
-        semantic_checks.append(pl.col("volume") < 0)
-    if "amount" in columns:
-        semantic_checks.append(pl.col("amount").is_not_null() & (pl.col("amount") < 0))
-    if all(col in columns for col in ("open", "high", "low", "close")):
-        ohlc_row = (
-            pl.col("volume").is_null() | (pl.col("volume") > 0)
-            if "volume" in columns
-            else pl.lit(True)
-        )
-        semantic_checks.extend(
-            [
-                ohlc_row & (pl.col("high") < pl.col("open")),
-                ohlc_row & (pl.col("high") < pl.col("close")),
-                ohlc_row & (pl.col("low") > pl.col("open")),
-                ohlc_row & (pl.col("low") > pl.col("close")),
-                ohlc_row & (pl.col("low") > pl.col("high")),
-            ]
-        )
-    if dataset in bar_datasets and semantic_checks:
-        expressions.append(pl.any_horizontal(semantic_checks).sum().alias("_semantic_bad"))
+    market_predicate = market_bar_violations(dataset, columns)
+    if market_predicate is not None:
+        expressions.append(market_predicate.sum().alias("_semantic_bad"))
+    if derivative_predicate is not None:
+        expressions.append(derivative_predicate.sum().alias("_derivative_bad"))
 
     try:
         summary = normalized.select(expressions).collect(engine="streaming").row(0, named=True)
@@ -229,12 +212,11 @@ def _validate_parquet_file(path: Path, dataset: str) -> None:
         raise SchemaValidationError(
             f"dataset '{dataset}': {semantic_bad} row(s) violate numeric market-data invariants"
         )
-
-
-def _schema_contract_findings(files: list[Path], dataset: str, root: Path) -> dict | None:
-    """Return the schema finding while keeping the scan helper testable."""
-    finding, _, _ = _schema_contract_scan(files, dataset, root)
-    return finding
+    derivative_bad = int(summary.get("_derivative_bad") or 0)
+    if derivative_bad:
+        raise SchemaValidationError(
+            f"dataset '{dataset}': {derivative_bad} row(s) violate futures/option bar invariants"
+        )
 
 
 def _unreadable_parquet_finding(files: list[Path], dataset: str, root: Path) -> dict | None:
@@ -963,7 +945,7 @@ def check_mixed_partition_granularity(
     put. Whole-layer scans then see the same primary key twice — once in
     ``trade_date=2016-01-04`` and again inside ``trade_date=2016`` — and the
     sampled ``pk_unique`` check (current period only) never notices.
-    ``scripts/migrations/repartition.py`` (with PK dedupe) is the fix.
+    ``cne repair repartition`` (with PK dedupe) is the fix.
     """
     if partition_col is None or not dataset_has_parquet(root):
         return None
@@ -1006,7 +988,8 @@ def check_mixed_partition_granularity(
         f"{stale_count} partition(s) still at {[g for g in on_disk if g != configured]} "
         f"while registry wants {configured!r} (on disk: {on_disk}). "
         "Overlapping periods republish the same primary key across granularities; "
-        f"quarantine the finer leftovers and run `python scripts/migrations/repartition.py {dataset}`"
+        f"quarantine the finer leftovers and run `cne repair repartition {dataset} --apply` "
+        "(a source-checkout script; the PyPI package does not install it)"
     )
     if pk_dupes:
         msg += f" — {pk_dupes} duplicate PK row(s) visible in a whole-dataset scan"
@@ -1034,7 +1017,7 @@ def check_partition_fragmentation(
     Guards the granularity choice in the registry: a new dataset added with the
     default day partitioning, or an existing one whose volume never grew into
     it, otherwise quietly accumulates thousands of near-empty files that every
-    scan has to open. ``scripts/migrations/repartition.py`` is the fix.
+    scan has to open. ``cne repair repartition`` is the fix.
     """
     if partition_col is None or not dataset_has_parquet(root):
         return None
@@ -1058,8 +1041,9 @@ def check_partition_fragmentation(
         "message": (
             f"{len(partitions)} partitions hold {rows} rows ({avg:.1f} per partition, "
             f"{total_bytes / 1e6:.1f}MB across {len(files)} files) — mostly parquet "
-            f"metadata. Configured granularity is {granularity!r}; coarsen it in the "
-            f"registry and run `python scripts/migrations/repartition.py {dataset}`"
+            f"metadata. Reads are unaffected. Configured granularity is {granularity!r}; "
+            "a source checkout can coarsen it in the registry and run "
+            f"`cne repair repartition {dataset} --apply`"
         ),
         "partitions": len(partitions),
         "rows": rows,

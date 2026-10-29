@@ -16,8 +16,10 @@ from pathlib import Path
 import polars as pl
 
 from cnequity.domain.action_evidence import ex_date_rule_applies
-from cnequity.query.reader import load
+from cnequity.query.reader import ReaderError, load
 from cnequity.storage.revisions import committed_revision
+
+_NO_ACTIONS = "corporate_actions has no committed revision to pin; build it with `cne backfill corporate_actions`"
 
 
 def check_research_window(start: date, end: date, *, holdout_start: date | None = None) -> None:
@@ -105,7 +107,7 @@ def inventory(
         meta_root=root / "meta",
     )
     if pinned is None:
-        raise ValueError("corporate_actions has no committed revision to pin")
+        raise ReaderError(_NO_ACTIONS)
     frame = load("corporate_actions", data_root=root, start=start, end=end, revision=pinned[1])
     missing = frame.filter(
         (pl.col("action_type") == "cash_dividend")
@@ -236,7 +238,7 @@ def stock_term_diagnostic(
         meta_root=root / "meta",
     )
     if pinned is None:
-        raise ValueError("corporate_actions has no committed revision to pin")
+        raise ReaderError(_NO_ACTIONS)
     frame = load("corporate_actions", data_root=root, start=start, end=end, revision=pinned[1])
     events = dual_stock_action_events(frame)
     return {

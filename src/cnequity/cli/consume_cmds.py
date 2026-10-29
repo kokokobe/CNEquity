@@ -23,7 +23,7 @@ from cnequity.cli._shared import (
 )
 from cnequity.i18n import N_, _
 from cnequity.query.on_demand import OnDemandService
-from cnequity.query.views import ensure_duckdb_views
+from cnequity.query.views import views_connection
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 # macOS resolves localhost to ::1 before 127.0.0.1, and a browser does not
@@ -249,7 +249,12 @@ def serve(
 
 @cli.command()
 @config_option
-@click.option("--sql", default="SELECT COUNT(*) AS n FROM daily_bars")
+@click.option(
+    "--sql",
+    default="SELECT COUNT(*) AS n FROM daily_bars",
+    show_default=True,
+    help=N_("Read-only DuckDB SQL; each dataset is a view named as in `cne status --datasets`."),
+)
 @click.option("--dataset", default=None, help=N_("Dataset name to fetch on demand"))
 @click.option("--symbol", default=None, help=N_("Symbol to fetch on demand"))
 @click.option(
@@ -281,16 +286,16 @@ def query(
         if data.get("error"):
             raise SystemExit(1)
         return
-    db_path = ensure_duckdb_views(cfg)
     import duckdb
+    import polars as pl
 
-    con = duckdb.connect(str(db_path), read_only=True)
+    con = views_connection(cfg)
     try:
         # A typo in the SQL is the most ordinary thing that happens here, and
         # DuckDB's own message already names the line, the column and the near
         # miss. Keep that text and drop the Python traceback wrapped around it.
         try:
-            df = con.execute(sql).pl()
+            df = pl.from_arrow(con.sql(sql).to_arrow_table())
         except duckdb.Error as exc:
             raise click.ClickException(str(exc)) from exc
         click.echo(df)

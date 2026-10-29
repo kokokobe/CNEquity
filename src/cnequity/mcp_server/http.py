@@ -32,7 +32,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from cnequity.config import Config
-from cnequity.mcp_server.protocol import INVALID_REQUEST, PARSE_ERROR, handle_message
+from cnequity.mcp_server.protocol import PARSE_ERROR, handle_payload
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 # Set by cloudflared, ngrok, nginx and friends. Any of them means the request
@@ -81,18 +81,6 @@ def _rpc_error(code: int, message: str, status: int) -> JSONResponse:
 def create_app(config: Config, *, token: str | None = None) -> Starlette:
     """Build the HTTP app. *token*, when set, is required on every request."""
 
-    def _process(message: object) -> object | None:
-        if isinstance(message, list):
-            replies = [r for r in (_process(m) for m in message) if r is not None]
-            return replies or None
-        if not isinstance(message, dict):
-            return {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": INVALID_REQUEST, "message": "message must be an object"},
-            }
-        return handle_message(config, message)
-
     async def mcp(request: Request) -> Response:
         reason = _denied(request, token)
         if reason is not None:
@@ -105,7 +93,7 @@ def create_app(config: Config, *, token: str | None = None) -> Starlette:
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             return _rpc_error(PARSE_ERROR, str(exc), 400)
         # Tools read DuckDB and Parquet synchronously; keep the event loop free.
-        reply = await run_in_threadpool(_process, message)
+        reply = await run_in_threadpool(handle_payload, config, message)
         if reply is None:
             # Notifications and responses: accepted, nothing to say back.
             return Response(status_code=202)

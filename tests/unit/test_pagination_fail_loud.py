@@ -2,11 +2,13 @@
 
 from datetime import date
 
+import httpx
 import pytest
 
 from cnequity.adapters.cninfo import announcements as cninfo_announcements
 from cnequity.adapters.eastmoney import clist
 from cnequity.adapters.eastmoney.clist import fetch_clist_pages
+from cnequity.orchestrator.outcomes import step_outcome
 
 
 class _Resp:
@@ -51,6 +53,40 @@ def test_clist_raises_on_midpagination_truncation(monkeypatch):
 
     with pytest.raises(RuntimeError, match="page 2 failed"):
         fetch_clist_pages(FailSecondPage(), fields="f12,f13", page_size=5000)
+
+
+@pytest.mark.parametrize("failed_page", [1, 2])
+@pytest.mark.parametrize(
+    ("failure", "reason", "execution"),
+    [
+        (httpx.RemoteProtocolError("disconnected"), "source_transient", "completed"),
+        (RuntimeError("bad computation"), "execution_error", "failed"),
+    ],
+)
+def test_clist_pagination_keeps_failure_category(
+    monkeypatch, failed_page, failure, reason, execution
+):
+    monkeypatch.setattr(clist.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(clist, "_clist_hosts", lambda _: ("https://push2.eastmoney.com",))
+    calls = []
+
+    class Client:
+        def get(self, url):
+            calls.append(url)
+            if f"pn={failed_page}&" in url:
+                raise failure
+            return _Resp(_clist_payload(["600000", "600001"], total=4))
+
+    with pytest.raises(clist.EastMoneyClistError, match=f"page {failed_page} failed") as exc:
+        fetch_clist_pages(Client(), fields="f12,f13", page_size=2)
+
+    outcome = step_outcome("failed", error=exc.value)
+    assert outcome.reason_code == reason
+    assert outcome.execution_status == execution
+    assert exc.value.__cause__.__cause__ is failure
+    if reason == "source_transient":
+        assert outcome.coverage_status == "partial"
+        assert len(calls) == failed_page
 
 
 def test_clist_raises_on_empty_page_before_reported_total():

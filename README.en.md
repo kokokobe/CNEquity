@@ -3,7 +3,7 @@
   <h1>CNEquity · A local data foundation for China-market research</h1>
   <p><strong>Collect once, keep it current, and research from the same traceable data.</strong></p>
 
-CNEquity turns market prices, financial statements, corporate events and capital-flow data into a local Parquet lake. It handles incremental ingestion, resumable batches, quality checks and consistent queries for individual researchers, small teams and AI agents.
+CNEquity turns China A-share (AShare / AStock) stock prices, financial statements, futures, corporate events and capital-flow data into a local Parquet lake. It handles incremental ingestion, resumable batches, quality checks and consistent queries for individual researchers, small teams and AI agents.
 
 [![CI](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cnequity?logo=pypi&logoColor=white)](https://pypi.org/project/cnequity/)
@@ -177,16 +177,17 @@ Adapters and batch orchestration collect data into staging; validated batches be
 cne run daily
 ```
 
-Schedule this one command every day, weekends included: on trading days it runs every enabled daily group, then updates announcements, regulatory events and news; on other days it runs only the event stream. You can also do it from the operations page in `cne serve`: opening a daily run, catch-up or backfill shows the command it will run, and Start runs it. The same page installs the scheduled daily run and catch-up pass for the current user, without copying the repository scripts. Accept the lake with `cne check`, which exits non-zero on gaps or quality errors.
+`cne schedule install` installs a timer for the current user (macOS / Linux / Windows) that runs it each trading day, followed by `cne run maintain` for the audit, gates and metadata backup; or schedule this one command yourself every day, weekends included: on trading days it runs every enabled daily group, then updates announcements, regulatory events and news; on other days it runs only the event stream. You can also do it from the operations page in `cne serve`: opening a daily run, catch-up or backfill shows the command it will run, and Start runs it. The same page installs the scheduled daily run and catch-up pass for the current user, without copying the repository scripts. Accept the lake with `cne check`, which exits non-zero on gaps or quality errors.
 
 When you upgrade:
 
 ```bash
 pip install -U cnequity
 cne config upgrade
+cne migrate        # preview one-off fixes for data older versions wrote; then add --apply
 ```
 
-`cne config upgrade` adds the schedule steps a new release introduced to your config and keeps a backup of the original.
+The config `cne init` writes extends the built-in defaults (`extends = "builtin"`), so a new release's schedule steps apply after the upgrade and `cne config upgrade` reports nothing to do; for a full config written by an older version it adds the new steps (keeping a backup), or `cne config upgrade --minimize` converts it once to extend the defaults.
 
 Continue with [initialization and recovery](docs/en/getting-started/initialization.md), then the [runbook](docs/en/operations/runbook.md). The full documentation is available in [English](https://rootsunc.github.io/CNEquity/en/) and [Chinese](https://rootsunc.github.io/CNEquity/).
 

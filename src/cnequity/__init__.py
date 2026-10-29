@@ -1,3 +1,3 @@
 """cnequity — A-share data ingestion orchestrator."""
 
-__version__ = "0.17.1"
+__version__ = "0.20.0"

@@ -496,6 +496,7 @@ def test_fetching_commands_persist_job_logs(tmp_path, monkeypatch, command):
         "run retry": (["--run-id", "offline"], "cnequity.cli.run_cmds._retry_single_run"),
         "run compact": (["--run-id", "offline"], "cnequity.orchestrator.engine.JobEngine.run_step"),
         "run clean": (["--dry-run"], "cnequity.cli.maintain_cmds.clean_staging"),
+        "run maintain": ([], "cnequity.cli.schedule_cmds.subprocess.run"),
         "ths-official capture": (
             ["--what", "corporate-actions"],
             "cnequity.steps.fundamentals.snapshot_corporate_actions_ths_official",
@@ -901,3 +902,20 @@ def test_the_instruments_step_is_not_silent(tmp_path, monkeypatch, caplog):
     stages = [r.message.split(" · ")[0] for r in caplog.records if r.message.startswith("instr")]
     assert stages[0] == "instruments 1/5 TDX security list"
     assert stages[-1] == "instruments 5/5 write"
+
+
+def test_a_click_failure_is_not_printed_twice(tmp_path):
+    """Click echoes the error itself; the terminal log handler must not repeat it."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "from cnequity.cli.main import cli; cli()", "status"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert proc.stderr.count("No config found") == 1, proc.stderr

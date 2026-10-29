@@ -623,3 +623,113 @@ def test_config_gives_datacenter_its_own_lane_and_breaker(tmp_path, monkeypatch)
     from cnequity.adapters.throttle import _source_family
 
     assert _source_family("eastmoney_dc") == "eastmoney_dc"
+
+
+# ---- a dead local proxy is not EastMoney refusing this IP -----------------------
+
+
+def _closed_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+@pytest.mark.parametrize("url", [_CLIST, _DATACENTER])
+def test_a_proxy_that_is_not_running_never_trips_the_breaker(tmp_path, monkeypatch, url):
+    monkeypatch.setattr(host_guard, "_today", lambda: date(2026, 10, 20))
+    monkeypatch.setattr("cnequity.adapters.eastmoney.em_auth.get_nid", lambda *a, **k: "")
+    proxy = f"http://127.0.0.1:{_closed_port()}"
+    cfg = _cfg(tmp_path, eastmoney_proxy=proxy)
+
+    def _refused(_url):
+        raise httpx.ConnectError("[Errno 61] Connection refused")
+
+    client, sent = _client(cfg, _refused)
+    for _ in range(5):
+        with pytest.raises(host_guard.EastMoneyProxyUnreachableError) as exc:
+            client.get(url)
+        assert proxy in str(exc.value)
+        assert isinstance(exc.value, httpx.ConnectError)
+        assert is_transport_fail_fast(exc.value)
+
+    assert len(sent) == 5
+    state = json.loads((cfg.rate_limit_root / "eastmoney_guard.json").read_text())
+    assert state["push2"]["breaker"] is None
+    assert state["datacenter"]["breaker"] is None
+    assert state["datacenter"]["strikes"] == 0
+    client.close()
+
+
+def test_a_refusal_through_a_running_proxy_still_trips_the_breaker(tmp_path, monkeypatch):
+    import socket
+
+    monkeypatch.setattr(host_guard, "_today", lambda: date(2026, 10, 20))
+    cfg_proxy = socket.socket()
+    cfg_proxy.bind(("127.0.0.1", 0))
+    cfg_proxy.listen()
+    try:
+        cfg = _cfg(tmp_path, eastmoney_proxy=f"http://127.0.0.1:{cfg_proxy.getsockname()[1]}")
+
+        def _refused(_url):
+            raise httpx.ConnectError("[Errno 61] Connection refused")
+
+        client, _ = _client(cfg, _refused)
+        with pytest.raises(httpx.ConnectError) as exc:
+            client.get(_CLIST)
+        assert not isinstance(exc.value, host_guard.EastMoneyProxyUnreachableError)
+        with pytest.raises(host_guard.Push2BreakerOpenError):
+            client.get(_CLIST)
+        client.close()
+    finally:
+        cfg_proxy.close()
+
+
+def test_a_direct_route_refusal_is_not_relabelled_as_a_proxy_problem(tmp_path, monkeypatch):
+    monkeypatch.setattr(host_guard, "_today", lambda: date(2026, 10, 20))
+    cfg = _cfg(tmp_path)
+
+    def _refused(_url):
+        raise httpx.ConnectError("[Errno 61] Connection refused")
+
+    client, _ = _client(cfg, _refused)
+    with pytest.raises(httpx.ConnectError) as exc:
+        client.get(_CLIST)
+    assert not isinstance(exc.value, host_guard.EastMoneyProxyUnreachableError)
+    with pytest.raises(host_guard.Push2BreakerOpenError):
+        client.get(_CLIST)
+    client.close()
+
+
+def test_a_dead_proxy_is_probed_once_per_window_and_cleared_by_a_response(tmp_path, monkeypatch):
+    from cnequity.adapters.eastmoney import em_auth
+
+    monkeypatch.setattr(host_guard, "_today", lambda: date(2026, 10, 20))
+    monkeypatch.setattr(em_auth, "get_nid", lambda *a, **k: "")
+    monkeypatch.setattr(em_auth, "_proxy_dead_until", {})
+    probes: list[str] = []
+
+    def _probe(proxy):
+        probes.append(proxy)
+        return False
+
+    monkeypatch.setattr(em_auth, "_proxy_accepts_connections", _probe)
+    proxy = f"http://127.0.0.1:{_closed_port()}"
+    cfg = _cfg(tmp_path, eastmoney_proxy=proxy)
+    outcomes = [httpx.ConnectError("[Errno 61] Connection refused")] * 3
+
+    def _send(_url):
+        if outcomes:
+            raise outcomes.pop()
+        return _ok(_url)
+
+    client, _ = _client(cfg, _send)
+    for _ in range(3):
+        with pytest.raises(host_guard.EastMoneyProxyUnreachableError):
+            client.get(_DATACENTER)
+    assert len(probes) == 1
+
+    client.get(_DATACENTER)
+    assert proxy not in em_auth._proxy_dead_until
+    client.close()

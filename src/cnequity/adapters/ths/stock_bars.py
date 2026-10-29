@@ -43,10 +43,6 @@ logger = logging.getLogger(__name__)
 # 00 = unadjusted; see the module docstring for why never 01/02.
 _STOCK_KLINE_URL = "https://d.10jqka.com.cn/v6/line/hs_{code}/00/{part}.js"
 
-# Consecutive symbol failures tolerated before a sweep gives up: past this the
-# source has stopped answering, and continuing only deepens a rate-limit penalty.
-_DEAD_SOURCE_STREAK = 10
-
 
 def _parse_stock_kline(payload: dict[str, Any], symbol: str) -> list[dict]:
     rows: list[dict] = []
@@ -119,45 +115,3 @@ def fetch_stock_bars(
             rows.append(row)
     rows.sort(key=lambda r: r["trade_date"])
     return rows
-
-
-def sweep_stock_bars(
-    symbols: list[str],
-    start: date,
-    end: date,
-    *,
-    config: Config | None = None,
-    on_batch=None,
-    batch_size: int = 50,
-) -> tuple[list[dict], list[str]]:
-    """Bars for many symbols. Returns ``(rows, failed_symbols)``.
-
-    ``on_batch(rows, symbols)`` makes progress durable partway through — a sweep
-    of thousands of symbols that dies late must not discard what it already has —
-    and clears the accumulator, so a batched caller gets an empty row list back.
-    """
-    rows: list[dict] = []
-    failed: list[str] = []
-    batch: list[str] = []
-    streak = 0
-
-    for i, symbol in enumerate(symbols, start=1):
-        try:
-            got = fetch_stock_bars(symbol, start, end, config=config)
-            rows.extend(got)
-            batch.append(symbol)
-            streak = 0
-        except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
-            logger.warning("THS stock bars failed for %s: %s", symbol, exc)
-            failed.append(symbol)
-            streak += 1
-            if streak >= _DEAD_SOURCE_STREAK:
-                logger.error("THS: %d consecutive failures at %s — aborting sweep", streak, symbol)
-                break
-        if on_batch and (i % batch_size == 0 or i == len(symbols)):
-            on_batch(rows, batch)
-            rows, batch = [], []
-    if on_batch and batch:
-        on_batch(rows, batch)
-        rows = []
-    return rows, failed

@@ -165,7 +165,9 @@ def test_apply_publishes_missing_month_keys_preserves_conflicts_and_old_revision
     added = rows.filter(pl.col("source") == DERIVED_TRADED_SOURCE)
     assert added.height == 4
     assert added["is_trading"].all()
-    assert added["risk_warning"].null_count() == 4
+    # ST does not apply to funds; stocks stay unknown.
+    assert added["risk_warning"].null_count() == 3
+    assert added.filter(pl.col("symbol") == "510001.SH")["risk_warning"].to_list() == [False]
     assert (
         rows.filter((pl.col("symbol") == "000001.SZ") & (pl.col("trade_date") == D1))["status"][0]
         == "suspended"
@@ -184,7 +186,7 @@ def test_coverage_counts_history_before_first_status_and_separates_st(lake):
     after = trading_state_coverage_report(lake)
     assert after["missing_rows"] == 0
     assert after["derived_traded_rows"] == 4
-    assert after["risk_warning_unknown_rows"] == 6
+    assert after["risk_warning_unknown_rows"] == 5  # the derived fund row is not ST
 
 
 def test_preview_reads_committed_inputs_instead_of_unpublished_edits(lake):
@@ -300,3 +302,37 @@ def test_derived_trading_has_consistent_rank_and_cannot_be_carried_as_first_hand
         pl.DataFrame([authority, derived], schema=frame.schema), "trading_status"
     )
     assert canonical["source"][0] == "baostock"
+
+
+def test_fund_rows_written_unknown_are_marked_not_st_and_stocks_stay_unknown(lake):
+    root = lake.curated_root / "trading_status" / "trade_date=2026-07"
+    seeded = pl.DataFrame(
+        [
+            _status("000001.SZ", D1, status="suspended"),
+            _status("510001.SH", D2),
+            _status("510001.SH", D1, source=DERIVED_TRADED_SOURCE),
+            _status("000002.SZ", D1, source=DERIVED_TRADED_SOURCE),
+        ],
+        schema=DATASET_SCHEMAS["trading_status"],
+    )
+    seeded.write_parquet(root / "part.parquet")
+    _commit(lake, "trading_status")
+
+    plan = repair_status_traded(lake, start=D1, end=D2)
+    assert plan["fund_rows_marked_not_st"] == 1
+    repair_status_traded(lake, start=D1, end=D2, apply=True)
+
+    rows = load("trading_status", config=lake)
+
+    def rw(symbol, day):
+        hit = rows.filter((pl.col("symbol") == symbol) & (pl.col("trade_date") == day))
+        assert hit.height == 1
+        return hit["risk_warning"][0]
+
+    assert rw("510001.SH", D1) is False
+    assert rw("000002.SZ", D1) is None
+    # A first-hand fund row is never rewritten by this repair.
+    assert rows.filter((pl.col("symbol") == "510001.SH") & (pl.col("trade_date") == D2))[
+        "source"
+    ].to_list() == ["baostock"]
+    assert repair_status_traded(lake, start=D1, end=D2)["fund_rows_marked_not_st"] == 0

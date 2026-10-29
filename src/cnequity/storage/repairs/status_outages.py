@@ -139,11 +139,10 @@ def _repair_locked(config: Config, *, start: date, end: date, apply: bool) -> di
     from cnequity.query.calendar import list_trading_dates
 
     store = RevisionStore(config.meta_root, config.curated_root, config.derived_root)
-    store.ensure_current("trading_status")
-    base = store.current_root("trading_status")
+    base = store.repair_base("trading_status", register=apply)
     report: dict = {"applied": False, "start": start.isoformat(), "end": end.isoformat()}
     if base is None:
-        report["note"] = "no committed trading_status"
+        report["note"] = "no trading_status data; nothing to repair"
         return report
     sessions = list_trading_dates(config, start - _SEARCH_SPAN, end)
     if not sessions:

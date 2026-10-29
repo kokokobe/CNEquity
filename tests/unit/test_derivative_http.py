@@ -178,7 +178,7 @@ def test_historical_reader_receipts_require_observed_route_date_and_rows(tmp_pat
         )
 
 
-def test_parameter_parser_is_not_part_of_daily_receipt_fingerprint(monkeypatch):
+def test_archive_reader_is_not_part_of_daily_receipt_fingerprint(monkeypatch):
     from cnequity.storage import derivative_evidence as evidence
 
     called = []
@@ -194,7 +194,6 @@ def test_parameter_parser_is_not_part_of_daily_receipt_fingerprint(monkeypatch):
         evidence.parser_identity()
     finally:
         evidence.parser_identity.cache_clear()
-    assert "shfe_parameters.py" not in called
     assert "shfe_archive.py" not in called
     assert "shfe.py" in called
 

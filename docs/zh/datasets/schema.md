@@ -170,7 +170,8 @@
 
 `derived_traded` 表示已提交日线证明当天有实际成交（成交量大于零），不是一手状态快照。
 它只补已知上市期间、没有任何状态行的股票或 ETF 键，写 `normal`、`is_trading=true`，
-`risk_warning=null`。`normal` 不表示“确认非 ST”。可信的当日一手状态优先于此派生行；
+股票写 `risk_warning=null`，ETF/基金写 `risk_warning=false`（ST 制度不适用于基金，不是未知）。
+股票行的 `normal` 不表示“确认非 ST”。可信的当日一手状态优先于此派生行；
 它不参与东财中断时的一手记录沿用，也不生成历史 ST 覆盖凭证。零成交量、未知成交量、
 未知上市日期和上市期间之外的日线不会生成此类行；已有矛盾状态需另行修复。
 
@@ -184,11 +185,7 @@
 严格的历史股票池读取仍需独立 ST 证据，成交补行不会解除该要求。
 
 **读旧湖不会出错。** 旧行把 ST 编码成 `status="st"`，`validate_dataframe` 在读入时
-自动升级（见 `cnequity/domain/trading_status.py`）。把物理 schema 统一过来跑：
-
-```bash
-scripts/migrations/migrate_trading_status_risk_warning.py --config configs/cnequity.toml --apply
-```
+自动升级（见 `cnequity/domain/trading_status.py`），物理文件不需要改写。
 
 迁移**不会**给历史补 `delisted` 行：某一天的状态是当时观测到的事实，用今天的退市日期
 倒填会凭空造出当时并不存在的 point-in-time 事实。要修某段历史，重跑那段日更即可。
@@ -220,14 +217,7 @@ scripts/migrations/migrate_trading_status_risk_warning.py --config configs/cnequ
 
 质量检查按来源核对量价关系，缺少成交额的数据无法做此项检查。`index_bars` / `sector_bars` 的指数点位不适用个股量价关系。
 
-**迁移（v1 → v2）。** 湖里既有的行在任何一种口径下都是错的，必须重写：
-
-```bash
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --dry-run
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
-```
-
-`source ∈ {tdx_protocol, sina}` 且 `data_version=v1` 的行 `volume ×100`；其余 v1 行原样保留（本就是股）；所有被处理的行改写为 `data_version=v2`。已是 v2 的行跳过，脚本幂等、可中断续跑。**`fetched_at` 不重新打戳**——这些行确实是当时抓的，改掉就抹掉了数据被观测到的时间；记录本次重新解释的列是 `data_version`，这正是它的用途。`--apply` 会就地改写 curated，请先备份。
+**迁移（v1 → v2）。** 0.12 及更早版本写入的湖需要把 v1 行改写为股；这个一次性脚本已移除，这样的湖请先用 0.19 或更早版本迁移后再升级。
 
 ##### 前收盘（`pre_close`）
 
@@ -868,12 +858,32 @@ PIT 查询过滤 `announce_date <= as_of`。
 |--------|------|-------|
 | symbol | string |  |
 | classification_system | string | 如 ``sw``、``eastmoney`` |
-| industry_code | string |  |
-| industry_name | string |  |
+| industry_code | string | 三级（末级）行业代码；`data_version=v1` 的东财行见下文 |
+| industry_name | string | 三级行业名称；申万行等于代码 |
+| l1_code | string | 一级行业代码，可为空 |
+| l1_name | string | 一级行业名称，可为空 |
+| l2_code | string | 二级行业代码，可为空 |
+| l2_name | string | 二级行业名称，可为空 |
+| l3_code | string | 三级行业代码，可为空 |
+| l3_name | string | 三级行业名称，可为空 |
 | as_of_date | date | 分类快照日 |
 | source | string | 溯源 |
 | data_version | string | 溯源 |
 | fetched_at | timestamp | 溯源 |
+
+每只证券每个分类体系每个快照日一行。东财数据中心把每只股票同时列在一、二、三级三个行业板块下，且不标层级：
+板块越大层级越高；一级只有一个下级时两者成员相同，靠名称后缀（`Ⅱ`/`Ⅲ`）区分。
+申万行只有六位三级代码，一、二级代码由它补零得到（`480101` → `480100` → `480000`），申万文件不发布名称，名称列为空。
+
+`data_version=v1`（0.20 之前写入）的东财行只保存了三个板块中的一个，由来源分页顺序决定，层级逐日不定。
+`cne migrate` 的 `industry-levels` 为这些行补上所存板块本身及其上级的层级列，下级保持为空，`industry_code` 不改；
+按层级统计请读 `l1_*`..`l3_*`，不要读这些行的 `industry_code`。
+
+行业代码本身不是身份：申万 2021-07-30 换代时复用了旧代码字符串。`cne derive industry_taxonomy` 把每个行业写成
+`industry_id = 体系:版本:代码`（如 `sw:2014:480101`、`sw:2021:480101`、`eastmoney:board:1279`）存到
+`meta/industry_taxonomy.parquet`，含层级、名称、上级 `parent_id`、首末出现的快照日和最大成员数；申万版本按快照日判定。
+`cne derive industry_crosswalk` 在两边都有完整快照的同一天比较申万与东财同层级行业的成员，把每对行业的重叠证据和关系
+（`equivalent`、`left_within_right`、`right_within_left`、`partial`）追加到 `meta/industry_crosswalk.parquet`；只是证据，不合并身份。
 
 #### macro_indicators
 

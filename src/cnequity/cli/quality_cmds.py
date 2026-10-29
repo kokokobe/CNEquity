@@ -8,6 +8,8 @@ have landed, landed. Different failures, so different commands.
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from cnequity.cli._shared import (
     _cfg,
     _progress_logging,
     attach_log_file,
+    comma_option,
     comma_values,
     config_option,
     ingest_scope_label,
@@ -77,12 +80,18 @@ def _gates_on_dataset(cfg, dataset: str, wanted_groups: set[str] | None) -> bool
 
     ``--groups`` names the schedule groups this machine actually runs. A
     dataset nothing schedules still gates: "I cannot tell who fetches this" is
-    not the same claim as "another host fetches it".
+    not the same claim as "another host fetches it". A dataset the config took
+    out of its groups on purpose (``steps_remove``, ``enabled = false``) is the
+    one exception: the operator has said this host does not fetch it.
     """
     if wanted_groups is None:
         return True
     by_group = stale_datasets_by_group(cfg, [dataset])
     owners = {group for group, names in by_group.items() if dataset in names}
+    from cnequity.domain.datasets import removed_from_schedule
+
+    if removed_from_schedule(cfg, dataset):
+        return False
     if not owners:
         return True
     return any(group in wanted_groups or group == "(unscheduled)" for group in owners)
@@ -399,9 +408,16 @@ def audit(
                     err=True,
                 )
         if health["empty_datasets"]:
-            click.echo(
-                _("  Empty datasets: {value}").format(value=", ".join(health["empty_datasets"]))
-            )
+            if getattr(cfg, "lake_profile", None) in {"demo", "sample"}:
+                click.echo(
+                    _(
+                        "  {value} registered datasets hold no data, as expected for a {profile} lake"
+                    ).format(value=len(health["empty_datasets"]), profile=cfg.lake_profile)
+                )
+            else:
+                click.echo(
+                    _("  Empty datasets: {value}").format(value=", ".join(health["empty_datasets"]))
+                )
         if health.get("expected_empty_datasets"):
             click.echo(
                 _("  Datasets expected to be empty: {value}").format(
@@ -420,70 +436,80 @@ def audit(
             if f.get("source_limited"):
                 click.echo(f"  [info]    {f.get('dataset', ''):22} {f.get('message', '')}")
         validity = health["historical_universe_validity"]
-        research_state = "READY" if validity["universe_ready"] else "BLOCKED"
-        universe_label = (
-            "all-A"
-            if validity.get("universe", research_universe) == "all_a"
-            else validity.get("universe", research_universe)
-        )
-        click.echo(
-            _("  History {universe_label} {start}..{end}: {research_state}").format(
-                universe_label=universe_label,
-                start=validity["window"]["start"],
-                end=validity["window"]["end"],
-                research_state=research_state,
-            )
-        )
-        supported = validity.get("supported_window")
-        # Only worth a line when it adds something: a READY gate with no
-        # computed window (a caller passing its own manifest) would otherwise
-        # print a contradiction.
-        if supported:
+        small_lake = getattr(cfg, "lake_profile", None) in {"demo", "sample"}
+        if small_lake:
+            # Research readiness is judged on a full-market lake; a lake of a few
+            # symbols is never ready for it, so the verdict would only alarm.
             click.echo(
-                _(
-                    "  Endorsable window: {start}..{end} (the longest range the evidence supports; a research window inside it passes)"
-                ).format(start=supported["start"], end=supported["end"])
-            )
-        elif not validity["universe_ready"]:
-            detail = validity.get("checks", {}).get("historical_st_labels", {})
-            blocked_by = detail.get("supported_window_blocked_by")
-            per_source = detail.get("supported_window_by_source") or {}
-            offered = _(", ").join(
-                f"{name} {item['start']}..{item['end']}"
-                for name, item in sorted(per_source.items())
-            )
-            short = detail.get("supported_window_missing_symbols")
-            total = detail.get("supported_window_current_symbols")
-            near = (
-                _(", the closest receipt is short {short}/{total} symbols").format(
-                    short=short, total=total
+                _("  Research readiness is not assessed for a {profile} lake").format(
+                    profile=cfg.lake_profile
                 )
-                if short and total
-                else ""
+            )
+        else:
+            research_state = "READY" if validity["universe_ready"] else "BLOCKED"
+            universe_label = (
+                "all-A"
+                if validity.get("universe", research_universe) == "all_a"
+                else validity.get("universe", research_universe)
             )
             click.echo(
-                _("  Endorsable window: none")
-                + (
-                    _(
-                        " ({blocked_by} has no receipt covering the current stock pool yet{near})"
-                    ).format(blocked_by=blocked_by, near=near)
-                    if blocked_by
-                    else ""
-                )
-                + (
-                    _("; ranges each source has: {offered}").format(offered=offered)
-                    if offered
-                    else ""
+                _("  History {universe_label} {start}..{end}: {research_state}").format(
+                    universe_label=universe_label,
+                    start=validity["window"]["start"],
+                    end=validity["window"]["end"],
+                    research_state=research_state,
                 )
             )
-        for blocker in validity["blockers"]:
-            click.echo(f"  [research] {blocker['message']}")
-            if blocker.get("remediation"):
+            supported = validity.get("supported_window")
+            # Only worth a line when it adds something: a READY gate with no
+            # computed window (a caller passing its own manifest) would otherwise
+            # print a contradiction.
+            if supported:
                 click.echo(
-                    _("              Suggested fix: {remediation}").format(
-                        remediation=blocker["remediation"]
+                    _(
+                        "  Endorsable window: {start}..{end} (the longest range the evidence supports; a research window inside it passes)"
+                    ).format(start=supported["start"], end=supported["end"])
+                )
+            elif not validity["universe_ready"]:
+                detail = validity.get("checks", {}).get("historical_st_labels", {})
+                blocked_by = detail.get("supported_window_blocked_by")
+                per_source = detail.get("supported_window_by_source") or {}
+                offered = _(", ").join(
+                    f"{name} {item['start']}..{item['end']}"
+                    for name, item in sorted(per_source.items())
+                )
+                short = detail.get("supported_window_missing_symbols")
+                total = detail.get("supported_window_current_symbols")
+                near = (
+                    _(", the closest receipt is short {short}/{total} symbols").format(
+                        short=short, total=total
+                    )
+                    if short and total
+                    else ""
+                )
+                click.echo(
+                    _("  Endorsable window: none")
+                    + (
+                        _(
+                            " ({blocked_by} has no receipt covering the current stock pool yet{near})"
+                        ).format(blocked_by=blocked_by, near=near)
+                        if blocked_by
+                        else ""
+                    )
+                    + (
+                        _("; ranges each source has: {offered}").format(offered=offered)
+                        if offered
+                        else ""
                     )
                 )
+            for blocker in validity["blockers"]:
+                click.echo(f"  [research] {blocker['message']}")
+                if blocker.get("remediation"):
+                    click.echo(
+                        _("              Suggested fix: {remediation}").format(
+                            remediation=blocker["remediation"]
+                        )
+                    )
         if not health["healthy"]:
             click.echo("UNHEALTHY")
         elif research_start and not validity["universe_ready"]:
@@ -675,6 +701,13 @@ def _verify_mode(bars: bool, runs: bool, given: dict) -> str:
     ),
 )
 @click.option(
+    "--industry",
+    is_flag=True,
+    help=N_(
+        "Read-only completeness of industry_members by classification system, level and snapshot date; --start/--end narrow it."
+    ),
+)
+@click.option(
     "--bars",
     is_flag=True,
     help=N_(
@@ -686,7 +719,7 @@ def _verify_mode(bars: bool, runs: bool, given: dict) -> str:
     is_flag=True,
     help=N_("Check run evidence over consecutive trading days instead; fills no gaps."),
 )
-@click.option(
+@comma_option(
     "--dataset",
     "only",
     default=None,
@@ -699,7 +732,7 @@ def _verify_mode(bars: bool, runs: bool, given: dict) -> str:
     is_flag=True,
     help=N_("Run backfill over fillable gaps, dataset by dataset from newest to oldest."),
 )
-@click.option(
+@comma_option(
     "--kind",
     "kinds",
     default=None,
@@ -733,6 +766,7 @@ def _verify_mode(bars: bool, runs: bool, given: dict) -> str:
 )
 def verify(
     config_path: str,
+    industry: bool,
     bars: bool,
     runs: bool,
     derivatives: bool,
@@ -760,8 +794,25 @@ def verify(
     `--bars` and `--runs` ask the same question at two other grains: "security × session" instead of "dataset × session",
     and "one run per session" instead of rows in the lake.
 
+    \b
+    `--industry` asks it of a classification: each snapshot against the stocks listed that day, and each industry against
+    the previous snapshot, so a classification that silently loses a slice of the market or a whole industry shows.
+
     """
     from cnequity.quality.verify import verify_lake
+
+    if industry:
+        if bars or runs or derivatives or repair or kinds or only or days or as_of or enforce:
+            raise click.UsageError(_("--industry takes only --start and --end"))
+        start_date = parse_date_option(start, "--start") if start else None
+        end_date = parse_date_option(end, "--end") if end else None
+        if start_date and end_date and start_date > end_date:
+            raise click.UsageError(_("--start must be on or before --end"))
+        from cnequity.quality.industry_coverage import industry_coverage_report
+
+        report = industry_coverage_report(_cfg(config_path), start=start_date, end=end_date)
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        raise SystemExit(1 if report["state"] == "gaps" else 0)
 
     if derivatives:
         if bars or runs or repair or kinds or days or as_of or enforce:
@@ -1068,8 +1119,8 @@ def status(
         from cnequity.domain.datasets import (
             DATASETS,
             empty_freshness_label,
+            freshness_state,
             is_dataset_enabled,
-            is_stale,
         )
         from cnequity.query.reader import list_datasets
 
@@ -1101,7 +1152,8 @@ def status(
             if retired is not None and mark is not None and mark >= retired:
                 return "retired"
             # Per-dataset tolerance (T+1, quarterly …) — inherent lag is not STALE.
-            return "STALE" if is_stale(row["dataset"], mark, anchor, cfg) else "fresh"
+            state = freshness_state(row["dataset"], mark, anchor, cfg)
+            return {"stale": "STALE", "removed": "removed"}.get(state, state)
 
         df = df.with_columns(
             pl_mod.Series("freshness", [_freshness(r) for r in df.iter_rows(named=True)])
@@ -1132,7 +1184,15 @@ def status(
             listed = pl_mod.col("has_data") | (pl_mod.col("freshness") == "STALE")
             hidden = view.filter(~listed)["dataset"].to_list()
             view = view.filter(listed)
-        with pl_mod.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=32):
+        # Piped output has no terminal to measure, and polars then wraps at 100
+        # columns, splitting long dataset names mid-word.
+        width = max(shutil.get_terminal_size((120, 24)).columns, 112)
+        with pl_mod.Config(
+            tbl_rows=-1,
+            tbl_cols=-1,
+            fmt_str_lengths=32,
+            **({} if all_columns else {"tbl_width_chars": width}),
+        ):
             click.echo(view)
         if hidden:
             click.echo(
@@ -1206,9 +1266,12 @@ def status(
                     else ""
                 )
                 if report.get("unverifiable_exchanges"):
+                    # A limitation of the route, stated beside the result; it does
+                    # not fail the gate (the data on it is not shown to be short).
                     owed_note += _(
-                        "; {exchanges} go through a vendor route (no rows on days without "
-                        "trades) and are outside the proof"
+                        "; limitation, not counted: {exchanges} — vendor route with no rows on "
+                        "days without trades, so it cannot be proven "
+                        '(an official route, [futures].dce_route = "official", can be)'
                     ).format(exchanges=_(", ").join(report["unverifiable_exchanges"]))
                 click.echo(
                     _(
@@ -1376,6 +1439,17 @@ def status(
             f">={int(cfg.batch_stale_seconds)}s — next cne run reconciles them; "
             "or `cne run clean --reconcile-runs`"
         )
+    if sys.stderr.isatty():
+        # The JSON below is the stable contract for scripts; a person at a
+        # terminal gets the one-line answer first, on stderr so pipes stay clean.
+        click.echo(
+            _("Run {run_id} ({job_name}): {status}").format(
+                run_id=summary.get("run_id"),
+                job_name=summary.get("job_name"),
+                status=summary.get("status"),
+            ),
+            err=True,
+        )
     click.echo(json.dumps(summary, indent=2, default=str))
     run_status = str(summary.get("dataset_status") or summary.get("status") or "success")
     if gate and run_status == "degraded":
@@ -1540,13 +1614,13 @@ def source_limits(config_path: str):
 @config_option
 @click.option(
     "--vantage",
-    default="local",
-    show_default=True,
+    default=None,
+    show_default="CNE_SOURCE_VANTAGE, else [source_health].vantage, else local",
     help=N_(
         "Where this probe runs from — 'cn', 'overseas', or any label you use. Some sources reject non-mainland egress, so results without this label cannot be interpreted."
     ),
 )
-@click.option(
+@comma_option(
     "--only",
     default=None,
     help=N_(
@@ -1577,7 +1651,7 @@ def source_limits(config_path: str):
 )
 def sources_probe(
     config_path: str,
-    vantage: str,
+    vantage: str | None,
     only: str | None,
     out: str | None,
     list_only: bool = False,
@@ -1595,7 +1669,13 @@ def sources_probe(
     and an unauthenticated local service that can reach out to a dozen third parties is not something to leave listening.
 
     """
-    from cnequity.diagnostics.source_health import PROBES, STATUS_LABELS, ProbeStatus, run_probes
+    from cnequity.diagnostics.source_health import (
+        PROBES,
+        STATUS_LABELS,
+        ProbeStatus,
+        effective_vantage,
+        run_probes,
+    )
 
     if list_only:
         for probe in PROBES:
@@ -1605,6 +1685,7 @@ def sources_probe(
     _progress_logging(quiet=True)
     keys = comma_values(only, "--only")
     cfg = _cfg(config_path)
+    vantage = effective_vantage(cfg, vantage)
     try:
         report = run_probes(cfg, vantage=vantage, only=keys, stale_only=stale_only)
     except ValueError as exc:
@@ -1633,8 +1714,8 @@ def sources_probe(
 @config_option
 @click.option(
     "--vantage",
-    default="local",
-    show_default=True,
+    default=None,
+    show_default="CNE_SOURCE_VANTAGE, else [source_health].vantage, else local",
     help=N_("Which egress location (vantage) report to read."),
 )
 @click.option(
@@ -1646,7 +1727,7 @@ def sources_probe(
     ),
 )
 @click.option("--json", "as_json", is_flag=True, help=N_("Output machine-readable JSON."))
-def sources_substitutes(config_path: str, vantage: str, probe: bool, as_json: bool):
+def sources_substitutes(config_path: str, vantage: str | None, probe: bool, as_json: bool):
     """For each source that is down, who else can answer for its datasets.
 
     \b
@@ -1660,19 +1741,26 @@ def sources_substitutes(config_path: str, vantage: str, probe: bool, as_json: bo
     """
     import json as json_mod
 
-    from cnequity.diagnostics.source_health import HealthReport, run_probes, validate_vantage
+    from cnequity.diagnostics.source_health import (
+        HealthReport,
+        effective_vantage,
+        run_probes,
+        validate_vantage,
+    )
     from cnequity.diagnostics.substitutes import (
+        IGNORED,
         render_substitutions,
         substitution_report,
         to_dict,
     )
 
     _progress_logging(quiet=True)
+    cfg = _cfg(config_path)
+    vantage = effective_vantage(cfg, vantage)
     try:
         validate_vantage(vantage)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--vantage") from None
-    cfg = _cfg(config_path)
     if probe:
         report = run_probes(cfg, vantage=vantage)
     else:
@@ -1694,7 +1782,8 @@ def sources_substitutes(config_path: str, vantage: str, probe: bool, as_json: bo
                 generated_at=report.generated_at, vantage=report.vantage
             )
         )
-        for line in render_substitutions(entries):
+        probed_any = any(r.status not in IGNORED for r in report.results)
+        for line in render_substitutions(entries, probed_any=probed_any):
             click.echo(line)
     if any(entry.stranded for entry in entries):
         raise SystemExit(1)
@@ -1821,6 +1910,13 @@ def check(ctx: click.Context, config_path: str, full: bool, pack_names: tuple[st
     worst = 1 if 1 in codes else max(codes, default=0)
     click.echo(_("\n== Verdict =="))
     if worst == 0:
+        if getattr(cfg, "lake_profile", None) == "sample":
+            click.echo(
+                _(
+                    "✓ Install verified: the offline sample lake reads back correctly (synthetic data, not for research)"
+                )
+            )
+            return
         click.echo(_("✓ The lake is usable: freshness, coverage and quality all pass"))
         return
     click.echo(f"✗ {_('; ').join(problems)}")
@@ -1895,6 +1991,9 @@ def _check_quality(cfg, *, full: bool) -> tuple[int, str | None]:
             found if note is None else _("{note}, {found}").format(note=note, found=found),
         )
     if not runs and not full:
+        if getattr(cfg, "lake_profile", None) == "sample":
+            click.echo(_("  Sample lake: the data is synthetic, so no quality audit applies"))
+            return code, note
         return 2, _("no audit records, quality cannot be proven (add --full to audit now)")
     return code, note
 

@@ -6,10 +6,9 @@
 |---|---|
 | `scripts/scheduler/` | 调度：日更 / 事件流 / 补抓管线、健康通知、元数据备份、launchd 模板与安装（改动路径后重跑 `install_scheduler.sh`，已安装任务引用的是绝对路径） |
 | `scripts/` | 运维工具：回填验收、退市名录重建、补跑追赶、幸存者偏差测量 |
-| `scripts/migrations/` | 一次性数据迁移与分区重写，按版本说明执行 |
 | `scripts/dev/` | 仓库维护：文档同步（`sync_*`）、发布检查、离线基准与端到端检查、探针 |
 
-这些脚本需要源码 checkout，不随 PyPI 包安装。仅用安装包时，每天调度一次 `cne run daily`（含全部日更组与事件流）；仓库日更以 `daily_pipeline.sh` 为主入口。
+这些脚本需要源码 checkout，不随 PyPI 包安装。定时更新用 `cne schedule install`（安装包自带，跨平台）；`scripts/scheduler/` 已弃用，打包定时任务功能对齐后移除。
 
 > 以下脚本面向 **自托管本机/VPS**（含 macOS launchd 与服务器回填）。开源贡献者只需
 > CLI（`cne init` / `run`）即可；调度与告警按需选用，并非唯一部署方式。
@@ -118,7 +117,7 @@ cne audit --full          # 整湖结构扫描 + 刷新 health-latest.json
 "不知道谁抓"和"别的主机在抓"不是同一件事。
 
 > 整湖审计里的分区碎片化 / 粒度混用检查只在 repartition 之后才会变化，
-> 所以它们也一并移到了每周那次。手动 `scripts/migrations/repartition.py` 之后，
+> 所以它们也一并移到了每周那次。手动 `cne repair repartition` 之后，
 > 请直接跑一次 `cne audit --full` 复核，不要等到周六。
 
 ### backup_meta.sh
@@ -211,42 +210,22 @@ python scripts/delisted_ops.py coverage --start 2016-01-01 --universe all_a_sh_s
 
 原为 `cne delisted discover / reconcile / repair / coverage`。
 
-## 一次性迁移
-
-### repartition.py
+## 分区重写（`cne repair repartition`）
 
 把历史分区改写成 `DatasetSpec.partition_granularity` 配的周期
 （见 [分区粒度](../architecture/lake-layout.md#日常管理)）。不带参数只列出待改写的数据集，
 所以列表形式随时可跑。
 
 ```bash
-python scripts/migrations/repartition.py                  # 待改写的数据集
-python scripts/migrations/repartition.py --all --dry-run  # 先看影响
-python scripts/migrations/repartition.py trading_calendar # 单个数据集
+cne repair repartition                          # 待改写的数据集
+cne repair repartition --all                    # 先看影响
+cne repair repartition trading_calendar --apply # 单个数据集
 ```
 
 读路径按目录形状自解析，改粒度本身**不需要**迁移；这只是把碎文件收回来。写入是先建临时目录、
 逐分区写完并核对总行数，再一次 rename 换上去，中途挂掉不动原数据；重复执行幂等。
 
-原为 `cne repartition`。触发它的是 registry 粒度在既有湖之下变了——那是迁移，不是日常运维。
-
-### migrate_daily_bars_volume_v2.py
-
-把 curated `daily_bars.volume` 全部改写为「股」，并将 `data_version` 由 `v1` 提到 `v2`。
-
-在修复之前，这一列混着两种单位：`tdx_protocol` / `sina` 写的是手，`ths` / `baostock`
-写的是股，正好差 100 倍。存量行在任何一种口径下都是错的，只能重写。单位契约与迁移要求见
-[Schema 契约 · 成交量单位](../datasets/schema.md)。
-
-```bash
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --dry-run
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
-```
-
-- `--dry-run`（默认）只统计不落盘；`--apply` **就地改写 curated**，先跑 `backup_meta.sh` 并备份 curated。
-- 幂等：已是 `v2` 的行跳过，中断后可直接续跑。
-- `fetched_at` 不重新打戳——记录这次重新解释的列是 `data_version`。
-- 跑完用 `cne audit` 确认 `daily_bars_volume_unit` 无 finding。
+以前是仓库脚本 `scripts/migrations/repartition.py`（更早是 `cne repartition`），现在随安装包提供，默认只预览，`--apply` 才改写。触发它的是 registry 粒度在既有湖之下变了，不是日常运维。旧版本湖的一次性数据迁移由 `cne migrate` 负责。
 
 ## 测试与冒烟
 

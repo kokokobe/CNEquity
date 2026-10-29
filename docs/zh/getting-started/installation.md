@@ -79,18 +79,19 @@ pip install -e . --group dev
 cne config create
 ```
 
-默认输出 `configs/cnequity.toml`，`data.root` 转为绝对路径；macOS / Windows 使用保守的 `workers=1`。也可首次创建时加 `--data-root /abs/path/to/lake`。
+默认输出用户级配置 `~/.config/cnequity/config.toml`（当前目录已有 `configs/cnequity.toml` 时写那里），`data.root` 转为绝对路径；文件只写 `extends = "builtin"` 和数据目录，其余设置继承内置默认值（macOS / Windows 默认保守的 `workers=1`）。也可首次创建时加 `--data-root /abs/path/to/lake`。
 
-直接复制模板不会执行路径解析和平台调整，因此优先使用生成命令。已有配置升级时用 `cne config upgrade` 自动补上新的调度 step。个人配置、凭证与数据目录不应提交到仓库。
+直接复制模板不会执行路径解析和平台调整，因此优先使用生成命令。继承默认值的配置升级后自动获得新的调度 step；旧的完整配置用 `cne config upgrade` 补上，或用 `cne config upgrade --minimize` 一次性改成继承默认值。个人配置、凭证与数据目录不应提交到仓库。
 
 ## 升级已有安装
 
 ```bash
 pip install --upgrade cnequity
 cne config upgrade
+cne migrate            # 预览还欠的数据迁移；确认后 cne migrate --apply
 ```
 
-`cne config upgrade` 把新版本加入的调度 step 和调度组补进配置，先备份原文件，写完后校验。先阅读目标版本的[更新日志](../changelog.md)和[升级与反馈](#升级与兼容性)，确认是否需要数据迁移。不要用 `config create --force` 代替配置升级。
+继承内置默认值（`extends = "builtin"`）的配置不需要改动，这条命令只会报告无事可做。旧的完整配置由 `cne config upgrade` 把新版本加入的调度 step 和调度组补进去，先备份原文件，写完后校验；`--minimize` 则把它改写成继承默认值的形式。先阅读目标版本的[更新日志](../changelog.md)和[升级与反馈](#升级与兼容性)，确认是否需要数据迁移。不要用 `config create --force` 代替配置升级。
 
 旧版本的 `tdx` / `macro` / `nlp` 等 extras 已移除。历史版本的单位或 schema 迁移应按对应发布说明执行，不能把针对旧湖的脚本重复应用到新湖。当前 `httpx` 约束为 `>=0.25`；实际安装版本由环境解析，不能从安装命令推定一个固定版本。
 
@@ -122,7 +123,7 @@ TDX 线协议客户端随包内置，无需安装通达信桌面软件。依赖�
 
 1. 核对新版本的范围、已知限制与迁移要求。
 2. 更新软件后执行 `cne config upgrade`：把新版本加入的调度 step 和调度组补进本地配置，原文件自动备份，凭证、路径与其他设置不动。想先看改动可加 `--dry-run`；完整差异用 `cne config diff` 查看。
-3. 执行版本说明要求的迁移，并核对状态与质量报告。
+3. 运行 `cne migrate` 预览还欠的数据迁移，确认后 `cne migrate --apply`，再核对状态与质量报告。
 4. 使用原有查询验证关键数据口径，再恢复定时任务。
 
 迁移说明见仓库的 [contracts/migrations](https://github.com/rootSunc/CNEquity/tree/main/contracts/migrations)，常用工具见[运行脚本](../operations/scripts.md)。回退软件不一定能回退已迁移的数据，恢复时同时核对配置、软件与数据版本。

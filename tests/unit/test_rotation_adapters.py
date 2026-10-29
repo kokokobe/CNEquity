@@ -12,11 +12,18 @@ from cnequity.adapters.eastmoney.rotation import (
     fetch_hot_rank,
     fetch_news_headlines,
 )
+from cnequity.orchestrator.outcomes import SourcePayloadError, error_kind
 
 
 def test_hot_symbol_parsing():
     assert _hot_symbol("SZ002185") == "002185.SZ"
     assert _hot_symbol("SH600519") == "600519.SH"
+
+
+@pytest.mark.parametrize("code", ["920578", "830001", "430047", "870001"])
+def test_hot_symbol_recognizes_beijing_with_shenzhen_feed_prefix(code):
+    assert _hot_symbol(f"SZ{code}") == f"{code}.BJ"
+    assert _hot_symbol(f"BJ{code}") == f"{code}.BJ"
 
 
 def test_hot_symbol_rejects_malformed_or_non_a_codes():
@@ -61,6 +68,24 @@ def test_fetch_hot_rank_normalizes(monkeypatch):
     assert df.height == 1
     assert df["symbol"][0] == "002185.SZ"
     assert df["rank"][0] == 1
+
+
+def test_hot_rank_keeps_a_complete_top_100_with_a_mislabeled_beijing_member(monkeypatch):
+    client = MagicMock()
+    batch = [{"sc": f"SZ{2000 + i:06d}", "rk": i + 1} for i in range(99)]
+    batch.insert(82, {"sc": "SZ920578", "rk": 83, "rc": 0, "hisRc": 4783})
+    client.post.return_value.json.return_value = {"data": batch}
+    monkeypatch.setattr(
+        "cnequity.adapters.eastmoney.rotation.EastMoneyClient",
+        lambda: client,
+    )
+    client.__enter__.return_value = client
+
+    df = fetch_hot_rank(date(2026, 10, 22), require_top_n=True)
+
+    assert df.height == 100
+    assert df.filter(df["symbol"] == "920578.BJ")["rank"][0] == 83
+    assert client.post.call_count == 1
 
 
 def test_fetch_hot_rank_preserves_missing_rank_fields(monkeypatch):
@@ -217,8 +242,11 @@ def test_fetch_hot_rank_can_reject_an_incomplete_top_n(monkeypatch):
             pass
 
     monkeypatch.setattr("cnequity.adapters.eastmoney.rotation.EastMoneyClient", lambda: CM())
-    with pytest.raises(RuntimeError, match="only 1 unique A-share symbols; expected 10"):
+    with pytest.raises(
+        SourcePayloadError, match="only 1 unique A-share symbols; expected 10"
+    ) as exc:
         fetch_hot_rank(date(2026, 7, 14), top_n=10, require_top_n=True)
+    assert error_kind(exc.value) == "source_payload_invalid"
 
 
 def test_fetch_hot_rank_rejects_negative_top_n():

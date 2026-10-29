@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,19 @@ _arm_subprocess_network_guard()
 # for the whole process, so CLI subprocesses inherit it too; a test about
 # language selection sets its own and calls `cnequity.i18n.reset()`.
 os.environ["CNE_LANG"] = "en"
+
+# A command without `--config` falls back to the per-user config, and `cne init`
+# writes one there. Point that location at an empty directory for the whole
+# process (subprocesses inherit it) so no test reads or writes the developer's
+# real lake config, and drop a CNE_CONFIG the developer's shell may export.
+_USER_CONFIG_HOME = tempfile.mkdtemp(prefix="cne-test-config-")
+os.environ["XDG_CONFIG_HOME"] = _USER_CONFIG_HOME
+os.environ["APPDATA"] = _USER_CONFIG_HOME
+os.environ.pop("CNE_CONFIG", None)
+# Credentials in the developer's shell would outrank the config under test
+# (environment first, see `config.loader._credential`).
+for _credential_env in ("TUSHARE_TOKEN", "HITHINK_FINANCE_API_KEY"):
+    os.environ.pop(_credential_env, None)
 
 
 def pytest_configure(config):
@@ -167,6 +181,19 @@ def _no_outbound_network(request, monkeypatch):
     finally:
         socket.socket.connect = connect
         socket.socket.connect_ex = connect_ex
+
+
+@pytest.fixture(autouse=True)
+def _private_user_config_home(tmp_path_factory, monkeypatch):
+    """A fresh per-user config directory for every test.
+
+    The process-wide one above keeps collection-time code off the developer's
+    real config; this one keeps a test that runs `cne init` or `config create`
+    without `--config` from handing its config to every later test.
+    """
+    home = str(tmp_path_factory.mktemp("user-config"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", home)
+    monkeypatch.setenv("APPDATA", home)
 
 
 @pytest.fixture(autouse=True)

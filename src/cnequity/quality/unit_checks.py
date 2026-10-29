@@ -470,7 +470,7 @@ def daily_bars_turnover_defect_findings(
     Row-level where ``daily_bars_volume_unit`` is a per-source median: a few
     thousand 同花顺 pre-2004 rows with 0 turnover, or volume in 手, cannot move
     a median over millions of rows. ``cne backfill daily_bars
-    --turnover-repair`` replaces such stock rows from baostock.
+    --turnover-repair`` (now ``cne repair bar-turnover``) replaces such stock rows from baostock.
     """
     from cnequity.domain.units import turnover_defect_expr
 
@@ -512,7 +512,7 @@ def daily_bars_turnover_defect_findings(
                         else "turnover and volume on different units"
                     )
                     + f" ({row['first']}..{row['last']}); stock rows can be replaced with "
-                    "`cne backfill daily_bars --turnover-repair`"
+                    "`cne repair bar-turnover --start ... --end ... --apply`"
                 ),
                 "source": row["source"],
                 "rows": int(row["rows"]),

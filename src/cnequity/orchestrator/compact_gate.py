@@ -35,12 +35,6 @@ def refresh_batch_liveness(
     return manifest.promote_running_to_stale(run_id, stale_after_seconds=stale_after_seconds)
 
 
-def datasets_with_incomplete_batches(manifest: Manifest, run_id: str) -> frozenset[str]:
-    """Return dataset names that still have non-success batches for *run_id*."""
-    counts = manifest.incomplete_batch_counts_by_dataset(run_id)
-    return frozenset(ds for ds, n in counts.items() if n > 0)
-
-
 def compact_allowed(
     manifest: Manifest,
     run_id: str,

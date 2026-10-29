@@ -1,4 +1,9 @@
-"""EastMoney industry classification membership."""
+"""EastMoney industry classification membership.
+
+The board report lists each stock under its level 1, 2 and 3 industry boards.
+One row per stock is kept: ``industry_code``/``industry_name`` is the level-3
+leaf and ``l1_*``..``l3_*`` carry the whole chain (see ``domain.industry_levels``).
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,7 @@ import polars as pl
 from cnequity.adapters.eastmoney.common import exchange_from_datacenter, symbol_from_em
 from cnequity.adapters.eastmoney.datacenter import fetch_datacenter
 from cnequity.adapters.eastmoney.em_auth import EastMoneyClient
+from cnequity.domain.industry_levels import em_member_levels
 
 _BOARD_REPORT = "RPT_BOARD_CONSTITUENT"
 _BOARD_COLUMNS = "SECURITY_CODE,BOARD_CODE,BOARD_NAME,BOARD_TYPE_NEW"
@@ -49,20 +55,27 @@ def fetch_industry_members(
             industry_name = str(item.get("BOARD_NAME") or "").strip()
             if not industry_code or not industry_name:
                 continue
-            rows.append(
-                {
-                    "symbol": sym,
-                    "classification_system": "eastmoney",
-                    "industry_code": industry_code,
-                    "industry_name": industry_name,
-                    "as_of_date": as_of_date,
-                }
-            )
+            rows.append({"symbol": sym, "board_code": industry_code, "board_name": industry_name})
     finally:
         if owns:
             client.close()
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows).unique(
-        subset=["symbol", "classification_system", "as_of_date"], keep="last"
+    # Keeping one board per stock used to keep whichever level the page order
+    # put last, so a stock's industry changed level from one day to the next.
+    members = em_member_levels(pl.DataFrame(rows))
+    leaf_code = pl.coalesce("l3_code", "l2_code", "l1_code")
+    leaf_name = pl.coalesce("l3_name", "l2_name", "l1_name")
+    return members.select(
+        "symbol",
+        pl.lit("eastmoney").alias("classification_system"),
+        leaf_code.alias("industry_code"),
+        leaf_name.alias("industry_name"),
+        "l1_code",
+        "l1_name",
+        "l2_code",
+        "l2_name",
+        "l3_code",
+        "l3_name",
+        pl.lit(as_of_date).alias("as_of_date"),
     )

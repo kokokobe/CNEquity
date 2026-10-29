@@ -278,9 +278,9 @@ def test_intraday_checks_use_one_canonical_bar_per_minute(cfg):
 @pytest.mark.parametrize("metric", ["volume", "amount"])
 def test_reconciliation_reports_outlier_hidden_by_healthy_median(cfg, metric):
     symbols = [f"{600000 + i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
-    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=100))
+    _write_minute_bars(cfg, _minute_rows(symbols, [TRADE_DATE], 240, volume=10_000))
     rows = [
-        {"symbol": s, "trade_date": TRADE_DATE, "volume": 24000, "amount": 240000.0}
+        {"symbol": s, "trade_date": TRADE_DATE, "volume": 2_400_000, "amount": 24_000_000.0}
         for s in symbols
     ]
     rows[0][metric] /= 2
@@ -465,3 +465,24 @@ def test_dataset_findings_ignores_data_outside_the_lookback_window(cfg):
     old_day = TRADE_DATE - timedelta(days=30)
     _write_minute_bars(cfg, _minute_rows(["600519.SH"], [old_day], 240))
     assert dataset_findings(cfg, "minute_bars", TRADE_DATE, lookback_days=7) == []
+
+
+def test_lot_rounding_on_a_thin_fund_is_not_an_outlier(cfg):
+    """162215.SZ on 2026-10-21: 391 shares traded, 300 daily vs 400 by minute."""
+    symbols = [f"{600000 + i}.SH" for i in range(RECONCILE_MIN_SYMBOL_DAYS + 5)]
+    rows = _minute_rows(symbols, [TRADE_DATE], 240, volume=10_000)
+    thin = _minute_rows(["162215.SZ"], [TRADE_DATE], 240, volume=0)
+    thin[93].update(volume=300, amount=314.28)
+    thin[160].update(volume=100, amount=108.0)
+    _write_minute_bars(cfg, rows + thin)
+    daily = [
+        {"symbol": s, "trade_date": TRADE_DATE, "volume": 2_400_000, "amount": 24_000_000.0}
+        for s in symbols
+    ]
+    daily.append({"symbol": "162215.SZ", "trade_date": TRADE_DATE, "volume": 300, "amount": 422.28})
+    _write_daily_bars(cfg, daily)
+    assert not [
+        f
+        for f in minute_bars_findings(cfg, TRADE_DATE)
+        if f["check"] == "minute_bars_daily_outliers"
+    ]

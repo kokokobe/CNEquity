@@ -5,7 +5,7 @@
   <h1>CNEquity · 中国市场金融数据湖</h1>
   <p><strong>打破数据垄断，构建属于每个人的本地金融数据集</strong></p>
 
-CNEquity 将股票行情、期货合约、财报、公司事件和资金面等多源数据整理为本地 Parquet 数据湖，提供增量采集、失败续跑、质量审计与统一查询。适合反复回测、长期积累历史数据，为个人研究者和 AI Agent 提供一套完整的本地金融数据方案。
+CNEquity 将 A股股票行情、财务数据、期货合约、公司事件和资金面等多源数据整理为本地 Parquet 数据湖，提供增量采集、失败续跑、质量审计与统一查询。适合量化研究与反复回测、长期积累历史股票数据，为个人研究者和 AI Agent 提供一套完整的本地金融数据方案。
 
 [![CI](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/rootSunc/CNEquity/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/cnequity?logo=pypi&logoColor=white)](https://pypi.org/project/cnequity/)
@@ -183,16 +183,17 @@ CNEquity 在数据层保留退市身份，并让复权、历史成分和 PIT 口
 cne run daily
 ```
 
-每天（含周末）用系统调度器运行这一条：交易日跑行情及其他已启用的日更组，然后更新公告、监管事件和资讯；非交易日只更新事件流。也可以在 `cne serve` 的操作页完成：打开日更、补抓或回填就能看到将执行的命令，点「启动」即运行；同一页还能为当前用户安装定时日更和收尾补抓，不必复制仓库脚本。验收用 `cne check`，有缺口或质量 error 时返回非零。
+`cne schedule install` 为当前用户安装定时任务（macOS / Linux / Windows），每个交易日跑这一条，之后跑 `cne run maintain` 做审计、门禁和元数据备份；也可以自己用系统调度器每天（含周末）运行它：交易日跑行情及其他已启用的日更组，然后更新公告、监管事件和资讯；非交易日只更新事件流。也可以在 `cne serve` 的操作页完成：打开日更、补抓或回填就能看到将执行的命令，点「启动」即运行；同一页还能为当前用户安装定时日更和收尾补抓，不必复制仓库脚本。验收用 `cne check`，有缺口或质量 error 时返回非零。
 
 升级版本时：
 
 ```bash
 pip install -U cnequity
 cne config upgrade
+cne migrate        # 预览旧版本数据还需的一次性修正；确认后加 --apply
 ```
 
-`cne config upgrade` 把新版本加入的调度 step 补进你的配置，原文件自动备份。
+`cne init` 写出的配置继承内置默认值（`extends = "builtin"`），新版本的调度 step 升级后直接生效，`cne config upgrade` 只会报告无事可做；旧版本写出的完整配置由它补上新 step（原文件自动备份），或用 `cne config upgrade --minimize` 一次性改成继承默认值。
 
 继续阅读：[初始化、范围与续跑](https://rootsunc.github.io/CNEquity/getting-started/initialization/) → [日常运维](https://rootsunc.github.io/CNEquity/operations/runbook/)。
 

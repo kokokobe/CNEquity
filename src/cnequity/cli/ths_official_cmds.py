@@ -26,6 +26,7 @@ from cnequity.cli._root import cli, moved_hints
 from cnequity.cli._shared import (
     _cfg,
     attach_log_file,
+    comma_option,
     comma_values,
     config_option,
     parse_date_option,
@@ -206,7 +207,7 @@ def ths_snapshot(config_path: str, what: str, days: int, sample: int):
     "--chunk-size", default=200, show_default=True, help=N_("Securities per staging batch.")
 )
 @click.option("--workers", default=4, show_default=True, help=N_("Number of concurrent requests."))
-@click.option(
+@comma_option(
     "--symbols",
     "symbols_str",
     default=None,

@@ -108,6 +108,79 @@ def _data_root_writable(data_root: Path) -> bool:
         return False
 
 
+#: Inline key → (environment variable, file key) that keep it out of the config.
+_CREDENTIAL_HOMES = {
+    "sources.tushare.token": ("TUSHARE_TOKEN", "token_file"),
+    "sources.ths_official.api_key": ("HITHINK_FINANCE_API_KEY", "api_key_file"),
+}
+
+
+def _check_credentials(config, findings: list[Finding]) -> None:
+    """A credential written into the config file travels with every copy of it."""
+    inline = tuple(getattr(config, "inline_credentials", ()) or ())
+    for key in inline:
+        env, file_key = _CREDENTIAL_HOMES.get(key, ("", ""))
+        table = key.rsplit(".", 1)[0]
+        findings.append(
+            Finding(
+                severity=Severity.WARN,
+                title=Message(N_("A credential is written in the config file: %s"), key),
+                detail=N_(
+                    "The config file gets copied, backed up and pasted into bug reports. "
+                    "An environment variable does not reach launchd/cron jobs, so a scheduled "
+                    "lake should read the credential from a file only you can read."
+                ),
+                fix=Message(
+                    N_("Move it to a file and set [%s].%s = <path> (chmod 600), or export %s"),
+                    table,
+                    file_key,
+                    env,
+                ),
+            )
+        )
+    path = getattr(config, "config_path", None)
+    if not inline or path is None or sys.platform == "win32":
+        return
+    try:
+        mode = Path(path).stat().st_mode
+    except OSError:
+        return
+    if mode & 0o077:
+        findings.append(
+            Finding(
+                severity=Severity.WARN,
+                title=Message(
+                    N_("The config file holding a credential is readable by others: %s"), path
+                ),
+                fix=f"chmod 600 {path}",
+            )
+        )
+
+
+def _check_migrations(config, findings: list[Finding]) -> None:
+    """One-off fixes for rows an older version wrote, not yet run on this lake."""
+    from cnequity.storage.migrations import owed
+
+    meta_root = getattr(config, "meta_root", None)
+    if meta_root is None or not Path(meta_root).is_dir():
+        return
+    pending = owed(config)
+    if pending:
+        findings.append(
+            Finding(
+                severity=Severity.WARN,
+                title=Message(
+                    N_("%s lake migration(s) not yet checked on this lake"), len(pending)
+                ),
+                detail=N_(
+                    "Fixes for rows that an older version wrote. `cne migrate` previews what each "
+                    "would change; `--apply` runs them and records the result."
+                ),
+                fix="cne migrate",
+            )
+        )
+
+
 def _check_data_root(data_root: Path, findings: list[Finding]) -> None:
     if not data_root.is_absolute():
         findings.append(
@@ -177,6 +250,8 @@ def build_report(config=None, config_path: Path | None = None) -> Report:
         )
     else:
         _check_data_root(Path(config.data_root), findings)
+        _check_credentials(config, findings)
+        _check_migrations(config, findings)
 
     env = _environment()
     if config_path is not None:

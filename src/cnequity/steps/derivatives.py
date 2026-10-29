@@ -47,6 +47,7 @@ from cnequity.adapters.futures_exchange.registry import (
 )
 from cnequity.config import Config
 from cnequity.domain.datasets import is_dataset_enabled
+from cnequity.domain.derivatives import PUBLISHED_FUTURES_ANOMALIES
 from cnequity.orchestrator.outcomes import SourceUnavailableError, error_kind
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.common import walk_day_backfill
@@ -188,13 +189,19 @@ def fetch_session(
         accepted = validate_dataframe(
             with_provenance(accepted, source=SOURCE, data_version="v1"), dataset
         )
+        rejected = set(frame["symbol"].to_list()) - set(accepted["symbol"].to_list())
+        known = PUBLISHED_FUTURES_ANOMALIES.get(day, frozenset())
         record_session(
             config,
             dataset,
             day,
             exchange,
             accepted,
-            error="rows quarantined" if accepted.height != frame.height else None,
+            error=(
+                "rows quarantined"
+                if accepted.height != frame.height and not (rejected and rejected <= known)
+                else None
+            ),
             original_rows=frame.height,
         )
         frames.append(accepted)

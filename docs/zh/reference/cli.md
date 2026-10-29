@@ -22,6 +22,8 @@
 | 命令 | 作用 |
 |------|------|
 | [`cne run daily`](#cne-run-daily) | 跑一天的更新：全部日更调度组，再跑事件流 |
+| [`cne run maintain`](#cne-run-maintain) | 日更后的维护：审计、门禁、源探针、运行证据、元数据备份 |
+| [`cne schedule`](#cne-schedule) | 安装、查看、移除当前用户的定时任务 |
 | [`cne run events`](#cne-run-events) | 7×24 事件流（公告、资讯），走自然日历而非交易日历 |
 | [`cne run retry`](#cne-run-retry) | 重试一个 run，或每个 daily 分组最新的失败 run |
 | [`cne run compact`](#cne-run-compact) | 把已结束、未发布的 staging 合进 curated |
@@ -29,6 +31,8 @@
 | [`cne storage`](#cne-storage) | 版本保留登记、清理计划与原地待删除标记 |
 | [`cne backfill`](#cne-backfill-dataset) | 回填一个数据集 |
 | [`cne derive`](#cne-derive-name) | 派生计算数据集 |
+| [`cne import shfe-archive`](#cne-import-shfe-archive) | 离线导入上期所官方年度包 |
+| [`cne migrate`](#cne-migrate) | 预览或运行这个湖还欠的一次性迁移，并记录结果 |
 | [`cne repair`](#cne-repair) | 离线修复已存数据的布局或字段口径；默认只预览，`--apply` 发布新版本 |
 
 `compact` 已经是每个 schedule group 自带的 step，所以 `retry` / `compact` / `clean`
@@ -97,7 +101,7 @@ Error: `cne retry` 已改名，请改用 `cne run retry`。
 
 命令：`cne`（`cnequity.cli.main:cli`）
 
-支持配置的叶命令接受 `--config PATH`；解析顺序为显式参数 → `CNE_CONFIG` → 当前工作目录的 `configs/cnequity.toml`。例如 `cne status --config /abs/path/to/cnequity.toml`。
+支持配置的叶命令接受 `--config PATH`；解析顺序为显式 `--config` → `CNE_CONFIG` → 当前目录的 `configs/cnequity.toml` → 用户级 `~/.config/cnequity/config.toml`（遵循 `XDG_CONFIG_HOME`；Windows 为 `%APPDATA%\cnequity\config.toml`）；`cne config path` 显示实际选中的配置和原因。例如 `cne status --config /abs/path/to/cnequity.toml`。
 
 **命令名不区分大小写**：`cne STATUS`、`cne run DAILY`、`cne config CREATE` 与小写等价（Click 的 `token_normalize_func`）。`-h` 是 `--help` 的短写法。**不做前缀匹配**——`cne stat` 会被拒绝并提示 `stats` / `status`，而不是猜一个执行。
 
@@ -121,10 +125,10 @@ Error: `cne retry` 已改名，请改用 `cne run retry`。
 | `--days` | 约多少个交易日的 `daily_bars`（默认 30） |
 | `--intraday` | 额外抓同一批标的的 1m 线（最多约 5 个交易日），打印一根完整会话 |
 | `--research` | 额外从 Sina 派生 hfq 因子，并打印 raw / hfq 收益对照；会把窗口扩展到约 3 年 |
-| `--data-root` | 独立湖根目录（默认 `data/cnequity-demo`） |
+| `--data-root` | 独立湖根目录（默认 `data/cnequity-demo`；sample 为 `data/cnequity-sample`） |
 | `--profile sample` | 不访问网络，生成可用于验证安装、查询和 DuckDB 视图的合成样例；不可与 `--research` / `--intraday` 合用 |
 | `--trade-date` | 截至日 YYYY-MM-DD（默认今天 / 最近交易日） |
-| `--config-out` | 写出供后续 `cne query` 使用的小配置（默认 `configs/cnequity.demo.toml`） |
+| `--config-out` | 写出供后续 `cne query` 使用的小配置（默认 `configs/cnequity.demo.toml`；sample 为 `configs/cnequity.sample.toml`） |
 | `--force` | 允许覆盖内容不同的已有 `--config-out`；默认保留原文件并报错，内容相同可直接重跑 |
 
 流程：建目录 → 探测 TDX → 拉 instruments 并裁成 demo 宇宙 → 交易日历 → `daily_bars` + compact → 打印样例表；加 `--research` 时再派生 Sina hfq 并校验 exact 覆盖，加 `--intraday` 时再跑 `minute_bars`。终端有分阶段进度与 INFO 日志。需要能访问 TDX；`allow_mock` 不会打开。
@@ -149,7 +153,7 @@ cne init --profile sample
 
 初始化数据湖并执行 init phases。quick/full 自动恢复配置市场与历史窗口内的已知退市日线，获取当前交易状态，并在日线发布后派生历史停牌。全市场历史 ST 扫描使用独立的 `cne backfill trading_status`，不作为 init 完成条件。
 
-默认配置 `configs/cnequity.toml` 不存在时，`cne init` 先按随包示例生成它（同 `cne config create`）；显式 `--config` 或 `CNE_CONFIG` 指向的缺失文件不会被生成。中断、部分覆盖或旧版未完成的 init，重跑同一条 `cne init` 即自动续跑，已抓取数据保留。
+找不到配置时，`cne init` 先按随包示例生成用户级配置（同 `cne config create`）；显式 `--config` 或 `CNE_CONFIG` 指向的缺失文件不会被生成。中断、部分覆盖或旧版未完成的 init，重跑同一条 `cne init` 即自动续跑，已抓取数据保留。
 
 | 选项 | 说明 |
 |------|------|
@@ -192,15 +196,19 @@ cne backfill daily_bars --start 2016-01-01 --end COVERAGE_START
 
 ## cne config create
 
-从包内模板写出用户配置（PyPI 安装后无需 clone 仓库）。
+写出继承内置默认值的简短用户配置（`extends = "builtin"` 加 `[data].root`），见[继承内置默认值](../getting-started/configuration.md#extends-builtin)。
 
 | 选项 | 说明 |
 |------|------|
-| `--config` | 输出路径（默认 `configs/cnequity.toml`） |
+| `--config` | 输出路径（默认：当前目录已有 `configs/cnequity.toml` 时用它，否则用户级 `~/.config/cnequity/config.toml`） |
 | `--data-root` | 写入 `[data].root` |
 | `--force` | 覆盖已存在文件 |
 
-macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致）。模板源：`cnequity.config.templates`（与仓库 `configs/cnequity.example.toml` 保持同步）。
+平台相关的默认值（如 macOS 上 `orchestrator.workers = 1`）由内置默认值提供，不写进文件。默认值来源：`cnequity.config.templates`（与仓库 `configs/cnequity.example.toml` 保持同步）。
+
+## cne config show
+
+打印生效的完整配置（TOML），凭证打码；继承默认值的配置会标出哪些值来自文件、哪些组被 `steps_add` / `steps_remove` 修改过。`--defaults` 打印全部设置及其默认值和说明。
 
 ## cne config validate
 
@@ -224,7 +232,7 @@ macOS 上会把 `orchestrator.workers` 写成 `1`（与 `validate` 规则一致�
 
 调度组里缺少的 step 单独报出：示例配置的同名组有、而你的任何一个组都没有的 step，不带参数的 `cne run daily` 不会跑，即使某个 wave 里还列着它。
 
-`[data].root` 和 `orchestrator.workers` 等本机相关取值不算漂移；配置里多出来的自定义内容也不报。
+`[data].root` 和 `orchestrator.workers` 等本机相关取值不算漂移；配置里多出来的自定义内容也不报。继承默认值的配置不会缺键，只有整组替换的 `steps = [...]` 遮住新版本默认 step 时才报；`steps_remove` 和 `enabled = false` 是有意的退出，不算漂移。
 
 ## cne config upgrade
 
@@ -240,6 +248,8 @@ cne config upgrade
 - 只在示例 wave 里的 step，追加到你的同名 wave。
 
 改动前把原文件备份为 `cnequity.toml.bak-时间戳`，写完后校验配置。其余设置（时间、并发、凭证、开关）不动；缺少的配置项本来就用内置默认值，不写入文件，以免把当前默认值固定下来。`--dry-run` 只列出改动。内联表或点号键写法的组无法自动编辑，命令会列出需要手动加入的 step 并返回 1。
+
+继承默认值的配置升级后不需要这一步。`--minimize` 把完整配置改写成继承默认值的形式（规则见[继承内置默认值](../getting-started/configuration.md#extends-builtin)）：先列出保留的设置、调度组的 `steps_add` / `steps_remove`、被设为 `enabled = false` 的组，以及加载后行为会变化的设置；与 `--dry-run` 同用只预览。
 
 ## cne sources resilience
 
@@ -318,7 +328,7 @@ diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别�
 
 ```cron
 # 主 pipeline
-5 16 * * 1-5 /path/to/cnequity/scripts/scheduler/daily_pipeline.sh
+5 16 * * 1-5 cne run daily && cne run maintain
 
 # 收尾补抓：只跑仍然落后的，没有就空转
 5 20 * * 1-5 cd /path/to/cnequity && cne run daily --stale-only
@@ -328,11 +338,32 @@ diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别�
 
 派生数据集不在其中：它们由 curated 重算，该跑的是 `cne derive`，不是重抓。
 
-**不带参数就是完整的一天。** 按配置顺序串行跑完 `[job.daily.groups]` 的每个组，对整个湖跑一次 `audit`（它读全湖，所以放在所有组落盘之后；没有组实际运行时跳过），再跑 `[job.events.groups]` 事件流：一个组失败不中断后面的组，退出码取最差的一个，数据集全部关闭的组自动跳过。非交易日调度组自动跳过，事件流照常运行，所以一条定时任务每天跑一次即可（仓库 checkout 另有 `scripts/scheduler/daily_pipeline.sh`，它还会做健康检查与元数据备份）。事件流的锁已被单独的 `cne run events` 持有时，这一段记为 `skipped_locked`，不算失败；`--backfill` 补跑某个交易日时不跑事件流。配置比当前版本少了调度 step 时，会提示运行 `cne config upgrade`。
+**不带参数就是完整的一天。** 按配置顺序串行跑完 `[job.daily.groups]` 的每个组，对整个湖跑一次 `audit`（它读全湖，所以放在所有组落盘之后；没有组实际运行时跳过），再跑 `[job.events.groups]` 事件流：一个组失败不中断后面的组，退出码取最差的一个，数据集全部关闭的组自动跳过。非交易日调度组自动跳过，事件流照常运行，所以一条定时任务每天跑一次即可；`cne schedule install` 安装的定时任务在它之后再跑 `cne run maintain`（审计、门禁与元数据备份）。事件流的锁已被单独的 `cne run events` 持有时，这一段记为 `skipped_locked`，不算失败；`--backfill` 补跑某个交易日时不跑事件流。配置比当前版本少了调度 step 时，会提示运行 `cne config upgrade`。
 
 `--core-only` 跑 `[[job.daily.waves]]` DAG —— 只有核心骨架；配置里没有调度组时不带参数也走这条路，没有 waves 时直接报错，不会假装成功。`intraday` 组需先开 `[minute_bars].enabled`，它的数据集关闭时整组自动跳过。
 
 成功、有效部分结果或 `skipped_non_trading_day` 退出 0；执行失败返回 1。
+
+## cne run maintain
+
+日更之后的维护，`cne schedule install` 安装的定时任务每个交易日在日更后运行一次：运行审计（`[job.maintenance] full_audit_weekday` 那天改为全湖审计）、新鲜度门禁、源探针与 SLO、最近 20 个交易日的运行证据、元数据备份（manifest 数据库、收据、质量结论，不含 curated Parquet，按 `[job.maintenance]` 的保留期轮换），以及 `cne run clean` 的预览。
+
+| 选项 | 说明 |
+|------|------|
+| `--groups` | 新鲜度门禁判失败的调度组（空格或逗号分隔）；默认是定时日更实际跑的组 |
+| `--notify` | 有问题时弹出桌面通知（macOS） |
+
+审计、新鲜度门禁或备份失败时退出 1；源探针和运行证据的问题只报告。各步骤说明见[运行手册](../operations/runbook.md#maintain)。
+
+## cne schedule
+
+管理当前用户的定时任务（macOS launchd、Linux crontab、Windows 任务计划程序），与 `cne serve` 操作页是同一个任务。每分钟检查一次；每个交易日过了 `[job.daily] run_at`（北京时间）跑 `cne run daily`，然后 `cne run maintain`；过了 `[job.stale] run_at` 重试缺的快照。
+
+| 子命令 | 说明 |
+|------|------|
+| `install` | 确认后注册或更新定时任务。`--pack` 只更新所选研究包的调度组；`--no-stale` 不装收尾补抓；`--events` 按配置的 `[[job.events.schedules]]` 跑事件流；配置没写计划时，`--events-group` / `--events-every` 另按间隔跑一个事件组；没给的选项保留现有设置；`--yes` 跳过确认 |
+| `status` | 是否已安装、是否在运行、跑什么、最近一次检查；`--json` 输出机器可读结果；检测到旧的 `scripts/scheduler` launchd 任务时提示 |
+| `remove` | 确认后停用并注销系统任务；正在运行的任务继续 |
 
 ## cne run events
 
@@ -347,10 +378,10 @@ diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别�
 
 ```cron
 # 每天（含周末）一次全量事件流
-0 14 * * *  /path/to/cnequity/scripts/scheduler/events_pipeline.sh
+0 14 * * *  cne run events --config /abs/path/to/cnequity.toml
 
 # 只要资讯的日内新鲜度：单张实时页，代价很低
-*/30 9-22 * * *  CNE_EVENTS_GROUP=news_wire /path/to/cnequity/scripts/scheduler/events_pipeline.sh
+*/30 9-22 * * *  cne run events --group news_wire --config /abs/path/to/cnequity.toml
 ```
 
 `disclosures` 组每次都会重读 30 天对账尾窗，高频跑它是在重复付这份代价；
@@ -391,23 +422,32 @@ diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别�
 | 选项 | 说明 |
 |------|------|
 | `--start` / `--end` | 请求窗口；超出来源历史边界的部分报告覆盖不足，可用范围仍会获取 |
-| `--profile delisted` | 仅 `daily_bars`：以已确认退市名录为 universe，`--start` 对应旧命令的 `--since`；`--plan` 离线。不能与普通修复或范围选项混用 |
-| `--shfe-annual-archive ZIP --archive-year YYYY --accept-partial-fields` | 仅 `futures_bars` / `option_bars`：显式离线导入上期所年度包，保留缺失字段标记，跳过已有日线主键；`--archive-url` / `--archive-downloaded-at` 可附原始来源证据。默认回填仍用完整日文件，细节见[衍生品指南](../recipes/derivatives.md#官方年度包已验证格式与使用限制) |
 | `--symbols` | 日内、`daily_bars`、`trading_status`、`corporate_actions`、`share_structure` 的临时标的范围（`share_structure` 按证券一次取回全部股本变动，用于审计提示的股本滞后）；其他数据集仍使用配置中的范围 |
-| `--baostock-repair` | 仅 `corporate_actions`：显式补抓已退市 SH/SZ 标的的 Baostock 分红除权数据；建议与 `--symbols` 配合 |
-| `--ths-repair` | 仅 `corporate_actions`，历史迁移用：显式补抓已退市 BJ 标的的同花顺历史分红除权数据；建议与 `--symbols` 配合 |
-| `--eastmoney-bj-repair` | 仅 `corporate_actions`，历史迁移用：按北交所旧码→920 新码映射向 EastMoney 定向补抓历史分红除权数据；建议与 `--symbols` 配合 |
-| `--issuer-notice-repair` | 仅 `corporate_actions`：只用发行人实施公告（已审清单、巨潮、北交所）补现金到账日并应用已审送转条款；早于除权日的已存到账日当作未知，找不到就清空。不请求 Baostock。需要 `--symbols`/`--start`/`--end` |
-| `--payment-date-repair` | 同上，发行人公告之后再用 Baostock `dividPayDate` 匹配余下事件；两者不能同时使用 |
 | `--outstanding` | 精确修复被容忍缺口记下的欠账键：作用域与窗口取自 ledger，而不是 `--symbols`/`--start`/`--end`。补上的键即刻销账，仍缺的继续欠着 |
-| `--bj-amount-repair` | 已由 `--tdx-amount-repair` 取代，保留以兼容旧脚本：从 TDX 补 Sina 从未发布的 BJ 成交额，已存的价格与成交量一律不动。需要 `--start`/`--end` |
-| `--tdx-amount-repair` | 仅 `daily_bars`：新浪补上的沪深北历史行与通达信一起核对，只在开高低收一致且成交量差小于一手时补成交额；通达信没有的代码保留新浪行。需要 `--start`/`--end` |
-| `--turnover-repair` | 仅 `daily_bars`：成交额缺失、为 0 或量额单位错位的沪深股票行，用 Baostock 同日行整行替换；开高低收须在半分钱内一致，不一致或未提供的保留原值并计数。需要 `--start`/`--end` |
-| `--turnover-peer-review` | 与 `--turnover-repair` 同用，先用上交所历史日 K 或深交所实际日期报表核对 Baostock 价格，再用通达信和东财复查其余冲突。整行替换须有一致价格和可用量额；交易所汇总成交量、成交额不能拼接进竞价日线，仍有冲突或来源不可用的保留并计数。 |
-| `--tdx-volume-repair` | 仅 `daily_bars`：重读 TDX，只改写已存 TDX 行的成交量（及 64.5 元以下被放大的成交额），修 2026-09-17 前的解码错误；价格须一致，不新增行，不经内部缺口门禁。需要 `--symbols` 和 `--start`/`--end` |
-| `--bse-tip-repair` | 仅 `daily_bars`，历史迁移用：读取已有 session 的 OHLCV，仅向 BSE 请求成交额并严格核对；必须同时指定相同的 `--start/--end` 与 `--symbols` |
+| `--refetch` | 忽略完成收据和 checkpoint，重取整个范围（`sector_bars`、`futures_bars`、`option_bars`），仍遵守熔断。不加时回填从断点续跑 |
+| `--source` | 本次改用的来源，不改配置；目前用于 `margin_trading`（`exchange` / `eastmoney`） |
+| `--workers` | 仅 `margin_trading`：按日期推进的并发数，每个请求仍走共享限速 |
+| `--exchange` | 衍生品：限定发布者，可重复 |
+| `--profile delisted` | 仅 `daily_bars`：以已确认退市名录为 universe，`--start` 对应旧命令的 `--since`；`--plan` 离线 |
+| `--plan` | 只读计划，不联网、不写湖 |
 
-北交所的修复开关（`--ths-repair`、`--eastmoney-bj-repair`、`--bse-tip-repair`、`--bj-amount-repair`）只用于整理既有历史，日更不会用到。新数据由写入时的规则保证：
+**数据集专属的修复和导入已移出 `backfill`。** 它们用同一套回填机制（窗口、范围、下游派生跟进、计划输出），但遵循修复命令的约定：默认只预览，`--apply` 才运行。旧开关已移除，请改用下表右列：
+
+| 旧写法 | 新命令 |
+|---|---|
+| `backfill corporate_actions --payment-date-repair` / `--issuer-notice-repair` | [`cne repair payment-dates`](#cne-repair)（`--issuer-notices-only`） |
+| `backfill corporate_actions --baostock-repair` / `--ths-repair` | `cne repair delisted-actions --source baostock\|ths` |
+| `backfill corporate_actions --eastmoney-date-repair --ex-dates ...` | `cne repair ex-dates --ex-dates ...` |
+| `backfill daily_bars --tdx-amount-repair` | `cne repair bar-amounts` |
+| `backfill daily_bars --turnover-repair [--turnover-peer-review]` | `cne repair bar-turnover [--peer-review]` |
+| `backfill daily_bars --bse-tip-repair --start D --end D` | `cne repair bse-tip-turnover --date D` |
+| `backfill valuation_metrics --fill-em-outage` | `cne repair valuation-outage` |
+| `backfill futures_bars --shfe-annual-archive ZIP --archive-year Y ...` | [`cne import shfe-archive ZIP --dataset futures_bars --year Y ...`](#cne-import-shfe-archive) |
+| `--refresh`（衍生品）/ `--force`（`sector_bars`） | `--refetch` |
+| `--retry-failed`（`sector_bars`） | 不再需要：回填默认续跑 |
+| `--margin-source` | `--source` |
+
+原来的 `--eastmoney-bj-repair`、`--bj-amount-repair` 和 `--tdx-volume-repair` 已移除：它们只修 0.17 及更早版本写入的数据（`--bj-amount-repair` 的替代是 `cne repair bar-amounts`）。日更不会用到这些修复，新数据由写入时的规则保证：
 
 | 以前靠修复开关处理的问题 | 现在的处理 |
 |---|---|
@@ -420,9 +460,8 @@ diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别�
 cne backfill minute_bars_5m --start 2026-05-01 --end 2026-07-31 \
   --symbols 600519.SH,000001.SZ
 
-# 已有 BJ 日线只补当前分区成交额，不重抓 Sina 历史
-cne backfill daily_bars --start 2026-08-21 --end 2026-08-21 \
-  --symbols 920000.BJ,920001.BJ --bse-tip-repair
+# 已有 BJ 日线只补当前分区成交额，不重抓 Sina 历史（先预览，再 --apply）
+cne repair bse-tip-turnover --date 2026-08-21 --symbols 920000.BJ,920001.BJ --apply
 ```
 
 ### 衍生品回填
@@ -431,32 +470,33 @@ cne backfill daily_bars --start 2026-08-21 --end 2026-08-21 \
 |------|------|
 | `--plan` | 只读计划：来源、日期、冷缓存请求估算、限速与后续步骤；不联网、不写湖 |
 | `--exchange` | 限定发布者，可重复；INE 归入 SHF 路由，2018 年期货另取能源中心日文件 |
-| `--refresh` | futures_bars / option_bars 忽略收据与旧缓存重取，仍遵守熔断 |
+| `--refetch` | futures_bars / option_bars 忽略收据与旧缓存重取，仍遵守熔断 |
 | `--symbols` | futures_minute_bars 的显式合约列表，如 CU2611.SHF；日线不支持逐合约取文件 |
 
-日线回填自动更新对应合约表及派生，输出 `followup`；分钟线只有滚动窗口，拒绝日期范围。`--force` / `--retry-failed` 在衍生品上报错。连续期货全量重算，拒绝 `derive --start/--end`。完整流程、源端约束和验收见 [衍生品指南](../recipes/derivatives.md)。
+日线回填自动更新对应合约表及派生，输出 `followup`；分钟线只有滚动窗口，拒绝日期范围。连续期货全量重算，拒绝 `derive --start/--end`。上期所年度包用 [`cne import shfe-archive`](#cne-import-shfe-archive) 离线导入。完整流程、源端约束和验收见 [衍生品指南](../recipes/derivatives.md)。
 
 衍生品合约回填的历史参考重放及请求上界见[衍生品研究指南](../recipes/derivatives.md)。合约表的 `--start/--end` 限制参考文件日期，不裁剪最终合约全集。
 
 ### sector_bars
 
-| 选项 | 说明 |
-|------|------|
-| `--retry-failed` | 跳过 checkpoint 中已完成的板块，只重试失败项 |
-| `--force` | 清空 checkpoint 后全量重拉（与 `--retry-failed` 互斥） |
-
-Checkpoint：`meta/state/sector_bars_backfill.json`。失败超过 50% 时 step 状态为 `warning` 但仍写入已成功部分。
+默认从 checkpoint 续跑，跳过已完成的板块；`--refetch` 清空 checkpoint 后全量重拉。Checkpoint：`meta/state/sector_bars_backfill.json`。失败超过 50% 时 step 状态为 `warning` 但仍写入已成功部分。
 
 **网络**：走同花顺 `d.10jqka.com.cn`（日更与历史同源），限速在 `[sources.ths]`。
 与东财无关，`[sources.eastmoney] proxy` 对它不生效。
 
 ```bash
-# 首次或换源后全量
-cne backfill sector_bars --config configs/cnequity.toml --force
-
-# 续跑失败板
-cne backfill sector_bars --config configs/cnequity.toml --retry-failed
+cne backfill sector_bars              # 续跑
+cne backfill sector_bars --refetch    # 首次或换源后全量
 ```
+
+## cne import shfe-archive
+
+```bash
+cne import shfe-archive ZIP --dataset futures_bars --year 2018 --accept-partial-fields           # 预览
+cne import shfe-archive ZIP --dataset futures_bars --year 2018 --accept-partial-fields --apply   # 导入
+```
+
+离线导入上期所官方年度包：校验格式，保留缺失字段标记，跳过已有日线主键，不覆盖完整的日文件数据。`--accept-partial-fields` 必填，表示接受年度包缺少只有日文件才有的字段；`--url` / `--downloaded-at` 附上原始来源证据；`--start` / `--end` 限定在 `--year` 内。默认回填仍用完整日文件，细节见[衍生品指南](../recipes/derivatives.md#官方年度包已验证格式与使用限制)。
 
 ## cne run compact
 
@@ -514,32 +554,50 @@ python scripts/delisted_ops.py coverage --start 2016-01-01 --universe all_a_sh_s
 cne derive trading_status --start 2001-01-01 --end 2001-12-31
 ```
 
+
+## cne migrate
+
+升级后修复旧版本写下的数据。新版本修好写入逻辑后，旧版本存下的行仍需一次性修正；每个修正是一个迁移。`meta/state/lake.json` 记录建湖的版本（早于它引入的迁移不需要运行）和这个湖已经运行过、或检查后无需运行的迁移。
+
+```bash
+cne migrate             # 预览：每个迁移会改多少行，不写任何东西
+cne migrate --apply     # 按顺序运行并记录结果
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--apply` | 运行还欠的迁移，并把结果写进 `meta/state/lake.json` |
+| `--only` | 逗号分隔的迁移 id；即使已记录也重新运行 |
+| `--json` | 机器可读输出 |
+
+每个迁移都持有湖的变更锁，经修复门禁发布，旧版本保留可读。一个迁移失败时停止，后面的不运行，也不记录。`fund-listing-dates` 会读取交易所官方基金列表，`misdated-valuation` 在有需要替换的行时读取东财数据中心，其余只读湖。`cne doctor` 会提示还没检查的迁移。0.12 及更早版本写入的湖请先用 0.19 或更早版本迁移再升级。
+
 ## cne repair
 
 默认基于湖中已有数据输出计划；加 `--apply` 后以新版本发布，旧版本继续保留，可按版本读取。`corporate-action-gaps --apply` 会按缺口向数据源补取证据。
+
 
 `--apply` 发布前会比较已提交版本与候选版本的离线质量检查。历史因子/公司行为矛盾单独记录为非阻断诊断。无效因子数值、损坏文件、主键错误等结构问题新增或恶化时会阻止发布，候选版本移入 `_quarantine`，报告写入 `meta/quality/publication/`。这项修复门禁不受 `[quality].publication_gate` 的普通日更发布设置影响。
 
 | 子命令 | 说明 |
 |------|------|
 | `layout DATASET` | 把分区数据集根目录或错误键目录中的文件并入登记分区。同一主键的多份观察只在非空值完全一致时互补填空；有冲突的键按规范规则整行保留一份。重复键的全部原始观察写入 `_quarantine`。发布新版本时若检测到这类布局，会提示运行此命令 |
+| `repartition [DATASET] [--all]` | 按登记的分区粒度改写数据集分区；不带参数只列出需要改写的数据集，带数据集时预览文件、分区和体积变化，`--apply` 在湖锁下改写并整体换上。只回收空间和文件句柄，不修正确性；审计发现粒度混用时会指向这里 |
+| `payment-dates` | `corporate_actions` 现金到账日：先用已审发行人公告，再用 Baostock 匹配；`--issuer-notices-only` 只用发行人公告并应用已审送转条款。需要 `--symbols`/`--start`/`--end` |
+| `delisted-actions --source baostock\|ths` | 补已退市证券的历史分红除权：`baostock` 用于沪深，`ths` 用于北交所 |
+| `ex-dates --ex-dates ...` | 按给定除权日逐日向东财请求历史除权行；只有它能取到 2015-09-29 之前的行 |
+| `bar-amounts` | 新浪补上的沪深北历史日线与通达信核对，开高低收一致且成交量差小于一手时补成交额；价格与成交量不动 |
+| `bar-turnover [--peer-review]` | 成交额缺失、为 0 或量额单位错位的沪深股票日线，用 Baostock 同日行整行替换；`--peer-review` 再用交易所历史价、通达信和东财复查冲突 |
+| `bse-tip-turnover --date D` | 用北交所行情板补最近一个交易日的北交所成交额，不重抓新浪 |
+| `valuation-outage` | 东财快照中断时，用东财数据中心估值报表补 `--start`/`--end` 窗口；只在取到全市场时写入 |
 | `corporate-action-gaps` | 补上新浪与 Baostock 因子都有台阶、湖里却没有记录的除权事件，依据最近一次 `cne derive adj_factor_source` 的证据。附近 10 天内日期错开的记录，若条款能解释台阶就移到台阶日；其余按证券和年份向 Baostock 取分红，按生效交易日匹配，只收条款能解释台阶的行；Baostock 也解释不了的，再到巨潮查发行人的重整转增公告，公告写明的除权参考价能解释台阶才记为 `reorg_transfer`。此命令的计划仍离线，`--apply` 才请求 Baostock 和巨潮 |
-| `orphan-symbols` | 删除 `daily_bars` 中从未出现的证券在 `adj_factors` 与 `corporate_actions` 里的行：早年作为净值序列误入的场外基金（519xxx）行情已清理，因子和分红却残留；未采集行情的上市基金也在其列。这些行没有可复权的价格，只会被报成因子与公司行为矛盾。按数据集各发布一个新版本 |
-| `stale-suspensions` | 删除 `trading_status` 中已被实际成交日线否定的推断停牌（`derived_bar_gap`）：某次运行漏抓行情时，缺口曾被误记为停牌；行情补齐后同一天有成交的日线即证明该行错误。独立来源的停牌不受影响 |
-| `status-outages --start --end` | 按现行规则重建东财不可用期间写入的 `trading_status` 行（`eastmoney_cached`）。旧版兜底会沿用自己写的缓存行，长假会让缓存过期，并把没有记录的证券记成停牌。窗口内的缓存行全部删除；当天主源答复的证券不到前几个交易日一半的交易所，没有其他记录的证券沿用前 5 个交易日内最近的一手记录，并保留该记录的抓取时间，因此 Baostock 历史与日线缺口推断的停牌仍然优先。没有一手记录的证券不写行 |
-| `status-listing-window` | 删除 `trading_status` 中落在证券上市日之前、或没有退市记录支撑的行。旧版合并曾把尚无日线的新证券推断为退市，状态步骤随后在它们上市后的头几个交易日写入 `derived_delisted`；东财也会把尚未上市的代码报成正常交易。`derived_delisted` 行只在当前 `instruments` 仍记有不早于上市日、且不晚于该行的退市日时保留；上市日之前的行一律删除，除非日线在上市日之前就有成交（这时上市日有误）。不补写行。发布新版本，旧版本保留 |
 | `status-traded --start --end` | 默认只读预览：用已提交日线的正成交量补已知上市期间、缺状态行的股票/ETF 键，来源 `derived_traded`，ST 保持 null。已有状态不覆盖；`--apply` 重新核对当前版本后发布并保留旧版本。建议按年或月分段 |
-| `fund-listing-dates` | 从完整的上交所、深交所 ETF/LOF 当前目录补未知上市日期，独立于研究资格。预览也请求来源；`--apply` 归档响应、经修复门禁发布新版本，保留已有日期及旧版本，不把首根日线当上市日 |
 | `stock-listing-dates` | 用有成交但上市日期未知的股票首日定位巨潮 IPO 日历请求，也可用可重复的 `--event-date YYYY-MM-DD` 核验尚无日线的股票；只接受代码、日期匹配的明确上市事件，不能与更早成交矛盾。默认回放归档，`--refresh-sources` 联网采证，`--max-sessions` 分批；`--apply` 发布并保留已有日期和旧版本；若补入的官方上市日期晚于残留退市日期，同一修订清除该矛盾退市日期 |
 | `index-snapshots` | 回放官方带日期的完整成分、权重文件；`--refresh-sources` 更新归档，`--indices` 选择指数。`--apply` 替换整个指数快照，百分数转比例，成分与权重按各自日期保存，不倒推历史 |
 | `financial-originals` | `--symbols` 或 `--all-stocks` 选择股票，`--start-year/--end-year` 选择年份，`--quarter` 选择 Q1/Q2/Q3/Q4（默认年报），`--max-reports` 分批，`--after` 接续输出的 `next_cursor`。默认离线预览，`--refresh-sources` 归档巨潮完整查询和原始 PDF，`--apply` 追加可明确识别的合并报表当期数和累计数；`--reparse` 重放旧报告并保留未变行的首次观测时间；未识别布局或科目保留缺口，不回填采集时间 |
 | `adj-factors` | 统一股票因子与 ETF/LOF 份额折算修复。默认离线预览并保存计划；`--refresh-sources` 显式联网采证，`--apply` 复查输入后发布确定的修正。支持 `--symbols`、事件窗口 `--start/--end`、`--max-symbols` 和 `--plan`；未解决事件保留原值和提示。详见 [历史因子修复](../datasets/sources.md) |
-| `fund-factors` | 离线预览 ETF/LOF 已记录拆分、转增的漏跳；从原始来源序列重建完整历史，保留其他来源台阶和现金分红口径。`--apply` 经修复门禁发布 `derived_fund_actions` 并保留旧版本。条款冲突或缺少原始序列时不猜补 |
 | `fund-volume` | 用上交所完整历史 K 线修复沪深场内基金零成交量、正成交额的行。`--refresh-sources` 归档来源，默认离线回放；`--apply` 仅替换上市窗口内、开高低收及舍入金额一致的行并保留旧版本。若湖中金额冲突，须有已归档的东财未复权日线同时证实价格和金额，才替换整行；东财整手成交量不参与补量。优先复用相符的原始响应归档，避免重复请求。不得用成交额倒算成交量。 后续重抓的零量正额行不会覆盖已恢复的有效成交量。 |
 | `fund-no-print` | 用深交所明确的零成交额，或上交所按证券和日期返回的零竞价开高低及正参考价，核对日线欠账。默认离线预览；`--refresh-sources` 联网归档报表，`--max-sessions` 限制交易日数；`--apply` 保存证明并刷新覆盖水位。缺失响应不构成证明，正常可交易不等于当日有成交；舍入量额为零本身不足以证明无成交；上交所覆盖证明表示未形成竞价日线，不能据此否认汇总口径成交，不生成日线或停牌行。证据失效会重新打开欠账，实际成交记录优先 |
-| `daily-bar-coverage` | 逐证券复查 `bj_session_incomplete` 整日欠账；仅按已提交日线的正成交量或独立停牌证据结清已知上市区间。`--apply` 更新覆盖元数据和水位，保存输入版本及收据，不改日线。同样结清已提交且不与成交历史矛盾的上市日期所证明的上市前欠账；未知上市日期仍由逐证券覆盖报告列为未核实 |
-| `misdated-valuation` | 替换 `valuation_metrics` 中盖错交易日的 push2 快照行。快照不带日期，只描述抓取时最近一个已收盘的交易日；抓取时刻对应的交易日与行上日期不同的行，`--apply` 时删除，并在同一版本中换成东财 datacenter 按该日期发布的估值；datacenter 没有的键不再保留错误的行。计划离线，`--apply` 才请求 datacenter |
-| `valuation-basis` | 统一 `valuation_metrics` 口径：push2 动态市盈率移入 `pe_dynamic`；Baostock 流通市值由成交均价口径换算为收盘价口径，无法核对的保留原值并标为 `vwap_x_turn_implied_shares`；总市值按 `share_structure` 当日有效总股本重建，无记录的标为年末股本估算 |
 
 ```bash
 cne repair layout futures_bars
@@ -643,11 +701,11 @@ cne verify --derivatives --dataset futures_bars --start 2026-09-01 --end 2026-09
 | `publication_status` | `pending` / `published` / `partial` / `unchanged` / `none` / `rejected`，描述当前运行的版本发布 |
 | `fallback` | 来源受限时列出已有可读数据、注册来源角色与开关、请求范围和重试命令；来源列表不代表已尝试或当前可达 |
 | `reason_code` | 数据集回执和批次保留结构化原因，例如 `source_transient`、`source_unavailable`、`input_unavailable`、`storage_failure`、`execution_error` |
-| `usable_result` | 有有效请求结果、已覆盖范围或明确无数据证据；来源受限且本次 0 行可以为 false，不能据此判定执行失败 |
+| `usable_result` | 有有效请求结果、已覆盖范围或明确无数据证据；来源受限且本次 0 行可以为 false。日更等不因此判定执行失败；`cne backfill` 在此时退出 1，见下文 |
 
-`completed + partial` 可以是正常终态。已校验事实可以发布，缺失范围、未扫描证券、冷却与重试证据继续留在台账中。缺输入的派生会解释跳过；派生版本记录输入版本和覆盖证据，输入变化时要求重算。来源全部不可用且本次没有有效请求结果，也正常结束为覆盖不足，保留已有湖；程序、配置、存储、完整性错误仍报告失败。
+`completed + partial` 可以是正常终态。已校验事实可以发布，缺失范围、未扫描证券、冷却与重试证据继续留在台账中。缺输入的派生会解释跳过；派生版本记录输入版本和覆盖证据，输入变化时要求重算。来源全部不可用且本次没有有效请求结果，也正常结束为覆盖不足，保留已有湖（`cne backfill` 的退出码见下文）；程序、配置、存储、完整性错误仍报告失败。
 
-取数 / 写入命令：`success`、来源受限的 `warning` / `degraded`（包括 0 行）返回 0，`failed` 返回 1。显式质量检查（`audit`、`verify`、`status --gate`）继续按各自质量规则返回非零。只读报告成功读取并展示后返回 0，不要求报告中的数据完全健康。
+取数 / 写入命令：`success`、来源受限的 `warning` / `degraded`（包括 0 行）返回 0，`failed` 返回 1。例外是 `cne backfill`（含 `--outstanding`）：状态不是 `success`、`usable_result` 为 false 且本次写入 0 行时返回 1，因为回填就是为了补这段范围，一行都没补上即为失败；数据源不可用和数据源无法提供该范围（`capability_limit`）都属于这种情况，JSON 结果与 `fallback` 不变。显式质量检查（`audit`、`verify`、`status --gate`）继续按各自质量规则返回非零。只读报告成功读取并展示后返回 0，不要求报告中的数据完全健康。
 
 **升级调度脚本：** 若以前依靠 `status --datasets` 的退出码触发告警，改为 `status --datasets --gate`（按组调度时同时加 `--groups`）。依赖日更 / 回填退出码 2 的脚本，应读取 `coverage_status`，或另行运行显式质量门禁。现有数据目录、manifest、检查点和成功批次不需要删除；旧元数据以增量方式迁移。旧部分 staging 没有校验封存时保持保守门禁，通过原范围重试后再发布。
 
@@ -669,7 +727,7 @@ cne verify --derivatives --dataset futures_bars --start 2026-09-01 --end 2026-09
 
 | 选项 | 说明 |
 |------|------|
-| `--datasets` | 逐数据集新鲜度表（dataset / layer / freshness / 覆盖区间 / watermark）；加 `--gate` 时有 STALE 退出 1。freshness 取值：`fresh` / `STALE` / `empty`（还没抓过）/ `no source`（源已下线且无替代，如 `economic_calendar`）/ `retired`（源已下线但湖已抓到最后一天，如 `northbound_flows`）/ `n/a`（配置里关闭，或不按日判新鲜度） |
+| `--datasets` | 逐数据集新鲜度表（dataset / layer / freshness / 覆盖区间 / watermark）；加 `--gate` 时有 STALE 退出 1。freshness 取值：`fresh` / `STALE` / `empty`（还没抓过）/ `no source`（源已下线且无替代，如 `economic_calendar`）/ `retired`（源已下线但湖已抓到最后一天，如 `northbound_flows`）/ `removed`（配置用 `steps_remove` 或 `enabled = false` 有意移出调度、没有别的组再跑它；保留真实的最后日期，不判落后，`cne check`、审计和门禁都不计入）/ `n/a`（配置里关闭，或不按日判新鲜度） |
 | `--gate` | 显式质量验收：失败 / 新鲜度不合格返回 1，覆盖不足或降级返回 2；普通只读查询成功返回 0 |
 | `--all-columns` | 配合 `--datasets`：打印 `list_datasets` 的全部列（契约指纹、revision、PIT 存储列等），而非仅新鲜度 |
 | `--groups` | 配合 `--datasets`：在 `--gate` 模式下只对这些调度组拥有的数据集判失败（空格或逗号分隔）。其它组的数据集照常列出、照常报为调度缺口，但不触发退出 1。只调度 `core` 的主机应指定这个范围，避免未安排采集的可选组持续触发门禁。无人调度的数据集（`(unscheduled)`）仍然判失败，须明确处理 |
@@ -711,31 +769,24 @@ init 不属于任何调度组，因此不受 `--groups` 豁免；截面校验则
 | `--reconcile-after-seconds` | 覆盖对账静默窗口，默认取 `[orchestrator].batch_stale_seconds` |
 | `--force` | 将未 cleanup-ready 的 staging 也列入预览，不删除、不降级批次 |
 
-输出 `dry_run: true`、`confirmation_required: "serve_storage_page"`。`removed` / `removed_run_ids` 等实际删除字段为空或 0，`bytes_freed` 全部为 0；候选见 `candidate_run_ids`、`candidate_run_dirs`、`candidates`，账面大小见 `logical_bytes_selected`。历史版本、登记试验和已成功 compact 且无未完成批次的终态 staging 可在 serve 存储运维页勾选、审核并确认删除。确认时重新核验运行锁、引用保留、运行状态和逐文件指纹；执行只处理原清单，并保留可恢复的删除收据。orphan、未合并和有未完成批次的 staging 不在网页删除范围，来源快照和日志仍仅报告。
+输出 `dry_run: true`、`confirmation_required: "serve_storage_page"`。`removed` / `removed_run_ids` 等实际删除字段为空或 0，`bytes_freed` 全部为 0；候选见 `candidate_run_ids`、`candidate_run_dirs`、`candidates`，账面大小见 `logical_bytes_selected`。历史版本和已成功 compact 且无未完成批次的终态 staging 可在 serve 存储运维页勾选、审核并确认删除。确认时重新核验运行锁、引用保留、运行状态和逐文件指纹；执行只处理原清单，并保留可恢复的删除收据。orphan、未合并和有未完成批次的 staging 不在网页删除范围，来源快照和日志仍仅报告。
 
 预览另返回 `staging_inventory`、`staging_run_count` 和 `skipped_reasons`，逐运行列出状态、大小、年龄、未完成批次和候选/保留原因。正在重试的运行由运行锁保护；`--force` 不绕过运行锁或 hold。未完成批次不会仅因年老或存在更新的成功运行而自动淘汰。
 
 ## cne storage
 
-版本生命周期包括引用登记、不可变计划、原地观察期和维护窗口下的物理回收。满 7 天不会自动删除。试验目录可先归档再退出原位置；外部读取须由操作者停止。
+版本生命周期包括引用登记、不可变计划、原地观察期和维护窗口下的物理回收。满 7 天不会自动删除。外部读取须由操作者停止。
 
 | 命令 | 行为 |
 |---|---|
-| `inspect --keep 5` | 只读列出仍存在的版本、保留原因和登记试验；未导入引用时仅为初筛 |
+| `inspect --keep 5` | 只读列出仍存在的版本和保留原因；未导入引用时仅为初筛 |
 | `explain OBJECT_ID` | 显示版本的 current/recent/hold 等依据 |
 | `import --manifest FILE` | 校验并合并已审核的本地引用清单；不会自动解除已有保护 |
-| `hold OBJECT_ID --reason TEXT` | 新增版本、试验、工件或清理资源的保留理由，取消相应待删除标记 |
+| `hold OBJECT_ID --reason TEXT` | 新增版本或清理资源的保留理由，取消相应待删除标记 |
 | `plan --keep 5 --phase mark` | 校验引用源后保存内容寻址的标记计划，返回 `plan_id` |
 | `plan --keep 5 --phase purge` | 只选择观察期已满且内容未变的候选，逐文件核对 SHA-256；输出 `purge_ids` 和 `logical_bytes_to_purge` |
 | `apply PLAN_ID --phase mark` | 再次校验指针、引用、登记和文件身份，开始至少 7 天的原地观察期 |
 | `apply PLAN_ID --phase purge` | 已禁用；必须转到 serve 存储运维页重新检查并确认 |
-| `experiment-create --parent DIR --case-id ID` | 新建独立实例身份的空试验目录，登记为 active |
-| `archive OBJECT_ID --destination DIR` | 独立复制已登记试验，逐文件校验后封存工件；保留原目录 |
-| `experiment-seal OBJECT_ID --artifact-id ID` | 显式声明试验结束，校验源身份与归档一致后登记 sealed |
-| `artifact-verify OBJECT_ID` | 校验工件文件集合、大小和 SHA-256 |
-| `resolve OLD_PATH [--artifact-id ID]` | 校验并返回旧路径对应的归档位置；多版本时必须明确选择 |
-| `experiment-plan --phase mark\|purge` | 为非 active、无引用/hold 且原内容与归档一致的试验原目录生成计划 |
-| `experiment-apply PLAN_ID` | 仅执行 mark；purge 必须转到 serve 网页确认 |
 
 每个子命令接受 `--config`。版本 `OBJECT_ID` 为当前湖内的 `revision/<dataset>/<revision_id>`；计划另外绑定湖身份及 metadata 根，不能直接在另一个湖使用。被引用但暂时缺失的版本也可通过清单登记保护，以便恢复后继续受到保护。
 
@@ -752,10 +803,6 @@ init 不属于任何调度组，因此不受 `--groups` 豁免；截面校验则
 `logical_bytes_deleted` 仅累计已完整删除的版本；部分失败的字节不计入，并报告 `partial_deletion_possible`。文件系统可用空间另记录前后值，可能受到其他系统活动影响。待删除标记和删除收据都不能替代备份。
 
 `logical_bytes_selected` 来自版本文件清单，不是实际磁盘释放量；APFS 克隆和系统快照可使两者相差很大。标记阶段所有字节保持原位。
-
-试验使用 `experiment/<id>`，归档使用 `artifact/<manifest-digest>`。归档采用独立 inode 的复制，支持时使用文件系统克隆；中断副本保留为 `.incomplete-*`，不会登记为 sealed。归档不会自动停止源写入或解除旧 hold，也不证明完整重放可用。托管试验需显式 `experiment-seal` 才退出 active；归档本身不改变此状态。后续源内容改变会阻止按旧归档清理。
-
-旧报告保持不变。读取者需要显式调用 `ArtifactStore.resolve()` 或使用 `storage resolve` 的结果。归档目录解析会校验整个工件，文件解析会校验对应文件。发现原目录引用时继续保留原位置；只有完成消费者迁移并重新审核引用，才能进入观察期。试验清理收据位于 `meta/lifecycle/experiment-purges/`，删除的是冗余原位置，封存工件保持可用。失败后重试同一计划会核验残留；路径被新试验复用时停止。
 
 现有其他清理器共享 hold：`staging/<run_id>`、`source_snapshot/<dataset>/source=<source>/data_version=<version>/run_id=<run>`、`log/<cne-*.log文件名>`。可通过 `storage hold` 保护已存在对象，或由 case 的 `requires_bytes` 提供保护。年龄、compact/readiness 和每类最新快照规则继续有效；`--force` 不绕过 hold。登记后的引用源发生变化或不可读时，这些清理器也停止并要求刷新清单。
 
@@ -793,7 +840,7 @@ cne serve
 
 任务日志和回填预览统一使用 UTF-8，无需为 Windows 终端另外设置编码。Windows 取消会核对 PID 与进程创建时间；记录缺少身份信息（例如更新前已启动的任务）或无法核对时，页面拒绝发送终止信号，请通过系统任务管理器处理。强制取消后，可从关联 run 检查已发布数据并重试未完成的工作。
 
-默认配置 `configs/cnequity.toml` 还不存在、而且没有显式 `--config` / `CNE_CONFIG` 时，面板进入首次配置：填写数据目录、看 `cne doctor`、再启动 `cne init`。体检结束前不能开始初始化。页面先显示将执行的命令，确认后才启动。目录里已经有数据湖时，先说明会接管且不会清空。显式指向一个不存在的文件仍然报错，不会自动生成。湖里还没有 curated 数据时，日更和手动更新收在次要位置，主操作是初始化。没跑完、而且之后的运行还没成功做过所缺步骤的初始化，可以直接续跑。缺的步骤后来已经成功做过时，页面不再提示继续初始化。已到点但还没跑的定时日更会写明那个交易日。日更表单会说明今天是不是交易日、待跑会话，以及这次手跑算不算那次定时。初始化或日更结束后，页面给出总览或重试入口。
+找不到配置、而且没有显式 `--config` / `CNE_CONFIG` 时，面板进入首次配置：填写数据目录、看 `cne doctor`、再启动 `cne init`。体检结束前不能开始初始化。页面先显示将执行的命令，确认后才启动。目录里已经有数据湖时，先说明会接管且不会清空。显式指向一个不存在的文件仍然报错，不会自动生成。湖里还没有 curated 数据时，日更和手动更新收在次要位置，主操作是初始化。没跑完、而且之后的运行还没成功做过所缺步骤的初始化，可以直接续跑。缺的步骤后来已经成功做过时，页面不再提示继续初始化。已到点但还没跑的定时日更会写明那个交易日。日更表单会说明今天是不是交易日、待跑会话，以及这次手跑算不算那次定时。初始化或日更结束后，页面给出总览或重试入口。
 
 从别的机器打开（`--host` 不是回环地址）时，浏览和存储清理沿用 `--token`；操作页默认不能启动命令，需要同时给 `--allow-remote-ops`。首次配置始终只接受本机。
 
@@ -895,7 +942,7 @@ SQL 查询本地湖；`--dataset` 与 `--symbol` 成对使用，缓存缺失或 
 
 | 选项 | 说明 |
 |------|------|
-| `--config` | 配置文件路径，**建议绝对路径**（客户端从哪个目录拉起进程不确定） |
+| `--config` | 配置文件路径；省略时按统一顺序查找（客户端从哪个目录拉起进程不确定，用户级配置在任何目录都能找到）。写明时**建议绝对路径** |
 | `--live` | 湖里没有的，现拉现给、不落盘。只支持 `resolve_symbol` 与未复权日线，其余工具明确拒绝 |
 | `--http` | 改用 Streamable HTTP，在 `/mcp` 上监听。给只接远程网址的客户端（ChatGPT）配合隧道使用 |
 | `--host` / `--port` | `--http` 的监听地址与端口，默认 `127.0.0.1:8788`。非回环地址必须配 `--token` |

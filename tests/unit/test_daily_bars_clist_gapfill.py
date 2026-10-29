@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
@@ -2018,6 +2018,78 @@ def test_a_probed_code_with_no_bars_is_settled_as_not_listed(tmp_path, monkeypat
     assert "001246.SZ" in checks["daily_bars_expected_no_data"]["symbols"]
     evidence = load_negative_evidence(cfg, "daily_bars")
     assert [(e["symbol"], e["reason"]) for e in evidence] == [("001246.SZ", "not_yet_listed")]
+
+
+def test_a_probe_answered_only_by_a_zero_volume_bar_has_not_listed(tmp_path, monkeypatch):
+    """2026-10-19: TDX answered 皇冠新材 001381.SZ, days before its allotment
+    results, with a flat bar at the 16.98 issue price and no volume. The probe
+    read it as a listing; the deep window then owed 10-12..10-16."""
+    from cnequity.steps.common import load_negative_evidence
+
+    cfg = _cfg(tmp_path)
+    run_id = Manifest(cfg.manifest_path).start_run("daily:core")
+    start, tip = date(2026, 10, 12), date(2026, 10, 19)
+    sessions = [start + timedelta(days=offset) for offset in (0, 1, 2, 3, 4, 7)]
+    placeholder = _bar_frame(["001381.SZ"], tip, volume=0).with_columns(
+        *(pl.lit(16.98).alias(column) for column in ("open", "high", "low", "close")),
+        pl.lit(0.0).alias("amount"),
+    )
+    market = ["600000.SH", "600036.SH", "600519.SH", "601318.SH"]
+    writer = StagingWriter(cfg.staging_root)
+    for day in sessions:
+        writer.write_batch("daily_bars", run_id, f"tdx-{day:%m%d}", _bar_frame(market, day))
+    writer.write_batch("daily_bars", run_id, "tdx-probe", placeholder)
+    from cnequity.steps import bars
+
+    monkeypatch.setattr(bars, "list_trading_dates", lambda *a, **k: sessions)
+    monkeypatch.setattr(bars, "_gapfill_tip_via_clist", lambda *a, **k: {})
+    monkeypatch.setattr(
+        bars, "_gapfill_multiday_via_kline", lambda *a, **k: {"rows_read": 0, "rows_written": 0}
+    )
+
+    result = _finish_daily_bars(
+        cfg,
+        tip,
+        run_id,
+        start=start,
+        end=tip,
+        expected_tdx_symbols=[*market, "001381.SZ"],
+        tdx_result={"rows_read": 25, "rows_written": 25},
+        sina_result=None,
+        probe_symbols=["001381.SZ"],
+    )
+
+    checks = {f["check"]: f for f in result["context_updates"]["audit_findings"]}
+    assert checks["daily_bars_probe_placeholder"]["symbols"] == ["001381.SZ"]
+    assert checks["daily_bars_undated_probe"]["not_listed"] == ["001381.SZ"]
+    assert "daily_bars_interior_gap" not in checks
+    assert StateStore(cfg.meta_root).get_outstanding_keys("daily_bars") == []
+    staged = pl.concat(
+        [pl.read_parquet(path) for path in writer.list_run_files("daily_bars", run_id)]
+    )
+    assert "001381.SZ" not in staged["symbol"].to_list()
+    for path in writer.list_run_files("daily_bars", run_id):
+        assert writer.is_sealed(path, "daily_bars", run_id)
+    evidence = load_negative_evidence(cfg, "daily_bars")
+    assert [(e["symbol"], e["reason"]) for e in evidence] == [("001381.SZ", "not_yet_listed")]
+
+
+def test_a_probe_with_one_traded_row_keeps_its_zero_volume_rows(tmp_path, monkeypatch):
+    cfg, run_id, tip = _probe_run(tmp_path, monkeypatch)
+    writer = StagingWriter(cfg.staging_root)
+    writer.write_batch(
+        "daily_bars", run_id, "tdx-probe", _bar_frame(["001246.SZ"], tip - timedelta(days=1))
+    )
+    writer.write_batch(
+        "daily_bars", run_id, "tdx-probe-tip", _bar_frame(["001246.SZ"], tip, volume=0)
+    )
+    from cnequity.steps.bars import _quarantine_probe_placeholders
+
+    assert (
+        _quarantine_probe_placeholders(cfg, run_id, {"001246.SZ"}, tip - timedelta(days=1), tip)
+        == set()
+    )
+    assert len(writer.list_run_files("daily_bars", run_id)) == 3
 
 
 def test_a_probe_the_source_never_answered_settles_nothing(tmp_path, monkeypatch):

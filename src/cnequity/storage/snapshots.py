@@ -34,6 +34,7 @@ from cnequity.storage.atomic import (
     write_parquet_atomic,
 )
 from cnequity.storage.provenance import runtime_lineage
+from cnequity.storage.raw_archive import RawArchiveError, RawPayloadArchive
 from cnequity.storage.revisions import resolve_committed_root
 from cnequity.storage.state import StateStore
 
@@ -773,8 +774,8 @@ def _manifest_state_issues(snapshot: Path, manifest: Mapping[str, Any]) -> list[
             # relative to the snapshot itself.  For trade-date watermarks also
             # require a row at or beyond the claimed date; a marker ahead of
             # the bytes is the classic forged-watermark failure.
-            if created_day is not None and marker > created_day:
-                issues.append(f"state:{dataset}:{field}")
+            ahead_of_snapshot = created_day is not None and marker > created_day
+            backed_by_bytes = False
             if field == "last_success_trade_date":
                 date_column = spec.query_date_col or spec.date_col
                 if date_column:
@@ -784,8 +785,16 @@ def _manifest_state_issues(snapshot: Path, manifest: Mapping[str, Any]) -> list[
                             maximum_day = maximum.date() if hasattr(maximum, "date") else maximum
                             if marker > maximum_day:
                                 issues.append(f"state:{dataset}:{field}")
+                            else:
+                                backed_by_bytes = True
                         except (AttributeError, TypeError, ValueError):
                             issues.append(f"state:{dataset}:{field}")
+            # A watermark may run ahead of the snapshot day when the rows that
+            # justify it do too: trading_calendar is written a year ahead on
+            # purpose, and refusing that made every snapshot with a calendar
+            # (`--research` among them) unverifiable.
+            if ahead_of_snapshot and not backed_by_bytes:
+                issues.append(f"state:{dataset}:{field}")
 
         revision = state.get("revision")
         if revision is not None:
@@ -1313,26 +1322,18 @@ class SnapshotStore:
             # Critical source payload archives are part of a portable baseline
             # for the datasets that requested them. Keep the exact compressed
             # bytes and sidecars; no request credentials live in the archive.
-            raw_root = self.config.meta_root / "raw"
-            _reject_symlink_path(raw_root, label="raw archive root")
+            raw_archive = RawPayloadArchive(self.config.meta_root)
             for dataset in selected:
-                source_dir = raw_root / dataset
-                _reject_symlink_path(source_dir, label="raw dataset root")
-                if not source_dir.is_dir():
-                    continue
-                source_entries, unsafe = _tree_files_no_follow(source_dir, reject_hardlinks=True)
-                if unsafe:
-                    raise ValueError(
-                        f"raw archive contains unsupported link or special file(s): "
-                        f"{', '.join(sorted(unsafe)[:8])}"
-                    )
-                for relative_source in sorted(map(Path, source_entries)):
-                    source_file = source_dir / relative_source
+                try:
+                    source_entries = raw_archive.export_files(dataset)
+                except (RawArchiveError, OSError) as exc:
+                    raise ValueError(f"raw archive cannot be exported: {exc}") from exc
+                for relative_source, source_file in sorted(source_entries.items()):
                     # Sidecars are intentionally preserved regardless of
                     # extension; only directories are absent from the
                     # non-following file set.
                     _reject_link_or_non_regular(source_file, hardlink=True)
-                    relative = Path("meta") / "raw" / dataset / source_file.relative_to(source_dir)
+                    relative = Path("meta") / relative_source
                     stored = temp / relative
                     stored.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(source_file, stored)
@@ -2070,12 +2071,6 @@ class SnapshotStore:
         raise FileNotFoundError(
             f"no delta package named {name!r} ({self.delta_path(name) / 'manifest.json'})"
         )
-
-    @staticmethod
-    def _dataset_layer(dataset: str) -> tuple[str, Path]:
-        spec = DATASETS[dataset]
-        layer = str(spec.layer)
-        return layer, Path(layer) / dataset
 
     @classmethod
     def _lake_index(

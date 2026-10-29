@@ -88,12 +88,12 @@ def test_minute_symbols_are_supported_but_history_dates_are_not(tmp_path):
     assert result.exit_code != 0 and "只能采集近期窗口" in result.output
 
 
-def test_force_is_not_silently_ignored_for_derivatives(tmp_path):
+def test_refetch_is_not_silently_ignored_for_contract_tables(tmp_path):
     config = _config(tmp_path)
     result = CliRunner().invoke(
-        cli, ["backfill", "futures_bars", "--config", str(config), "--force"]
+        cli, ["backfill", "futures_contracts", "--config", str(config), "--refetch"]
     )
-    assert result.exit_code != 0 and "--refresh" in result.output
+    assert result.exit_code != 0 and "--refetch" in result.output
 
 
 @pytest.mark.usefixtures("chinese_output")

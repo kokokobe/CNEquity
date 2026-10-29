@@ -366,7 +366,8 @@ def parse_report_text(text: str, symbol: str, year: int, *, quarter=4) -> list[d
         unit = next(g for g in unit_match.groups() if g) if unit_match else standalone.group(1)
         scale = {"元": 1, "千元": 1000, "万元": 10000}[unit]
         found = {}
-        for line in section.splitlines():
+        lines = section.splitlines()
+        for index, line in enumerate(lines):
             values = list(_AMOUNT.finditer(line))
             if not values and scale > 1:
                 # Explicit scaled units can publish rounded integer cells.
@@ -387,6 +388,12 @@ def parse_report_text(text: str, symbol: str, year: int, *, quarter=4) -> list[d
                 # An incomplete accounting-negative cell cannot become positive.
                 continue
             label = re.sub(r"\s+", "", line[: values[0].start()])
+            # A long label wraps inside its bracket — 所有者权益（或股东权 / 益）合计
+            # — and the amounts sit on the first line; take the tail from the next.
+            if label.count("（") + label.count("(") > label.count("）") + label.count(")"):
+                tail = re.sub(r"\s+", "", lines[index + 1]) if index + 1 < len(lines) else ""
+                if tail and not _AMOUNT.search(tail):
+                    label += tail
             # Remove only row numbering and the optional numeric note column.
             label = re.sub(r"^(?:[一二三四五六七八九十]+、|[0-9]+[.．、])", "", label)
             label = re.sub(r"^(?:其中|加|减)[:：]", "", label)

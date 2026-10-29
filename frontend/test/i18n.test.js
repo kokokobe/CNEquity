@@ -16,7 +16,7 @@ test("the language switch changes dataset titles and page text", () => {
   setLang("zh");
   assert.equal(getLang(), "zh");
   assert.equal(ds("daily_bars"), "日线");
-  assert.equal(dsWithCode("daily_bars"), "日线 · daily_bars");
+  assert.equal(dsWithCode("daily_bars"), "日线（daily_bars）");
   assert.equal(tr("数据集", "Datasets"), "数据集");
   setLang("en");
   assert.equal(ds("daily_bars"), "Daily bars");

@@ -124,8 +124,14 @@ class _RpcError(Exception):
         self.message = message
 
 
-def handle_message(config: Config, message: dict) -> dict | None:
+def handle_message(config: Config, message: object) -> dict | None:
     """Turn one decoded JSON-RPC message into a response, or None for a notification."""
+    if not isinstance(message, dict):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": INVALID_REQUEST, "message": "message must be an object"},
+        }
     request_id = message.get("id")
     method = message.get("method")
     if not isinstance(method, str):
@@ -163,7 +169,15 @@ def handle_message(config: Config, message: dict) -> dict | None:
         }
 
 
-def _send(out: TextIO, message: dict) -> None:
+def handle_payload(config: Config, message: object) -> dict | list[dict] | None:
+    """Handle a transport payload with identical batch rules on stdio and HTTP."""
+    if isinstance(message, list) and message:
+        replies = [r for r in (handle_message(config, m) for m in message) if r is not None]
+        return replies or None
+    return handle_message(config, message)
+
+
+def _send(out: TextIO, message: dict | list[dict]) -> None:
     out.write(json.dumps(message, ensure_ascii=False, default=str) + "\n")
     out.flush()
 
@@ -218,23 +232,6 @@ def serve_stdio(
                 {"jsonrpc": "2.0", "id": None, "error": {"code": PARSE_ERROR, "message": str(exc)}},
             )
             continue
-        # A batch is a list. Notifications inside it produce nothing, and a
-        # batch of only notifications gets no reply at all.
-        if isinstance(message, list):
-            replies = [r for r in (handle_message(config, m) for m in message) if r is not None]
-            if replies:
-                _send(stdout, replies)
-            continue
-        if not isinstance(message, dict):
-            _send(
-                stdout,
-                {
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {"code": INVALID_REQUEST, "message": "message must be an object"},
-                },
-            )
-            continue
-        reply = handle_message(config, message)
+        reply = handle_payload(config, message)
         if reply is not None:
             _send(stdout, reply)

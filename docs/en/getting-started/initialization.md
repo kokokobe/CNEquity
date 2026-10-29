@@ -8,7 +8,7 @@ Use this page to build the production lake, widen the history window or handle i
 cne init
 ```
 
-When the default config `configs/cnequity.toml` does not exist, `cne init` first generates it from the bundled example (the same as `cne config create`: writes an absolute `data.root`, defaults to `workers=1` on macOS / Windows), then starts initialization. To change settings such as the data directory first, run `cne config create --data-root /path/to/lake`, edit it, then run `cne init`. If an explicitly passed `--config` or `CNE_CONFIG` points to a file that does not exist, nothing is generated automatically, so a typo does not create a new lake. After upgrading with an existing config, run `cne config upgrade` to add new schedule steps.
+When no config is found (no `configs/cnequity.toml` in the current directory and no per-user `~/.config/cnequity/config.toml`), `cne init` first generates the per-user config from the bundled example (the same as `cne config create`: writes an absolute `data.root`, defaults to `workers=1` on macOS / Windows), then starts initialization. To change settings such as the data directory first, run `cne config create --data-root /path/to/lake`, edit it, then run `cne init`. If an explicitly passed `--config` or `CNE_CONFIG` points to a file that does not exist, nothing is generated automatically, so a typo does not create a new lake. After upgrading with an existing config, run `cne config upgrade` to add new schedule steps.
 
 If you cannot reach the data sources, run `cne doctor` (offline checkup) first, then see the [troubleshooting guide](../operations/troubleshooting.md).
 

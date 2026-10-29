@@ -237,6 +237,42 @@ def test_an_impossible_row_is_quarantined_not_the_session(cfg, monkeypatch):
     assert [f["check"] for f in findings] == ["futures_row_rejected"]
 
 
+@pytest.mark.parametrize("listed", [True, False])
+def test_a_listed_exchange_anomaly_is_quarantined_without_owing_the_session(
+    cfg, monkeypatch, listed
+):
+    """INE kx20210728.dat publishes LU2108 with a close above its high; refetching
+    serves the same bytes, so a listed row must not keep the session owed."""
+    from cnequity.storage.derivative_evidence import read_json, receipt_path
+
+    day = date(2026, 9, 24)
+
+    def fetch_day(d, *, config=None):
+        base = _day(d)
+        broken = base.futures.with_columns(
+            pl.when(pl.col("symbol") == "IF2610.CFE")
+            .then(pl.col("high") + 100)
+            .otherwise(pl.col("close"))
+            .alias("close")
+        )
+        return ExchangeDay("CFE", d, broken, base.options)
+
+    monkeypatch.setitem(
+        derivatives.READERS,
+        "CFE",
+        dataclasses.replace(derivatives.READERS["CFE"], fetch_day=fetch_day),
+    )
+    known = {day: frozenset({"IF2610.CFE"})} if listed else {}
+    monkeypatch.setattr(derivatives, "PUBLISHED_FUTURES_ANOMALIES", known)
+    findings: list[dict] = []
+    frame = derivatives.fetch_session(cfg, day, "futures", findings=findings)
+
+    assert "IF2610.CFE" not in frame["symbol"].to_list()
+    receipt = read_json(receipt_path(cfg, "futures_bars", day, "CFE"))
+    assert receipt["rejected_rows"] == 1
+    assert receipt["state"] == ("captured" if listed else "owed")
+
+
 def test_real_file_shapes_pass_the_invariants():
     """Shapes the history sweep found: a close with no open/high/low on a
     traded row, an expiring option with no settlement, delta at -1.000001."""
@@ -374,11 +410,11 @@ def test_quarantined_ine_row_remains_owed_after_accepted_rows_publish(cfg):
         session_matches,
     )
 
-    day = date(2026, 9, 24)
+    day = date(2018, 9, 24)
     frame = with_provenance(
         _day(day).futures.head(1), source="futures_exchange", data_version="v1"
-    ).with_columns(pl.lit("SC2610.INE").alias("symbol"), pl.lit("INE").alias("exchange"))
-    target = cfg.curated_root / "futures_bars" / "trade_date=2026-09"
+    ).with_columns(pl.lit("SC1812.INE").alias("symbol"), pl.lit("INE").alias("exchange"))
+    target = cfg.curated_root / "futures_bars" / "trade_date=2018-09"
     target.mkdir(parents=True)
     frame.write_parquet(target / "part.parquet")
     record_session(
@@ -606,3 +642,24 @@ def test_reference_replay_skips_snapshot_only_endpoint(cfg, monkeypatch):
     findings = []
     assert derivatives._reference(cfg, bars, findings, "futures_contracts") is None
     assert findings[0]["check"] == "futures_reference_history_unsupported"
+
+
+def test_an_unpublished_exchange_session_is_not_owed(cfg):
+    """CZCE's archive 404s on 2010-06-21 while both neighbours answer."""
+    from cnequity.storage.derivative_evidence import owed_sessions, record_session
+
+    record_session(cfg, "futures_bars", date(2010, 6, 21), "CZC", None, error="not published")
+    record_session(cfg, "futures_bars", date(2010, 6, 22), "CZC", None, error="not published")
+
+    assert owed_sessions(cfg, "futures_bars", date(2010, 12, 31)) == [date(2010, 6, 22)]
+
+
+def test_an_ine_receipt_after_its_own_route_ended_is_not_owed(cfg):
+    """From 2019 INE contracts arrive in the SHFE file; a 2021 INE receipt
+    left by an older routing must not keep 2021-07-28 owed."""
+    from cnequity.storage.derivative_evidence import owed_sessions, record_session
+
+    record_session(cfg, "futures_bars", date(2018, 12, 28), "INE", None, error="x")
+    record_session(cfg, "futures_bars", date(2021, 7, 28), "INE", None, error="x")
+
+    assert owed_sessions(cfg, "futures_bars", date(2021, 12, 31)) == [date(2018, 12, 28)]

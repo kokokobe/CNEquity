@@ -29,7 +29,10 @@ LEFTOVER_SECTION = N_("Other")
 
 SECTIONS: list[tuple[str, tuple[str, ...]]] = [
     (N_("Start here"), ("config", "doctor", "init")),
-    (N_("Run the pipeline"), ("run", "backfill", "derive", "repair")),
+    (
+        N_("Run the pipeline"),
+        ("run", "schedule", "backfill", "import", "derive", "repair", "migrate"),
+    ),
     (N_("Check the lake"), ("check", "status", "verify", "audit", "decision-data")),
     (N_("Use the lake"), ("query", "serve", "mcp")),
     (
@@ -81,6 +84,11 @@ def moved_hints(mapping: dict[str, str], base: type[click.Group] = click.Group) 
 
 
 logger = logging.getLogger("cnequity.cli")
+
+# Click prints a ClickException or UsageError itself right after this record is
+# logged; the terminal handler skips records carrying this mark so the message
+# is not shown twice. Log files and other handlers still get them.
+ECHOED_BY_CLICK = {"echoed_by_click": True}
 
 
 class _LoggedFailures(click.Group):
@@ -175,7 +183,9 @@ class _LoggedFailures(click.Group):
             return super().make_context(info_name, args, parent=parent, **extra)
         except click.UsageError as exc:
             if not extra.get("resilient_parsing"):
-                logger.warning("%s: %s", info_name or "cne", exc.format_message())
+                logger.warning(
+                    "%s: %s", info_name or "cne", exc.format_message(), extra=ECHOED_BY_CLICK
+                )
             raise
 
     def _already_logged(self, ctx: click.Context) -> bool:
@@ -192,15 +202,36 @@ class _LoggedFailures(click.Group):
             return super().invoke(ctx)
         except click.UsageError as exc:
             if not self._already_logged(ctx):
-                logger.warning("%s: %s", self._failed_command(ctx), exc.format_message())
+                logger.warning(
+                    "%s: %s",
+                    self._failed_command(ctx),
+                    exc.format_message(),
+                    extra=ECHOED_BY_CLICK,
+                )
             raise
         except click.ClickException as exc:
             if not self._already_logged(ctx):
-                logger.error("%s: %s", self._failed_command(ctx), exc.format_message())
+                logger.error(
+                    "%s: %s",
+                    self._failed_command(ctx),
+                    exc.format_message(),
+                    extra=ECHOED_BY_CLICK,
+                )
             raise
         except click.Abort:
             if not self._already_logged(ctx):
                 logger.warning(N_("%s: aborted"), self._failed_command(ctx))
+            raise
+        except KeyboardInterrupt:
+            # Click turns this into "Aborted!" once it leaves the command, which
+            # tells someone who pressed Ctrl-C an hour into `cne init` neither
+            # that the finished work survived nor how to pick it up again.
+            if not self._already_logged(ctx):
+                command = self._failed_command(ctx)
+                logger.warning(N_("%s: interrupted"), command, extra=ECHOED_BY_CLICK)
+                hint = _interrupt_hint(command)
+                if hint:
+                    click.echo(hint, err=True)
             raise
         except click.exceptions.Exit:
             # `--help` and `--version` leave this way, and Click's `Exit`
@@ -209,10 +240,50 @@ class _LoggedFailures(click.Group):
             # `SystemExit` never reached it (it is a BaseException), which is
             # why a non-zero exit from `status --datasets` stayed quiet.
             raise
-        except Exception:
+        except Exception as exc:
+            message = _expected_failure(exc)
+            if message is not None:
+                # The lake simply lacks something the command needs; the message
+                # already says what and how to build it, a traceback adds noise.
+                if not self._already_logged(ctx):
+                    logger.error(
+                        "%s: %s", self._failed_command(ctx), message, extra=ECHOED_BY_CLICK
+                    )
+                raise click.ClickException(message) from exc
             if not self._already_logged(ctx):
                 logger.exception(N_("%s: unhandled error"), self._failed_command(ctx))
             raise
+
+
+def _interrupt_hint(command: str) -> str | None:
+    """What a Ctrl-C left behind, for the commands that write the lake."""
+    if command == "init":
+        return _("Stopped. Run `cne init` again to resume; finished batches are kept.")
+    if command.split(" ", 1)[0] in {"run", "backfill", "derive", "repair"}:
+        return _(
+            "Stopped. Finished batches are kept and the run is recorded as interrupted; run the same command again to continue, and `cne status` shows what it finished."
+        )
+    return None
+
+
+def _expected_failure(exc: Exception) -> str | None:
+    """The message of a failure that is the lake's state, not a bug in the CLI.
+
+    A dataset that was never built (`ReaderError`) or a derive whose input is
+    absent (`InputUnavailableError`) reach the top of a command the same way a
+    defect does, and used to print a full traceback. Imported here because both
+    modules pull in the data stack, which `--help` must not pay for.
+    """
+    from cnequity.orchestrator.outcomes import InputUnavailableError
+    from cnequity.orchestrator.run_lock import RunLockError
+    from cnequity.query.reader import ReaderError
+    from cnequity.storage.lifecycle import LifecycleError
+
+    # Another job holding the lake is the lake's state too: `cne backfill`
+    # beside a running init printed the refusal under a traceback.
+    if isinstance(exc, ReaderError | InputUnavailableError | RunLockError | LifecycleError):
+        return str(exc)
+    return None
 
 
 class _TranslatedText:
@@ -320,6 +391,12 @@ class SectionedGroup(LocalizedHelpOption, TranslatedHelp, moved_hints(MOVED, bas
     command_class = CneCommand
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        if ctx.parent is not None:
+            # SECTIONS describe the top level. A subgroup inherits this class,
+            # and sectioning it filed `cne schedule status` under "Check the
+            # lake" beside a root command that merely shares its name.
+            super().format_commands(ctx, formatter)
+            return
         listed = self.list_commands(ctx)
         remaining = set(listed)
         sections: list[tuple[str, list[tuple[str, str]]]] = []

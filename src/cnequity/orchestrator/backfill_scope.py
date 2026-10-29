@@ -10,11 +10,8 @@ from cnequity.config import Config
 _REPAIR_FLAGS = {
     "baostock_repair": "_corporate_actions_baostock_repair",
     "ths_repair": "_corporate_actions_ths_repair",
-    "eastmoney_bj_repair": "_corporate_actions_eastmoney_bj_repair",
     "bse_tip_repair": "_bse_tip_repair",
-    "bj_amount_repair": "_bj_amount_repair",
     "tdx_amount_repair": "_tdx_amount_repair",
-    "tdx_volume_repair": "_tdx_volume_repair",
     "turnover_repair": "_turnover_repair",
     "turnover_peer_review": "_turnover_peer_review",
 }

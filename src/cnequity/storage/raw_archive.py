@@ -592,6 +592,168 @@ class RawPayloadArchive:
         _reject_symlink_path(self.meta_root, label="metadata root")
         _reject_symlink_path(self.root, label="raw root")
 
+    def external_locations(self) -> list[dict[str, Any]]:
+        """Read lake-local locations; sidecars and logical paths stay portable."""
+        self._validate_roots()
+        path = self.meta_root / "raw_storage.json"
+        if _lstat(path) is None:
+            return []
+        value = _read_json_object(path, label="storage locations")
+        if value.get("schema_version") != 1 or not isinstance(value.get("locations"), list):
+            raise RawArchiveError("invalid raw storage locations")
+        seen = set()
+        for location in value["locations"]:
+            if not isinstance(location, dict):
+                raise RawArchiveError("invalid raw storage location")
+            prefix = Path(str(location.get("prefix", "")))
+            root = Path(str(location.get("root", ""))).expanduser()
+            formats = location.get("formats")
+            if (
+                len(prefix.parts) != 3
+                or prefix.parts[0] != "raw"
+                or _safe_component(prefix.parts[1], "") != prefix.parts[1]
+                or not prefix.parts[2].startswith("source=")
+                or _safe_component(prefix.parts[2][7:], "") != prefix.parts[2][7:]
+                or prefix.as_posix() in seen
+                or not root.is_absolute()
+                or ".." in root.parts
+                or not isinstance(formats, list)
+                or not formats
+                or any(not isinstance(f, str) or not re.fullmatch(r"[a-z_]+", f) for f in formats)
+            ):
+                raise RawArchiveError("invalid raw storage location")
+            _reject_symlink_path(root, label="external root")
+            lake = self.meta_root.absolute().parent
+            if root == lake or lake in root.parents or root in self.meta_root.absolute().parents:
+                raise RawArchiveError("external raw storage must be outside the lake")
+            seen.add(prefix.as_posix())
+        return value["locations"]
+
+    def register_external(
+        self, dataset: str, source: str, root: Path | str, *, formats: tuple[str, ...] = ("pdf",)
+    ) -> dict[str, Any]:
+        """Register an existing external folder without moving or deleting bytes.
+
+        Registration affects new payloads of the selected formats. All readers,
+        including ones constructed before registration, resolve old logical
+        paths through the same lake-local file. Existing local bytes remain
+        readable while an operator copies and verifies the external archive.
+        """
+        from cnequity.file_lock import lake_mutation_lock
+
+        if (
+            not dataset
+            or not source
+            or _safe_component(dataset, "") != dataset
+            or _safe_component(source, "") != source
+        ):
+            raise RawArchiveError("invalid external archive dataset or source")
+        root = Path(root).expanduser().absolute()
+        if ".." in root.parts:
+            raise RawArchiveError("external raw storage root must not contain '..'")
+        _reject_symlink_path(root, label="external root")
+        if not root.is_dir():
+            raise RawArchiveError(f"external raw storage is unavailable: {root}")
+        location = {
+            "prefix": f"raw/{dataset}/source={source}",
+            "root": str(root),
+            "formats": list(formats),
+        }
+        # Validate a proposed location with exactly the same rules as readers.
+        if not formats or any(
+            not isinstance(f, str) or not re.fullmatch(r"[a-z_]+", f) for f in formats
+        ):
+            raise RawArchiveError("invalid external payload formats")
+        lake = self.meta_root.absolute().parent
+        if root == lake or lake in root.parents or root in self.meta_root.absolute().parents:
+            raise RawArchiveError("external raw storage must be outside the lake")
+        with lake_mutation_lock(self.meta_root):
+            locations = self.external_locations()
+            previous = next((x for x in locations if x["prefix"] == location["prefix"]), None)
+            if previous is not None and previous != location:
+                raise RawArchiveError(
+                    "external location already registered; migrate it before changing"
+                )
+            if previous is None:
+                locations.append(location)
+                write_json_atomic(
+                    self.meta_root / "raw_storage.json",
+                    {"schema_version": 1, "locations": locations},
+                    indent=2,
+                )
+        return location
+
+    def payload_file(self, relative: str | Path, *, writing_format: str | None = None) -> Path:
+        """Resolve a logical payload path without weakening no-follow checks."""
+        relative = Path(relative)
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise RawArchiveError(f"unsafe raw archive path: {relative}")
+        local = _safe_archive_path(self.meta_root, relative, label="payload")
+        for location in self.external_locations():
+            prefix = Path(location["prefix"])
+            if prefix not in relative.parents:
+                continue
+            root = Path(location["root"])
+            external = _safe_archive_path(root, relative, label="external payload")
+            selected = writing_format in location["formats"] if writing_format else False
+            if writing_format and not selected:
+                return local
+            # Readers and immutable re-archives must agree while old local
+            # payloads are being copied. Never validate an external copy and
+            # then return a receipt whose preferred local bytes are corrupt.
+            if _lstat(local) is not None:
+                return local
+            if not root.is_dir():
+                raise RawArchiveError(f"external raw storage is unavailable: {root}")
+            return external
+        return local
+
+    def export_files(self, dataset: str) -> dict[Path, Path]:
+        """Materialize the logical raw tree, including external payloads.
+
+        Portable snapshots deliberately omit the machine's location registry.
+        A missing external volume must fail instead of producing a baseline
+        whose source sidecars silently point to absent evidence.
+        """
+        if not dataset or _safe_component(dataset, "") != dataset:
+            raise RawArchiveError("invalid raw archive dataset")
+        result = {p.relative_to(self.meta_root): p for p in _files_no_follow(self.root / dataset)}
+        for location in self.external_locations():
+            prefix = Path(location["prefix"])
+            if prefix.parts[1] != dataset:
+                continue
+            root = Path(location["root"])
+            if not root.is_dir():
+                raise RawArchiveError(f"external raw storage is unavailable: {root}")
+            for path in _files_no_follow(root / prefix):
+                relative = path.relative_to(root)
+                if relative in result:
+                    existing = result[relative]
+                    if existing.stat().st_size != path.stat().st_size:
+                        raise RawArchiveError(f"conflicting raw payload copies: {relative}")
+                    with existing.open("rb") as a, path.open("rb") as b:
+
+                        def checksum(stream):
+                            hashed = hashlib.sha256()
+                            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                                hashed.update(block)
+                            return hashed.digest()
+
+                        if checksum(a) != checksum(b):
+                            raise RawArchiveError(f"conflicting raw payload copies: {relative}")
+                else:
+                    result[relative] = path
+        for relative, path in list(result.items()):
+            if relative.suffix != ".json":
+                continue
+            record = _read_json_object(path, label="metadata")
+            if record.get("schema_version") == _ARCHIVE_SCHEMA_VERSION and record.get(
+                "payload_path"
+            ):
+                if Path(record["payload_path"]) not in result:
+                    raise RawArchiveError(f"missing raw archive payload: {record['payload_path']}")
+        return result
+
     def archive(
         self,
         dataset: str,
@@ -632,12 +794,14 @@ class RawPayloadArchive:
         if (
             compression == "gzip"
             and fmt in _STORED_UNCOMPRESSED_FORMATS
-            and _lstat(base / f"{digest}.gz") is None
+            and _lstat(self.payload_file((base / f"{digest}.gz").relative_to(self.meta_root)))
+            is None
         ):
             compression = "none"
         compressed = gzip.compress(raw, mtime=0) if compression == "gzip" else raw
         suffix = ".gz" if compression == "gzip" else ".bin"
-        payload_path = base / f"{digest}{suffix}"
+        relative_payload = (base / f"{digest}{suffix}").relative_to(self.meta_root)
+        payload_path = self.payload_file(relative_payload, writing_format=fmt)
         # The payload itself remains content addressed.  A caller that needs
         # to account for two observations of the same bytes (CNINFO page 1
         # and page 2 can be identical) may request a deterministic observation
@@ -665,7 +829,7 @@ class RawPayloadArchive:
             payload_bytes=len(raw),
             compressed_bytes=len(compressed),
         )
-        relative_payload = payload_path.relative_to(self.meta_root).as_posix()
+        relative_payload = relative_payload.as_posix()
         relative_metadata = metadata_path.relative_to(self.meta_root).as_posix()
         record = RawPayloadRecord(
             dataset=str(dataset),
@@ -850,17 +1014,33 @@ class RawPayloadArchive:
             )
             if _lstat(metadata_path) is not None:
                 _reject_regular_file(metadata_path, label="metadata")
-        path = _safe_archive_path(self.meta_root, Path(relative), label="payload")
-        if _lstat(path) is None:
-            raise FileNotFoundError(path)
-        _reject_regular_file(path, label="payload")
-        return _verify_stored_payload(
-            path,
-            digest=digest or None,
-            compression=compression,
-            payload_bytes=expected_payload_bytes,
-            compressed_bytes=expected_compressed_bytes,
-        )
+        path = self.payload_file(relative)
+        try:
+            return _verify_stored_payload(
+                path,
+                digest=digest or None,
+                compression=compression,
+                payload_bytes=expected_payload_bytes,
+                compressed_bytes=expected_compressed_bytes,
+            )
+        except (FileNotFoundError, RawArchiveError) as exc:
+            # A verified migration may retire the local copy between resolve
+            # and open. Retry only if it now resolves to a different location;
+            # corruption is never hidden by falling back to another copy.
+            if isinstance(exc, RawArchiveError) and not isinstance(
+                exc.__cause__, FileNotFoundError
+            ):
+                raise
+            relocated = self.payload_file(relative)
+            if relocated == path:
+                raise
+            return _verify_stored_payload(
+                relocated,
+                digest=digest or None,
+                compression=compression,
+                payload_bytes=expected_payload_bytes,
+                compressed_bytes=expected_compressed_bytes,
+            )
 
     def replay(
         self,

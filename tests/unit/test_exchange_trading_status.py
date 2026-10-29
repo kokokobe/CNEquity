@@ -3,13 +3,9 @@
 Its daily feed is EastMoney's current-state board, and the in-step fallback was
 this lake's own previous snapshot — the same opinion a day older, not a second
 one. The exchanges publish both facts the dataset needs in the board file the
-daily-bar route already reads: a halted security is listed with its
-open/high/low at zero beside a reference close, and ST is carried in 证券简称.
-
-Measured against the EastMoney rows for 2026-09-15 over 5,219 comparable
-symbols: ST agreed on 100.000%, halts on 99.923%, and all four disagreements
-were EastMoney calling a name halted while the exchange published a full
-session for it.
+daily-bar route already reads: a halted security is listed beside a reference
+close with zeroed open/high/low (Shanghai) or no volume (Shenzhen), and ST is
+carried in 证券简称.
 """
 
 from __future__ import annotations
@@ -38,6 +34,53 @@ def test_a_limit_locked_session_is_not_a_halt():
 
     assert row["is_trading"] is True
     assert row["status"] == STATUS_NORMAL
+
+
+def test_a_shenzhen_session_without_volume_is_a_halt():
+    """SZSE repeats the reference close in every price of a halted name.
+
+    2026-10-22: *ST康佳A at 2.46/2.46/2.46/2.46 with 0.00 万股, halted since
+    10-12 ahead of its 10-23 delisting; reading only zeroed prices published it
+    as trading.
+    """
+    row = mod._row("000016.SZ", "*ST康佳A", DAY, (2.46, 2.46, 2.46), 2.46, 0.0)
+
+    assert row["is_trading"] is False
+    assert row["status"] == STATUS_SUSPENDED
+    traded = mod._row("000016.SZ", "*ST康佳A", DAY, (2.46, 2.46, 2.46), 2.46, 0.01)
+    assert traded["status"] == STATUS_NORMAL, "one lot is a session, however still"
+
+
+def test_szse_board_halts_reach_the_status_rows(monkeypatch):
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        [
+            {
+                "证券代码": "000016",
+                "证券简称": "*ST康佳A",
+                "开盘": "2.46",
+                "最高": "2.46",
+                "最低": "2.46",
+                "今收": "2.46",
+                "成交量(万股)": "0.00",
+            },
+            {
+                "证券代码": "000001",
+                "证券简称": "平安银行",
+                "开盘": "11",
+                "最高": "12",
+                "最低": "10",
+                "今收": "11.5",
+                "成交量(万股)": "1,024.50",
+            },
+        ]
+    )
+    monkeypatch.setattr(mod, "szse_report", lambda day, config=None, client_factory=None: frame)
+
+    rows = {row["symbol"]: row["status"] for row in mod._fetch_szse(DAY)}
+
+    assert rows == {"000016.SZ": STATUS_SUSPENDED, "000001.SZ": STATUS_NORMAL}
 
 
 def test_the_risk_warning_comes_from_the_name():
@@ -337,3 +380,277 @@ def test_the_board_reading_is_snapshotted_every_session(tmp_path, monkeypatch):
     assert snapshot.get_column("source").to_list() == ["exchange"]
     curated = cfg.curated_root / "trading_status"
     assert not curated.exists() or not any(curated.rglob("*.parquet")), "authority is unchanged"
+
+
+# --- ETFs and LOFs -------------------------------------------------------------
+# EastMoney was the only feed that answered for funds. With it down the equity
+# boards cover stocks only, so ~2,000 traded funds a day had no status row and
+# the audit failed every run. The fund boards fill that, but only as far as they
+# can prove: a fund that traded is `normal`; one that did not is simply unknown.
+
+
+def _sse_fund_payload(*items):
+    return {"date": 20260915, "time": 153000, "list": [list(i) for i in items]}
+
+
+def _szse_fund_workbook(*records):
+    import io
+
+    import pandas as pd
+
+    book = io.BytesIO()
+    pd.DataFrame(
+        [
+            {
+                "交易日期": DAY.isoformat(),
+                "证券代码": code,
+                "证券简称": "某某ETF",
+                "前收": "1.000",
+                "今收": "1.010",
+                "成交金额(元)": amount,
+            }
+            for code, amount in records
+        ]
+    ).to_excel(book, index=False)
+    return book.getvalue()
+
+
+class _FundClient:
+    def __init__(self, sse_items, szse_records):
+        self.calls: list[str] = []
+        self._sse = sse_items
+        self._szse = szse_records
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        client = self
+
+        class Response:
+            content = b"" if "yunhq" in url else _szse_fund_workbook(*client._szse)
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return _sse_fund_payload(*client._sse)
+
+        return Response()
+
+
+def test_a_fund_that_traded_is_normal_and_one_that_did_not_is_unknown(monkeypatch):
+    client = _FundClient(
+        sse_items=[
+            ("510300", "沪深300ETF", 4.0, 4.1, 3.9, 4.0, 1000, 4000, 3.95),
+            ("510310", "无成交ETF", 0.0, 0.0, 0.0, 1.0, 0, 0, 1.0),
+            ("501018", "南方原油LOF", 1.0, 1.1, 0.9, 1.0, 500, 500, 1.0),
+            # A subscription stub, not a tradable fund.
+            ("510301", "沪深300ETF申赎", 4.0, 4.1, 3.9, 4.0, 100, 400, 3.95),
+        ],
+        szse_records=[("159915", "1,232,924.85"), ("159000", "0.000"), ("000001", "5.0")],
+    )
+    monkeypatch.setattr(mod, "_client", lambda: client)
+
+    result = mod.fetch_fund_trading_status_exchange(None, DAY, config=None)
+
+    assert result.covered == {"sse", "szse"}
+    assert sorted(result.rows.get_column("symbol").to_list()) == [
+        "159915.SZ",
+        "501018.SH",
+        "510300.SH",
+    ]
+    assert result.rows.get_column("is_trading").all()
+    assert set(result.rows.get_column("status")) == {STATUS_NORMAL}
+    assert result.rows.get_column("risk_warning").to_list() == [False] * 3
+    assert set(result.rows.columns) == {
+        "symbol",
+        "trade_date",
+        "is_trading",
+        "status",
+        "risk_warning",
+    }
+    assert any("exchange/fund" in url for url in client.calls)
+    assert any("1815_stock_lf_snapshot" in url for url in client.calls)
+
+
+def test_the_fund_boards_follow_the_requested_scope_and_survive_one_failing(monkeypatch):
+    monkeypatch.setattr(
+        mod,
+        "_fetch_sse_funds",
+        lambda day, config=None: [mod._fund_row("510300.SH", day), mod._fund_row("510050.SH", day)],
+    )
+
+    def boom(day, config=None):
+        raise RuntimeError("Connection reset by peer")
+
+    monkeypatch.setattr(mod, "_fetch_szse_funds", boom)
+
+    result = mod.fetch_fund_trading_status_exchange({"510300.SH"}, DAY, config=None)
+
+    assert result.covered == {"sse"}
+    assert "szse" in result.failures
+    assert result.rows.get_column("symbol").to_list() == ["510300.SH"]
+
+
+def test_both_fund_boards_failing_is_empty_rather_than_an_exception(monkeypatch):
+    for name in ("_fetch_sse_funds", "_fetch_szse_funds"):
+        monkeypatch.setattr(
+            mod, name, lambda day, config=None: (_ for _ in ()).throw(RuntimeError("down"))
+        )
+
+    result = mod.fetch_fund_trading_status_exchange(None, DAY, config=None)
+
+    assert result.is_empty
+    assert result.covered == frozenset()
+
+
+def test_a_fund_board_for_another_session_is_refused(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"date": "20260914", "time": 153000, "list": [["510300"]]}
+
+    monkeypatch.setattr(
+        mod, "_client", lambda: type("C", (), {"get": lambda *a, **k: Response()})()
+    )
+
+    with pytest.raises(ValueError, match="serves 2026-09-14"):
+        mod._fetch_sse_funds(DAY, config=None)
+
+
+def test_an_outage_day_gives_traded_funds_a_first_hand_row(tmp_path, monkeypatch):
+    from cnequity.config import Config
+    from cnequity.orchestrator.manifest import Manifest
+    from cnequity.steps import reference
+
+    cfg = Config(data_root=tmp_path / "data", workers=1)
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True)
+    symbols = ["600519.SH", "510300.SH", "159915.SZ", "159000.SZ"]
+    pl.DataFrame(
+        {
+            "symbol": symbols,
+            "name": ["贵州茅台", "沪深300ETF", "创业板ETF", "无成交ETF"],
+            "exchange": ["SH", "SH", "SZ", "SZ"],
+            "asset_type": ["stock", "etf", "etf", "etf"],
+            "list_date": [
+                date(2001, 8, 27),
+                date(2012, 5, 28),
+                date(2011, 12, 9),
+                date(2010, 1, 4),
+            ],
+            "delist_date": [None] * 4,
+        }
+    ).write_parquet(instruments / "part-merged.parquet")
+
+    monkeypatch.setattr(
+        reference,
+        "fetch_trading_status",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("outage")),
+    )
+    monkeypatch.setattr(
+        "cnequity.adapters.exchange.trading_status.fetch_trading_status_exchange",
+        lambda symbols, day, config=None: mod.ExchangeStatusResult(
+            rows=pl.DataFrame(
+                [mod._row("600519.SH", "贵州茅台", day, (1.0, 1.1, 0.9), 1.0)],
+                schema_overrides={"risk_warning": pl.Boolean},
+            ),
+            covered=frozenset({"sse", "szse"}),
+            failures={},
+        ),
+    )
+    asked: list[list[str]] = []
+
+    def funds(symbols, day, config=None):
+        asked.append(sorted(symbols))
+        return mod.ExchangeStatusResult(
+            rows=pl.DataFrame(
+                [mod._fund_row("510300.SH", day), mod._fund_row("159915.SZ", day)],
+                schema_overrides={"risk_warning": pl.Boolean},
+            ),
+            covered=frozenset({"sse", "szse"}),
+            failures={},
+        )
+
+    monkeypatch.setattr(
+        "cnequity.adapters.exchange.trading_status.fetch_fund_trading_status_exchange", funds
+    )
+
+    run_id = Manifest(cfg.manifest_path).start_run("test")
+    reference.step_trading_status(cfg, DAY, run_id, {})
+
+    staged = pl.concat(
+        [
+            pl.read_parquet(path)
+            for path in (cfg.staging_root / "trading_status" / f"run_id={run_id}").glob("*.parquet")
+        ],
+        how="diagonal_relaxed",
+    )
+    # Once for the outage fallback, once for the daily exchange snapshot; the
+    # board payload is cached per session, so the second costs no request.
+    assert asked == [["159000.SZ", "159915.SZ", "510300.SH"]] * 2
+    owners = dict(zip(staged["symbol"].to_list(), staged["source"].to_list(), strict=True))
+    assert owners["510300.SH"] == "exchange"
+    assert owners["159915.SZ"] == "exchange"
+    # No turnover, no evidence, and no cache to carry: unknown, not suspended.
+    assert "159000.SZ" not in owners
+
+
+def _status_result(*symbols, day):
+    from cnequity.adapters.exchange.trading_status import ExchangeStatusResult
+
+    rows = pl.DataFrame(
+        {
+            "symbol": list(symbols),
+            "trade_date": [day] * len(symbols),
+            "is_trading": [True] * len(symbols),
+            "status": ["normal"] * len(symbols),
+            "risk_warning": [False] * len(symbols),
+        },
+        schema={
+            "symbol": pl.Utf8,
+            "trade_date": pl.Date,
+            "is_trading": pl.Boolean,
+            "status": pl.Utf8,
+            "risk_warning": pl.Boolean,
+        },
+    )
+    return ExchangeStatusResult(rows=rows, covered=frozenset({"sse", "szse"}), failures={})
+
+
+@pytest.mark.parametrize("fund_board_up", [True, False])
+def test_the_daily_exchange_snapshot_records_traded_funds_too(tmp_path, monkeypatch, fund_board_up):
+    from cnequity.config import Config
+    from cnequity.quality import failover
+    from cnequity.storage.layout import init_data_layout
+    from cnequity.storage.source_snapshots import SnapshotStore
+
+    day = date(2026, 9, 18)
+    cfg = Config(data_root=tmp_path / "data", sources={"exchange": True})
+    init_data_layout(cfg)
+    asked: dict = {}
+
+    def fake_funds(symbols, trade_date, *, config=None):
+        asked["funds"] = sorted(symbols)
+        if not fund_board_up:
+            raise RuntimeError("fund board down")
+        return _status_result("510300.SH", day=day)
+
+    monkeypatch.setattr(
+        "cnequity.adapters.exchange.trading_status.fetch_fund_trading_status_exchange", fake_funds
+    )
+
+    written = failover.snapshot_trading_status_exchange(
+        cfg,
+        trade_date=day,
+        symbols=["600519.SH", "510300.SH", "159915.SZ"],
+        run_id="run-1",
+        prefetched=_status_result("600519.SH", day=day),
+    )
+
+    assert asked["funds"] == ["159915.SZ", "510300.SH"]
+    expected = ["510300.SH", "600519.SH"] if fund_board_up else ["600519.SH"]
+    assert written == len(expected)
+    snapshot = SnapshotStore(cfg.meta_root).read_latest("trading_status", source="exchange")
+    assert sorted(snapshot.get_column("symbol").to_list()) == expected

@@ -11,7 +11,7 @@ pip install cnequity
 cne init
 ```
 
-The first run generates `configs/cnequity.toml` and writes data to `data/cnequity/` under the current directory (the config records the absolute path); an existing config is reused as is, and there is no need to run `cne config create` first. It then builds the core of the last 3 years for the whole Shanghai, Shenzhen and Beijing market: securities, calendar, corporate actions, stock and index daily bars, adjustment factors and industry indices. It automatically recovers daily bars for known delisted stocks within the window, fetches the current trading status and derives historical suspensions, then audits and publishes.
+The first run generates the per-user config `~/.config/cnequity/config.toml` and writes data to `data/cnequity/` under the current directory (the config records the absolute path); an existing config is reused as is, and there is no need to run `cne config create` first. It then builds the core of the last 3 years for the whole Shanghai, Shenzhen and Beijing market: securities, calendar, corporate actions, stock and index daily bars, adjustment factors and industry indices. It automatically recovers daily bars for known delisted stocks within the window, fetches the current trading status and derives historical suspensions, then audits and publishes.
 
 Full-market initialization can take several hours and has no fixed completion time; the terminal prints batch progress and an ETA in real time. Once a batch of daily bars is sealed, you do not have to wait for the full market to finish: `load("daily_bars", symbols=["600519.SH"])` can read that stock's unadjusted daily bars. Queries without `symbols` still see only published data; adjustment factors are published only at the end of initialization.
 
@@ -33,7 +33,7 @@ cne query --sql "SELECT symbol, trade_date, close, source FROM daily_bars ORDER 
 cne check
 ```
 
-`cne check` gives a verdict on freshness and coverage, data quality and size in one command. `load` and the `cne` commands read `configs/cnequity.toml` in the current directory by default. `fresh` only means the dates already written to disk are recent enough; it does not mean the history is complete.
+`cne check` gives a verdict on freshness and coverage, data quality and size in one command. `load` and the `cne` commands find this config from any directory (a `configs/cnequity.toml` in the current directory takes precedence); `cne config path` shows which one is in use. `fresh` only means the dates already written to disk are recent enough; it does not mean the history is complete.
 
 ## 3. Check in the browser {#browser}
 
@@ -75,11 +75,11 @@ Minute bars, trade ticks and per-contract derivatives are off by default. For hi
 
 ## Just want to try a few stocks first
 
-When you do not want to build a full-market lake, `--profile demo` uses real data sources to write 5 stocks and roughly the last 30 trading days into a separate `data/cnequity-demo/`, with config `configs/cnequity.demo.toml`; `--profile sample` generates synthetic data of the same shape offline (`source=mock`), and is only for verifying the installation. Neither affects the production lake, and neither replaces full-market initialization.
+When you do not want to build a full-market lake, `--profile demo` uses real data sources to write 5 stocks and roughly the last 30 trading days into a separate `data/cnequity-demo/`, with config `configs/cnequity.demo.toml`; `--profile sample` generates synthetic data of the same shape offline (`source=mock`) into `data/cnequity-sample/` with config `configs/cnequity.sample.toml`, and is only for verifying the installation. Neither affects the production lake, and neither replaces full-market initialization.
 
 ```bash
 cne init --profile demo
-cne init --profile sample --data-root data/cnequity-sample --config-out configs/cnequity.sample.toml
+cne init --profile sample
 ```
 
 When the demo finishes it prints a `claude mcp add ...` command with the config's absolute path; copy it to hand this small lake to an AI agent, and see [MCP integration](../reference/mcp.md) for other clients. Run `cne serve --config configs/cnequity.demo.toml` to browse it; the dashboard only evaluates the datasets a demo lake actually holds.

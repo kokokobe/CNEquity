@@ -174,8 +174,14 @@ def _load_daily_bar_dates(
     *,
     start: date | None = None,
     symbols: list[str] | None = None,
+    factor_tasks: set[str] | None = None,
 ) -> pl.DataFrame:
-    """Load symbol×trade_date pairs from daily_bars (lazy hive scan when possible)."""
+    """Load symbol×trade_date pairs from daily_bars (lazy hive scan when possible).
+
+    ``factor_tasks`` names symbols already carrying factors. A slice that starts
+    at *start* can hold only a suspension's zero-volume rows, which says nothing
+    about whether the symbol ever traded; those symbols keep their rows.
+    """
     # Lazy import: query.reader imports STORED_ADJUST_TYPE from this module.
     from cnequity.query.parquet_scan import collect_parquet_root
 
@@ -207,6 +213,10 @@ def _load_daily_bar_dates(
             .collect()
         )
         traded_symbols = set(traded.get_column("symbol").unique().to_list())
+        # The traded check only sees this slice. On the second session of a
+        # suspension the incremental slice is all placeholders, and dropping
+        # the symbol here left every later suspended session without a factor.
+        traded_symbols |= factor_tasks or set()
         bars = bars.filter(pl.col("symbol").is_in(traded_symbols))
         if bars.is_empty():
             return _EMPTY_BAR_DATES.clone()
@@ -250,10 +260,12 @@ def _bars_for_derive(
         return _load_daily_bar_dates(config)
 
     frames: list[pl.DataFrame] = []
-    # New trading days since the last derived partition.
-    incremental = _load_daily_bar_dates(config, start=watermark).filter(
-        pl.col("trade_date") > watermark
-    )
+    # New trading days since the last derived partition. A symbol on the
+    # watermark partition is an established factor task even when every new
+    # session of it is a suspended placeholder.
+    incremental = _load_daily_bar_dates(
+        config, start=watermark, factor_tasks=_factor_partition_symbols(config, watermark)
+    ).filter(pl.col("trade_date") > watermark)
     if not incremental.is_empty():
         frames.append(incremental)
     # The watermark records only the latest partition date, not whether that
@@ -294,11 +306,24 @@ def _bars_missing_factor_partition(config: Config, watermark: date) -> pl.DataFr
     if not dataset_has_parquet(part):
         return bars
 
-    factors = pl.concat(
-        [pl.read_parquet(path).select("symbol") for path in sorted(part.rglob("*.parquet"))],
-        how="diagonal_relaxed",
-    ).unique()
+    factors = pl.DataFrame(
+        {"symbol": sorted(_factor_partition_symbols(config, watermark))}, schema={"symbol": pl.Utf8}
+    )
     return bars.join(factors, on="symbol", how="anti")
+
+
+def _factor_partition_symbols(config: Config, day: date) -> set[str]:
+    """Symbols with a row in the ``adj_factors`` partition for *day*."""
+    from cnequity.query.parquet_scan import dataset_has_parquet
+
+    part = config.derived_root / "adj_factors" / f"trade_date={day.isoformat()}"
+    if not dataset_has_parquet(part):
+        return set()
+    return {
+        symbol
+        for path in sorted(part.rglob("*.parquet"))
+        for symbol in pl.read_parquet(path, columns=["symbol"])["symbol"].to_list()
+    }
 
 
 def _align_factors_to_bars(
@@ -436,6 +461,12 @@ def _uncovered_symbols(config: Config) -> set[str]:
     do not imply equal coverage. Later bars belong to the normal incremental
     path, so they do not trigger a full-history refresh. Only missing symbols
     are collected into Python; the key comparison runs in Polars streaming.
+
+    Suspended placeholders count once the symbol has traded: they need the
+    carried factor, and an incremental slice made only of them used to be
+    skipped, so a suspension could sit behind the watermark with no factor
+    past its first session. Placeholders after a catalogue delisting are
+    excluded, because the derive never writes them.
     """
     from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
@@ -479,12 +510,33 @@ def _uncovered_symbols(config: Config) -> set[str]:
         pl.col("fac_first").is_null() | (pl.col("fac_first") > pl.col("bar_first"))
     )
     # Factors legitimately include suspended sessions. Counting those rows can
-    # mask holes in traded dates even when both endpoints match. Restrict the
-    # exact comparison to established factor history, excluding terminal lag.
+    # mask holes in traded dates even when both endpoints match, so compare
+    # actual keys: every bar from the first traded session through the later
+    # of the symbol's last factor and the day before the global watermark.
+    # Later sessions are the incremental path's (terminal lag), and the
+    # watermark date itself is `_bars_missing_factor_partition`'s.
+    watermark = _adj_factors_watermark(config)
+    spans = joined.filter(pl.col("fac_last").is_not_null()).select(
+        "symbol",
+        "bar_first",
+        (
+            pl.max_horizontal(
+                pl.col("fac_last"), pl.lit(watermark - timedelta(days=1), dtype=pl.Date)
+            )
+            if watermark is not None
+            else pl.col("fac_last")
+        ).alias("_through"),
+    )
+    delisted = _delist_bounds(config)
+    if delisted is not None:
+        spans = spans.join(delisted, on="symbol", how="left").with_columns(
+            pl.min_horizontal(pl.col("_through"), pl.col("_delist")).alias("_through")
+        )
     internal = (
-        bars.select("symbol", "trade_date")
-        .join(fac_span.select("symbol", "fac_last").lazy(), on="symbol", how="inner")
-        .filter(pl.col("trade_date") <= pl.col("fac_last"))
+        scan_parquet_root(bars_root)
+        .select("symbol", "trade_date")
+        .join(spans.select("symbol", "bar_first", "_through").lazy(), on="symbol", how="inner")
+        .filter(pl.col("trade_date").is_between(pl.col("bar_first"), pl.col("_through")))
         .select("symbol", "trade_date")
         .join(factor_rows.select("symbol", "trade_date"), on=["symbol", "trade_date"], how="anti")
         .select("symbol")
@@ -514,6 +566,20 @@ def _uncovered_symbols(config: Config) -> set[str]:
             # every uncovered symbol would schedule non-priced factor fetches.
             candidates &= priced
     return candidates
+
+
+def _delist_bounds(config: Config) -> pl.DataFrame | None:
+    """``(symbol, _delist)`` for catalogued delistings, or None without a catalogue."""
+    from cnequity.storage.instrument_catalog import load_curated_instruments
+
+    instruments = load_curated_instruments(config)
+    if instruments is None or "delist_date" not in instruments.columns:
+        return None
+    return (
+        instruments.filter(pl.col("delist_date").is_not_null())
+        .select("symbol", pl.col("delist_date").cast(pl.Date).alias("_delist"))
+        .unique(subset=["symbol"], keep="last")
+    )
 
 
 def _stale_cache_symbols(config: Config, through: date) -> set[str]:

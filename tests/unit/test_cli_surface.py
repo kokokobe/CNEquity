@@ -85,6 +85,7 @@ def test_the_run_group_carries_the_whole_run_lifecycle():
         "retry",
         "compact",
         "clean",
+        "maintain",
     }
 
 

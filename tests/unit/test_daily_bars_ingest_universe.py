@@ -919,7 +919,7 @@ def test_an_ex_date_fund_code_cannot_re_enter_the_bar_fetch_scope(tmp_path, monk
     `corporate_actions` carries 348 ETF/LOF codes, and a fund's bars are a NAV
     series — a close with zero volume and zero turnover on every session, which
     every liquidity screen and turnover aggregate then reads as market data.
-    Those are exactly the rows `migrate_drop_nav_series_bars.py` had to delete,
+    Those are exactly the rows the old NAV-series cleanup had to delete,
     so the list is scoped where it is built.
     """
     from cnequity.steps import events

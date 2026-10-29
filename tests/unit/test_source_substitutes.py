@@ -47,6 +47,14 @@ def test_a_healthy_lake_has_nothing_to_substitute():
     assert "没有需要替换" in sub.render_substitutions([])[0]
 
 
+@pytest.mark.usefixtures("chinese_output")
+def test_nothing_probed_is_not_reported_as_healthy():
+    report = _report(*(_result(p.key, "skipped") for p in sub.PROBES))
+    assert sub.substitution_report(report) == []
+    line = sub.render_substitutions([], probed_any=False)[0]
+    assert "没有探测任何端点" in line and "没有需要替换" not in line
+
+
 def test_the_measured_outage_reads_as_one_endpoint_not_one_vendor():
     """push2his down, push2 serving: EastMoney is impaired for daily_bars, and
     five independent vendors are still available for it."""

@@ -238,8 +238,13 @@ def _independent(verdict: SourceVerdict, down: set[str]) -> bool:
     return bool(set(verdict.failure_domains) - down)
 
 
-def render_substitutions(entries: list[DatasetSubstitution]) -> list[str]:
-    """Human-readable lines; a reassuring one when nothing is failing."""
+def render_substitutions(
+    entries: list[DatasetSubstitution], *, probed_any: bool = True
+) -> list[str]:
+    """Human-readable lines; a reassuring one only when something was probed and nothing failed."""
+    if not entries and not probed_any:
+        # All skipped (disabled sources, a sample lake): there is nothing to vouch for.
+        return [_("No endpoint was probed (every source was skipped), so nothing can be compared.")]
     if not entries:
         return [_("Every probed endpoint is available; no source needs replacing.")]
     lines: list[str] = []

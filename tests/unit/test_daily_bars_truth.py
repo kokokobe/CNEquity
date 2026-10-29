@@ -212,26 +212,6 @@ def test_incremental_negative_evidence_ttl_is_configurable(tmp_path):
     assert validate_config(cfg) == []
 
 
-def test_streamed_identity_matches_legacy_json_bytes():
-    import hashlib
-    import json
-
-    from cnequity.steps.common import _row_fingerprint
-
-    rows = [
-        {"symbol": "测试.BJ", "day": date(2026, 9, 15), "flag": None},
-        {"symbol": 'a\\"', "day": datetime(2026, 9, 16, tzinfo=timezone.utc), "flag": False},
-    ]
-    normalized = [
-        {k: v.isoformat() if isinstance(v, date) else v for k, v in row.items()} for row in rows
-    ]
-    expected = hashlib.sha256(
-        json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
-    assert _row_fingerprint(iter(rows)) == expected
-    assert _row_fingerprint(iter(())) == hashlib.sha256(b"[]").hexdigest()
-
-
 def test_empty_negative_cache_skips_full_status_identity(tmp_path, monkeypatch):
     from cnequity.steps.common import load_negative_evidence
 
@@ -240,11 +220,88 @@ def test_empty_negative_cache_skips_full_status_identity(tmp_path, monkeypatch):
     def unexpected(*args):
         raise AssertionError("empty cache must not scan the lake")
 
-    monkeypatch.setattr("cnequity.steps.common._instrument_identity", unexpected)
+    monkeypatch.setattr("cnequity.steps.common._status_files_identity", unexpected)
+    monkeypatch.setattr("cnequity.steps.common.instrument_metadata", unexpected)
     assert load_negative_evidence(cfg, "daily_bars") == []
 
 
-def test_live_negative_cache_still_validates_identity(tmp_path, monkeypatch):
+def _listing(**spans: date | None) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "symbol": list(spans),
+            "list_date": list(spans.values()),
+            "delist_date": [None] * len(spans),
+            "asset_type": ["stock"] * len(spans),
+        },
+        schema_overrides={"list_date": pl.Date, "delist_date": pl.Date},
+    )
+
+
+def _write_status(cfg: Config, is_trading: bool) -> None:
+    import os
+
+    part = cfg.curated_root / "trading_status" / "trade_date=2026-10"
+    part.mkdir(parents=True, exist_ok=True)
+    path = part / "part-merged.parquet"
+    existed = path.exists()
+    pl.DataFrame(
+        {"symbol": ["000016.SZ"], "trade_date": [date(2026, 10, 23)], "is_trading": [is_trading]}
+    ).write_parquet(path)
+    if existed:
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+
+
+def test_source_empty_claim_survives_same_run_status_publish_and_other_listings(tmp_path):
+    """2026-10-23: compact republished trading_status seconds after daily_bars
+    certified 000016.SZ and 001381.SZ source-empty, and `cne check` then found
+    no evidence for either."""
+    from cnequity.steps.common import load_negative_evidence, record_negative_evidence
+
+    cfg = Config(data_root=tmp_path, negative_evidence_ttl_days=7)
+    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
+    day = date(2026, 10, 23)
+    before = _listing(**{"000016.SZ": date(1992, 3, 27), "001381.SZ": None})
+    _write_status(cfg, is_trading=False)
+    for reason in ("source_empty", "verified_no_data"):
+        record_negative_evidence(
+            cfg,
+            "daily_bars",
+            ["000016.SZ"],
+            day,
+            day,
+            reason=reason,
+            source="fallback",
+            metadata=before,
+            now=now,
+        )
+    record_negative_evidence(
+        cfg,
+        "daily_bars",
+        ["001381.SZ"],
+        day,
+        day,
+        reason="not_yet_listed",
+        source="probe",
+        metadata=before,
+        now=now,
+    )
+
+    _write_status(cfg, is_trading=True)
+    after = _listing(**{"000016.SZ": date(1992, 3, 27), "001381.SZ": None, "001400.SZ": day})
+    kept = load_negative_evidence(cfg, "daily_bars", metadata=after, now=now)
+    assert sorted((e["symbol"], e["reason"]) for e in kept) == [
+        ("000016.SZ", "source_empty"),
+        ("001381.SZ", "not_yet_listed"),
+    ], "only the claim derived from status follows the status files"
+
+    listed = _listing(**{"000016.SZ": date(1992, 3, 27), "001381.SZ": date(2026, 10, 28)})
+    assert [
+        e["symbol"] for e in load_negative_evidence(cfg, "daily_bars", metadata=listed, now=now)
+    ] == ["000016.SZ"], "a code's own listing date voids its claim"
+
+
+def test_reading_negative_evidence_does_not_delete_mismatched_claims(tmp_path):
     from cnequity.steps.common import load_negative_evidence
 
     cfg = Config(data_root=tmp_path)
@@ -257,33 +314,5 @@ def test_live_negative_cache_still_validates_identity(tmp_path, monkeypatch):
         identity={"instruments_revision": 1},
         now=now,
     )
-    monkeypatch.setattr(
-        "cnequity.steps.common._instrument_identity", lambda *args: {"instruments_revision": 2}
-    )
-    assert load_negative_evidence(cfg, "daily_bars", now=now) == []
-
-
-def test_direct_status_edit_invalidates_identity_without_revision_change(tmp_path):
-    import os
-
-    from cnequity.steps.common import _instrument_identity
-
-    cfg = Config(data_root=tmp_path)
-    metadata = pl.DataFrame(
-        {"symbol": ["920001.BJ"], "list_date": [date(2026, 1, 1)], "asset_type": ["stock"]}
-    )
-    part = cfg.curated_root / "trading_status" / "trade_date=2026-09"
-    part.mkdir(parents=True)
-    path = part / "part-merged.parquet"
-    status = pl.DataFrame(
-        {"symbol": ["920001.BJ"], "trade_date": [date(2026, 9, 15)], "is_trading": [False]}
-    )
-    status.write_parquet(path)
-    before = _instrument_identity(cfg, metadata)
-    assert _instrument_identity(cfg, metadata) == before, "unchanged files keep the identity"
-
-    status.with_columns(pl.lit(True).alias("is_trading")).write_parquet(path)
-    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1_000_000))
-    after = _instrument_identity(cfg, metadata)
-    assert before["trading_status_revision"] == after["trading_status_revision"]
-    assert before["trading_status_files"] != after["trading_status_files"]
+    assert load_negative_evidence(cfg, "daily_bars", metadata=_listing(), now=now) == []
+    assert len(store.get_negative_evidence("daily_bars", now=now)) == 1

@@ -98,6 +98,13 @@ def test_a_missing_query_names_the_pack_command(config):
         load("adj_factors", config=config)
 
 
+def test_a_demo_lake_is_told_to_backfill_the_missing_dataset(config):
+    config.lake_profile = "demo"
+    # `cne init` and `run daily --pack` never grow a demo lake.
+    with pytest.raises(ReaderError, match="build it with `cne backfill daily_bars`"):
+        load("daily_bars", symbols=["600000.SH"], config=config)
+
+
 @pytest.mark.usefixtures("chinese_output")
 def test_pack_order_groups_and_empty_lake(config):
     assert normalize_packs(["universe", "market", "market"]) == ("market", "universe")

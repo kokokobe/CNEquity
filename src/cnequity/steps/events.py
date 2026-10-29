@@ -20,10 +20,6 @@ from cnequity.adapters.cninfo.announcements import (
     fetch_announcement_index_range,
 )
 from cnequity.adapters.eastmoney.corporate_actions import fetch_corporate_actions_eastmoney
-from cnequity.adapters.eastmoney.corporate_actions_migration import (
-    fetch_corporate_actions_eastmoney_migrated_bj,
-    migrated_bj_request_scope,
-)
 from cnequity.adapters.eastmoney.earnings_disclosure import (
     _backfill_report_dates,
     fetch_earnings_disclosure_schedule,
@@ -41,7 +37,7 @@ from cnequity.domain.symbols import filter_ingest_universe
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.orchestrator.outcomes import SourcePayloadError, SourceUnavailableError
 from cnequity.orchestrator.registry import register_step
-from cnequity.orchestrator.source_gaps import record_source_gap
+from cnequity.orchestrator.source_gaps import record_source_gap, source_gap_dates
 from cnequity.progress import sweep_progress
 from cnequity.quality.ex_events import (
     EX_EVENT_LOOKBACK_SESSIONS,
@@ -54,10 +50,12 @@ from cnequity.quality.failover import (
 )
 from cnequity.steps.common import (
     fetch_incremental_daily,
+    incremental_trade_dates,
     instrument_metadata,
     load_symbols,
 )
 from cnequity.steps.http_common import run_incremental_fetched, verify_raw_archive, write_fetched
+from cnequity.storage.observation import note_observation
 
 # TDX xdxr is per-symbol (backfill); EastMoney datacenter supports ex-date filter (daily).
 _CANONICAL_BACKFILL = "tdx_protocol"
@@ -847,6 +845,9 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
     findings: list[dict] = []
     failed_symbols: list[str] = []
     heal_written = 0
+    # The [start, through] window this run asked of the whole lake and got a
+    # clean answer for; None when it did not (see storage/observation.py).
+    observed: tuple[date | None, date] | None = None
 
     if backfill:
         symbols = list(
@@ -1102,7 +1103,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
         if getattr(config, "_corporate_actions_baostock_repair", False):
             if not config.sources.get("baostock", False):
                 raise RuntimeError(
-                    "corporate_actions: --baostock-repair requires the baostock source"
+                    "corporate_actions: the Baostock delisted-actions repair requires the baostock source"
                 )
             repair_start = (
                 getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
@@ -1180,7 +1181,9 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 )
         if getattr(config, "_corporate_actions_ths_repair", False):
             if not config.sources.get("ths_bonus", False):
-                raise RuntimeError("corporate_actions: --ths-repair requires the ths_bonus source")
+                raise RuntimeError(
+                    "corporate_actions: the THS delisted-actions repair requires the ths_bonus source"
+                )
             repair_start = (
                 getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
             )
@@ -1250,87 +1253,11 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                     if df.is_empty()
                     else pl.concat([df, repair_df], how="diagonal_relaxed")
                 )
-        if getattr(config, "_corporate_actions_eastmoney_bj_repair", False):
-            if not config.sources.get("eastmoney", False):
-                raise RuntimeError(
-                    "corporate_actions: --eastmoney-bj-repair requires the eastmoney source"
-                )
-            repair_start = (
-                getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
-            )
-            repair_end = getattr(config, "_backfill_end", None) or trade_date
-            repair_windows = _delisted_bj_windows(config, symbols, repair_start, repair_end)
-            repair_symbols = sorted(repair_windows)
-            repair_scope = migrated_bj_request_scope(repair_symbols, repair_start, repair_end)
-            logger.info(
-                "corporate_actions: EastMoney migrated-code repair scoped to %d delisted BJ symbol(s)",
-                len(repair_symbols),
-            )
-            if repair_symbols:
-                repair_df, repair_failed = fetch_corporate_actions_eastmoney_migrated_bj(
-                    repair_symbols,
-                    repair_start,
-                    repair_end,
-                    config=config,
-                    run_id=run_id,
-                    symbol_windows=repair_windows,
-                    request_scope=repair_scope,
-                )
-            else:
-                repair_df, repair_failed = pl.DataFrame(), []
-            failed_symbols.extend(repair_failed)
-            if not repair_df.is_empty():
-                repair_df = with_provenance(
-                    repair_df, source="eastmoney_migrated_bj", data_version="v1"
-                )
-                if manifest is not None:
-                    repair_batch_id = f"{batch_id or 'batch-0'}-eastmoney-bj-repair"
-                    write_fetched(
-                        config,
-                        run_id,
-                        "corporate_actions",
-                        repair_df,
-                        source="eastmoney_migrated_bj",
-                        batch_id=repair_batch_id,
-                        raw_archive_evidence=(
-                            verify_raw_archive(
-                                config,
-                                "corporate_actions",
-                                run_id,
-                                source="eastmoney_migrated_bj",
-                                request_scope=repair_scope,
-                            )
-                            if config.should_archive_raw("corporate_actions")
-                            else None
-                        ),
-                    )
-                    manifest.start_batch(
-                        run_id,
-                        repair_batch_id,
-                        task_id="corporate_actions_eastmoney_bj_repair",
-                        dataset="corporate_actions",
-                        symbols=repair_symbols,
-                        window_start=repair_start.isoformat(),
-                        window_end=repair_end.isoformat(),
-                        blocks_compaction=False,
-                    )
-                    manifest.finish_batch(
-                        run_id,
-                        repair_batch_id,
-                        "success",
-                        rows_read=repair_df.height,
-                        rows_written=repair_df.height,
-                    )
-                df = (
-                    repair_df
-                    if df.is_empty()
-                    else pl.concat([df, repair_df], how="diagonal_relaxed")
-                )
         repair_dates = list(getattr(config, "_corporate_actions_eastmoney_date_repair", None) or [])
         if repair_dates:
             if not config.sources.get("eastmoney", False):
                 raise RuntimeError(
-                    "corporate_actions: --eastmoney-date-repair requires the eastmoney source"
+                    "corporate_actions: the ex-dates repair requires the eastmoney source"
                 )
             repair_start = (
                 getattr(config, "_backfill_start", None) or CORPORATE_ACTIONS_BACKFILL_START
@@ -1417,12 +1344,22 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
                 len(failed_symbols),
                 len(symbols),
             )
+        swept = set(symbols) | completed_symbols
+        scoped = context.get("_retry_symbols") or getattr(config, "_backfill_symbols", None)
+        # A `--symbols` sweep answers for those names only; it counts as a look
+        # at the lake when, with this run's earlier chunks, it covered them all.
+        if swept and not failed_symbols and (not scoped or swept >= set(_sweep_universe(config))):
+            observed = (
+                getattr(config, "_backfill_start", None),
+                min(getattr(config, "_backfill_end", None) or trade_date, trade_date),
+            )
         canonical_source = "qmt_bridge" if qmt_backfill_used else _CANONICAL_BACKFILL
     else:
         if not config.sources.get("eastmoney", True):
             raise SourceUnavailableError(
                 "corporate_actions daily: eastmoney source disabled in config"
             )
+        window = incremental_trade_dates(config, "corporate_actions", trade_date)
         df, findings = fetch_incremental_daily(
             config,
             "corporate_actions",
@@ -1432,6 +1369,14 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             date_col="ex_date",
         )
         canonical_source = _CANONICAL_DAILY
+        # The EastMoney ex-date query is market-wide, so a window with no
+        # failed or source-gapped day is a clean look at the whole lake.
+        if (
+            window
+            and not any(f.get("check") == "fetch_failed_days" for f in findings)
+            and not set(window) & source_gap_dates("corporate_actions")
+        ):
+            observed = (min(window), max(window))
         if config.failover_enabled:
             failover = failover_spec(config, "corporate_actions")
             if failover is not None and failover.snapshot_cadence == "daily":
@@ -1516,6 +1461,18 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             )
         df = df.with_columns(parsed_dates.alias("ex_date"))
 
+    if observed is not None:
+        # Fetched rows count once compaction publishes them (finalize commits
+        # the claim); an empty answer has nothing to publish and counts now.
+        note_observation(
+            config,
+            "corporate_actions",
+            run_id,
+            start=observed[0],
+            through=observed[1],
+            pending_publish=not df.is_empty(),
+        )
+
     context_updates: dict = {"symbols_to_rebackfill": []}
     if findings:
         context_updates["audit_findings"] = findings
@@ -1549,7 +1506,7 @@ def step_corporate_actions(config: Config, trade_date: date, run_id: str, contex
             # ingest universe — so an out-of-scope code arriving this way is
             # fetched anyway. This dataset carries 348 ETF/LOF codes today, and
             # a fund's bars are a NAV series with zero volume on every session:
-            # exactly the rows `migrate_drop_nav_series_bars.py` had to delete.
+            # exactly the rows the old NAV-series cleanup had to delete.
             # An `all_instruments` lake drops nothing here.
             rebackfill = filter_ingest_universe(
                 today["symbol"].unique().to_list(), config.ingest_universe

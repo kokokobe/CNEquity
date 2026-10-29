@@ -74,7 +74,8 @@ def test_generated_demo_config_validates_without_enabling_daily_jobs(tmp_path, p
     assert result.exit_code == 0, result.output
     result = CliRunner().invoke(cli, ["run", "daily", "--config", str(config_path)])
     assert result.exit_code != 0
-    assert "job.daily.waves" in result.output
+    assert "no daily schedule" in result.output
+    assert "cne init" in result.output
 
 
 @pytest.mark.usefixtures("chinese_output")
@@ -185,6 +186,63 @@ def test_demo_help_lists_command():
     # `--sample` used to be a flag on `cne demo`; it is now a profile value,
     # which is what makes demo/sample/quick/full one axis instead of two forks.
     assert "demo|sample|quick|full" in result.output
+
+
+def test_sample_then_demo_with_defaults_do_not_collide(tmp_path, monkeypatch):
+    """The sample's closing hint, `cne init --profile demo`, must just work.
+
+    Both profiles used to default to configs/cnequity.demo.toml and
+    data/cnequity-demo, so the demo refused the config the sample had written,
+    and with --force would have mixed real bars into a source=mock lake.
+    """
+    monkeypatch.chdir(tmp_path)
+    sample = CliRunner().invoke(cli, ["init", "--profile", "sample", "--days", "3"])
+    assert sample.exit_code == 0, sample.output
+    assert (tmp_path / "configs" / "cnequity.sample.toml").exists()
+    assert any((tmp_path / "data" / "cnequity-sample").rglob("*.parquet"))
+    assert not (tmp_path / "configs" / "cnequity.demo.toml").exists()
+
+    seen = {}
+
+    def fake_run_demo(**kwargs):
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr("cnequity.cli.demo.run_demo", fake_run_demo)
+    demo = CliRunner().invoke(cli, ["init", "--profile", "demo"])
+    assert demo.exit_code == 0, demo.output
+    assert seen["data_root"] == Path("data/cnequity-demo")
+    assert seen["config_out"] == Path("configs/cnequity.demo.toml")
+
+
+def test_demo_refuses_a_data_root_holding_the_sample(tmp_path, monkeypatch):
+    from cnequity.cli.demo import run_demo, run_sample_demo
+
+    monkeypatch.setattr(
+        "cnequity.cli.demo._probe_tdx",
+        lambda *_a, **_k: pytest.fail("the refusal must come before any network"),
+    )
+    root = tmp_path / "lake"
+    run_sample_demo(
+        symbols=["600519.SH"], days=3, data_root=root, config_out=tmp_path / "sample.toml"
+    )
+    with pytest.raises(click.ClickException, match="synthetic sample"):
+        run_demo(
+            symbols=["600519.SH"],
+            days=3,
+            data_root=root,
+            config_out=tmp_path / "demo.toml",
+            force=True,
+        )
+
+
+def test_missing_user_config_points_at_the_sample_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "cnequity.sample.toml").write_text("", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["status"])
+    assert result.exit_code != 0
+    assert "--config configs/cnequity.sample.toml" in result.output
 
 
 @pytest.mark.usefixtures("chinese_output")
@@ -711,6 +769,38 @@ def test_run_intraday_demo_retains_lake_when_source_cannot_serve_history(tmp_pat
     assert result["execution_status"] == "completed"
     assert result["rows"] == 0
     assert result["fallback"] == [{"reason_codes": ["capability_limit"]}]
+
+
+@pytest.mark.parametrize("research", [False, True])
+def test_demo_enables_sina_only_for_the_research_view(tmp_path, monkeypatch, research):
+    """`--research` derives hfq factors from Sina; the source gate must let it through."""
+    from cnequity.adapters.throttle import SourceRateLimiters
+    from cnequity.cli import demo as demo_mod
+
+    seen = {}
+
+    def stop_at_probe(cfg):
+        seen["cfg"] = cfg
+        raise RuntimeError("stop before the network")
+
+    monkeypatch.setattr(demo_mod, "_probe_tdx", stop_at_probe)
+    with pytest.raises(click.ClickException):
+        demo_mod.run_demo(
+            symbols=["600519.SH"],
+            days=10,
+            data_root=tmp_path / "lake",
+            config_out=tmp_path / "demo.toml",
+            research=research,
+        )
+    cfg = seen["cfg"]
+    assert cfg.sources["eastmoney"] is False
+    limiters = SourceRateLimiters(cfg)
+    if research:
+        with limiters.request("sina"):
+            pass
+    else:
+        with pytest.raises(RuntimeError, match="source disabled"), limiters.request("sina"):
+            pass
 
 
 @pytest.mark.usefixtures("chinese_output")

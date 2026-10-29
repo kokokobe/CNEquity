@@ -171,7 +171,9 @@ the [SZSE ETF list](https://fund.szse.cn/marketdata/etf/) and the [SZSE fund lis
 `derived_traded` means committed daily bars prove a print on that date (positive volume),
 rather than a first-hand status snapshot. It fills only stock/ETF keys with a known
 listed life and no existing status row, setting `normal`, `is_trading=true`, and
-`risk_warning=null`. `normal` does not mean confirmed non-ST. Authoritative session
+`risk_warning=null` for stocks or `risk_warning=false` for ETFs/funds (ST does not
+apply to funds, so it is not unknown). On a stock row `normal` does not mean
+confirmed non-ST. Authoritative session
 records take precedence; these derived rows are excluded from the EastMoney outage
 carry and do not establish historical ST coverage. Zero or unknown volume, unknown
 listing dates, and bars outside the listed life cannot generate these rows. Existing
@@ -190,11 +192,7 @@ inputs, publishes a new version and preserves the old one. Use annual or monthly
 windows. Strict historical universe reads still require independent ST evidence.
 
 **Reading an old lake does not fail.** Old rows encode ST as `status="st"`, and `validate_dataframe` upgrades them
-automatically on read (see `cnequity/domain/trading_status.py`). To bring the physical schema in line, run:
-
-```bash
-scripts/migrations/migrate_trading_status_risk_warning.py --config configs/cnequity.toml --apply
-```
+automatically on read (see `cnequity/domain/trading_status.py`); the physical files need no rewrite.
 
 The migration does **not** add `delisted` rows to history: a day's status is the fact observed at the time, and back-filling it with today's delisting date
 would invent point-in-time facts that did not exist then. To fix a stretch of history, rerun the daily update for that stretch.
@@ -226,14 +224,7 @@ Source data is converted uniformly at the collection boundary. TDX daily bars an
 
 Quality checks reconcile volume against price per source; data without turnover cannot be checked this way. Single-stock volume/price relationships do not apply to the index points in `index_bars` / `sector_bars`.
 
-**Migration (v1 → v2).** Existing rows in the lake are wrong under either interpretation and must be rewritten:
-
-```bash
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --dry-run
-scripts/migrations/migrate_daily_bars_volume_v2.py --config configs/cnequity.toml --apply
-```
-
-Rows with `source ∈ {tdx_protocol, sina}` and `data_version=v1` get `volume ×100`; all other v1 rows are kept as they are (they were already in shares); every processed row is rewritten with `data_version=v2`. Rows already at v2 are skipped; the script is idempotent and can be interrupted and resumed. **`fetched_at` is not re-stamped**: these rows really were fetched at that time, and changing it would erase when the data was observed. The column that records this reinterpretation is `data_version`, which is exactly what it is for. `--apply` rewrites curated in place, so back it up first.
+**Migration (v1 → v2).** A lake written by 0.12 or earlier needs its v1 rows rewritten to shares; that one-off script has been removed, so migrate such a lake with 0.19 or earlier before upgrading.
 
 ##### Previous close (`pre_close`) {#previous-close}
 
@@ -874,12 +865,32 @@ and `actual_date` is filled in after actual disclosure (null before then).
 |--------|------|-------|
 | symbol | string |  |
 | classification_system | string | e.g. ``sw``, ``eastmoney`` |
-| industry_code | string |  |
-| industry_name | string |  |
+| industry_code | string | Level-3 (leaf) industry code; see below for EastMoney rows with `data_version=v1` |
+| industry_name | string | Level-3 industry name; equals the code on Shenwan rows |
+| l1_code | string | Level-1 industry code, nullable |
+| l1_name | string | Level-1 industry name, nullable |
+| l2_code | string | Level-2 industry code, nullable |
+| l2_name | string | Level-2 industry name, nullable |
+| l3_code | string | Level-3 industry code, nullable |
+| l3_name | string | Level-3 industry name, nullable |
 | as_of_date | date | Classification snapshot date |
 | source | string | Provenance |
 | data_version | string | Provenance |
 | fetched_at | timestamp | Provenance |
+
+One row per security, classification system and snapshot date. The EastMoney datacenter lists every stock under its level 1, 2 and 3 industry boards without saying which is which:
+a bigger board is a higher level, and where a level has a single child the two have the same members and the name suffix (`Ⅱ`/`Ⅲ`) tells them apart.
+Shenwan rows carry only the six-digit level-3 code; the level-1 and level-2 codes are that code zero-filled (`480101` → `480100` → `480000`). The Shenwan file publishes no names, so the name columns are null.
+
+EastMoney rows with `data_version=v1` (written before 0.20) kept one of the three boards, chosen by the source's page order, so the level varies from day to day.
+The `industry-levels` step of `cne migrate` fills the level columns for the stored board and the levels above it; the levels below stay null and `industry_code` is unchanged.
+For counts by level, read `l1_*`..`l3_*`, not `industry_code` on those rows.
+
+An industry code is not an identity on its own: Shenwan reused its old code strings when it replaced its taxonomy on 2021-07-30.
+`cne derive industry_taxonomy` writes each industry as `industry_id = system:version:code` (e.g. `sw:2014:480101`, `sw:2021:480101`, `eastmoney:board:1279`)
+to `meta/industry_taxonomy.parquet`, with its level, name, `parent_id`, first and last snapshot date and largest member count; the Shenwan version follows the snapshot date.
+`cne derive industry_crosswalk` compares the members of Shenwan and EastMoney industries at the same level on a day both have a full snapshot, and adds each pair's overlap evidence and relation
+(`equivalent`, `left_within_right`, `right_within_left`, `partial`) to `meta/industry_crosswalk.parquet`; it is evidence only and merges no identities.
 
 #### macro_indicators
 

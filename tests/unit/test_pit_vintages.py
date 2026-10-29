@@ -1,8 +1,6 @@
 """PIT vintages: a restatement must add a row, never overwrite the original."""
 
-import importlib.util
 from datetime import date
-from pathlib import Path
 
 import polars as pl
 import pytest
@@ -359,56 +357,6 @@ def test_revision_id_ignores_observation_time_but_tracks_value():
     assert revision_id_for_row(base) != revision_id_for_row(restated)
 
 
-def test_cninfo_archive_recovery_requires_full_announcement_identity():
-    script = Path(__file__).parents[2] / "scripts" / "migrations" / "migrate_pit_vintages.py"
-    spec = importlib.util.spec_from_file_location("migrate_pit_vintages", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    existing = pl.DataFrame(
-        {
-            "announcement_id": ["a", "b"],
-            "symbol": ["002358.SZ", "002358.SZ"],
-            "announce_date": [date(2019, 6, 28), date(2019, 6, 28)],
-            "title": ["实施公告", "另一公告"],
-            "url": ["a.pdf", "b.pdf"],
-            "source_published_at": [None, None],
-            "available_at": [None, None],
-        },
-        schema_overrides={
-            "source_published_at": pl.Datetime("us", "UTC"),
-            "available_at": pl.Datetime("us", "UTC"),
-        },
-    )
-    replayed = pl.DataFrame(
-        {
-            "announcement_id": ["a", "b"],
-            "symbol": ["002358.SZ", "002358.SZ"],
-            "announce_date": [date(2019, 6, 28), date(2019, 6, 28)],
-            "title": ["实施公告", "标题已变化"],
-            "url": ["a.pdf", "b.pdf"],
-            "source_published_at": [
-                "2019-06-27T16:00:00+00:00",
-                "2019-06-27T16:00:00+00:00",
-            ],
-            "available_at": [
-                "2019-06-28T16:00:00+00:00",
-                "2019-06-28T16:00:00+00:00",
-            ],
-        }
-    ).with_columns(
-        pl.col("source_published_at", "available_at").str.to_datetime(
-            time_unit="us", time_zone="UTC"
-        )
-    )
-
-    recovered = module._recovered_announcement_rows(existing, replayed)
-
-    assert recovered["announcement_id"].to_list() == ["a"]
-    assert recovered["source_published_at"].null_count() == 0
-
-
 def test_same_announce_date_correction_preserves_original_and_first_observation(tmp_path):
     cfg = Config(data_root=tmp_path)
     batches = [
@@ -440,3 +388,32 @@ def test_same_announce_date_correction_preserves_original_and_first_observation(
         )
         == 0
     )
+
+
+def test_source_times_are_dated_in_shanghai_not_utc():
+    """A row available from T+1 00:00 Shanghai is T 16:00 UTC; it must not pass as_of=T."""
+    from datetime import datetime, timedelta, timezone
+
+    from cnequity.domain.market_time import SHANGHAI_TZ
+    from cnequity.domain.pit import classify_pit_rows
+
+    day = date(2024, 3, 15)
+    next_midnight = datetime.combine(day + timedelta(days=1), datetime.min.time(), SHANGHAI_TZ)
+    frame = pl.DataFrame(
+        {
+            "announcement_id": ["a", "b"],
+            "symbol": ["600000.SH", "600000.SH"],
+            "announce_date": [day, day],
+            "source": ["cninfo", "cninfo"],
+            "fetched_at": [datetime(2024, 3, 15, 6, tzinfo=timezone.utc)] * 2,
+            "available_at": [next_midnight.astimezone(timezone.utc), None],
+            "source_published_at": [None, next_midnight.astimezone(timezone.utc)],
+        }
+    )
+    for mode in ("strict", "best_effort"):
+        on_day = classify_pit_rows(frame, "announcement_index", as_of=day, pit_mode=mode)
+        assert on_day.height == 0
+        after = classify_pit_rows(
+            frame, "announcement_index", as_of=day + timedelta(days=1), pit_mode=mode
+        )
+        assert sorted(after["announcement_id"]) == ["a", "b"]

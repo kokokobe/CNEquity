@@ -210,7 +210,7 @@ wheels = [
 
 [[package]]
 name = "cnequity"
-version = "0.17.1"
+version = "0.20.0"
 source = { editable = "." }
 dependencies = [
     { name = "baostock" },
@@ -251,7 +251,7 @@ requires-dist = [
     { name = "baostock", specifier = ">=0.8" },
     { name = "click", specifier = ">=8.1" },
     { name = "curl-cffi", specifier = ">=0.7" },
-    { name = "duckdb", specifier = ">=1.0" },
+    { name = "duckdb", specifier = ">=1.5" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.25" },
     { name = "numpy", specifier = ">=1.26" },

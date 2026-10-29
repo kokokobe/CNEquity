@@ -334,32 +334,6 @@ def test_the_tradable_universe_keeps_an_ordinary_name():
 # --- migration ----------------------------------------------------------------
 
 
-def test_migration_rewrites_legacy_st_and_is_idempotent():
-    import importlib.util
-    from pathlib import Path
-
-    spec = importlib.util.spec_from_file_location(
-        "_migrate_ts",
-        Path(__file__).resolve().parents[2]
-        / "scripts"
-        / "migrations"
-        / "migrate_trading_status_risk_warning.py",
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    legacy = with_provenance(_legacy("st"), source="baostock", data_version="v1")
-    migrated, changed, legacy_rows = module.migrate_frame(legacy)
-    assert changed is True
-    assert legacy_rows == 1
-    assert migrated["status"].to_list() == [STATUS_NORMAL]
-    assert migrated["risk_warning"].to_list() == [True]
-
-    again, changed_again, _ = module.migrate_frame(migrated)
-    assert changed_again is False
-    assert again.equals(migrated)
-
-
 def test_eastmoney_does_not_claim_not_st_for_an_exchange_its_board_skips():
     """`_ST_FS` selects m:0 (Shenzhen) and m:1 (Shanghai). Beijing has no market
     code in it, so "absent from the returned set" means the board never looked.

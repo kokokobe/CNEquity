@@ -3,22 +3,56 @@
 配置文件格式：TOML。模板随包装在 `cnequity.config.templates`；仓库内副本为 `configs/cnequity.example.toml`。
 
 ```bash
-cne config create                              # 推荐：写出 configs/cnequity.toml
+cne config create                              # 推荐：写出用户级配置 ~/.config/cnequity/config.toml
  # 首次创建时也可选：cne config create --data-root /data/cnequity
-cne config validate --config configs/cnequity.toml
+cne config path                                # 显示当前生效的配置、选中原因和数据目录
+cne config show                                # 打印生效的完整配置，标出文件里写的设置
+cne config validate
 ```
 
-加载与校验：`cnequity.config.loader`。个人文件不参与开源默认配置；参见[升级与反馈](installation.md#升级与兼容性)。`--config` 优先于环境变量 `CNE_CONFIG`，否则使用当前目录下 `configs/cnequity.toml`。`cne config create` 默认写绝对 `data.root`；手写相对路径仍按进程工作目录解析。
+加载与校验：`cnequity.config.loader`。个人文件不参与开源默认配置；参见[升级与反馈](installation.md#升级与兼容性)。配置查找顺序：显式 `--config` → `CNE_CONFIG` → 当前目录的 `configs/cnequity.toml` → 用户级 `~/.config/cnequity/config.toml`（遵循 `XDG_CONFIG_HOME`；Windows 为 `%APPDATA%\cnequity\config.toml`）。CLI、`load()`、MCP 和定时任务用同一套规则，所以在任何目录运行都指向同一个湖。`cne config create` 默认写绝对 `data.root`；手写的相对路径（`data.root`、`duckdb.path`）按**配置文件所在目录**解析。旧版按工作目录解析的相对路径，在新位置不存在而旧位置存在时继续沿用并给出警告，运行 `cne config upgrade` 会把它固定为绝对路径。
 
-本页按配置段查阅。首次使用通常只需确认 `[data].root`，再按需求启用分钟线、分笔或[衍生品](../recipes/derivatives.md)。表中默认值指随包模板；直接构造 `Config()` 与平台生成器的结果可能不同，以 `cne config diff` 和实际配置为准。
+本页按配置段查阅。首次使用通常只需确认 `[data].root`，再按需求启用分钟线、分笔或[衍生品](../recipes/derivatives.md)。表中默认值指随包模板，也就是 `extends = "builtin"` 配置继承的默认值；直接构造 `Config()` 的结果可能不同，以 `cne config show` 为准。
 
 同一出口上多个进程/数据湖用 `CNE_RATE_LIMIT_ROOT` 统一 HTTP/TDX 限流与共享冷却。源保护、CLI 联网边界和使用顺序见[取数指南](../operations/fetch-policy.md)。
+
+## 继承内置默认值（`extends = "builtin"`） {#extends-builtin}
+
+`cne config create` 和首次 `cne init` 写出的配置只有几行：
+
+```toml
+extends = "builtin"
+
+[data]
+root = "/abs/path/to/lake"
+```
+
+其余设置都来自当前安装版本的内置默认值（即随包模板，按本机平台调整过，例如 macOS / Windows 的 `workers = 1`）。文件里只写想改的设置；升级后新版本加入的设置和调度 step 直接生效，不需要 `cne config upgrade`。
+
+- 表按键逐层合并（内联表也一样）；其他值（标量、数组、`[[failover.datasets]]` 这样的表数组）整体替换默认值。
+- `[data].root` 从不取默认值，必须写在文件里。
+- 调度组（`[job.daily.groups.*]`、`[job.events.groups.*]`）支持 `steps_add`、`steps_remove` 和 `enabled = false`，换掉一个 step 不会冻结组内其他 step：
+
+```toml
+[job.daily.groups.capital]
+steps_remove = ["fund_flow"]
+steps_add = ["fund_flow_ths"]
+
+[job.daily.groups.research]
+enabled = false
+```
+
+组内 step 的顺序不影响执行：引擎按依赖、收尾顺序和名称排定。写 `steps = [...]` 仍表示整组替换；它遮住了新版本默认加入的 step 时，`cne config diff` 会报出来。
+
+`cne config show` 打印生效的完整配置，标出哪些值来自文件，凭证打码；`cne config show --defaults` 打印全部设置及说明。
+
+没有 `extends` 的完整配置照旧工作：缺少的键回退到代码里的内置值，升级时需要 `cne config upgrade` 补调度 step。`cne config upgrade --minimize` 把它一次性改写成继承默认值的形式：等于默认值的键删掉，调度组差异写成 `steps_add` / `steps_remove`，配置里没有的默认调度组写成 `enabled = false`，`data.root` 写成当前解析到的绝对路径。改写前会列出加载后行为会变化的设置（旧配置缺键、现在由默认值提供的部分），`--dry-run` 只预览；原文件自动备份。
 
 ## `[data]`
 
 | 键 | 类型 | 默认 | 说明 |
 |----|------|------|------|
-| `root` | string | `./data/cnequity` | 数据湖根目录；**生产建议绝对路径** |
+| `root` | string | `./data/cnequity` | 数据湖根目录；相对路径按配置文件所在目录解析，**生产建议绝对路径** |
 
 派生路径（代码内自动计算，无需配置）：
 
@@ -76,12 +110,12 @@ cne config validate --config configs/cnequity.toml
 | `ths_official` | **同花顺官方 API（keyed）**，见 [`cne ths-official`](../reference/cli.md#cne-ths-official) |
 | `sw` / `cni` | 申万历史行业、国证历史成分文件，默认间隔 1 秒、单请求在途 |
 | `futures_exchange` | 期货交易所文件，逐主机限速与缓存 |
-| `tushare` | 可选 Tushare Pro——BJ 历史 ST 证据（`stock_st`）。需 token，**优先用环境变量 `TUSHARE_TOKEN`**，别把凭证写进配置 |
+| `tushare` | 可选 Tushare Pro——BJ 历史 ST 证据（`stock_st`）。需 token：环境变量 `TUSHARE_TOKEN` 或 `token_file`，别把凭证写进配置 |
 
 
 | 键 | 说明 |
 |----|------|
-| `enabled` | 显式 false 会在 HTTP 请求边界拦截该源及子通道。省略整段时各旧路径的默认行为不完全相同；生产使用完整模板，对不用的源写 `enabled = false`，不要通过删配置段表达关闭 |
+| `enabled` | 显式 false 会在 HTTP 请求边界拦截该源及子通道。省略整段时各旧路径的默认行为不完全相同；对不用的源写 `enabled = false`（继承默认值的配置也一样），不要通过删配置段表达关闭 |
 | `min_interval_seconds` | 跨进程请求间隔；必须是非负有限数，0 表示关闭固定间隔但不关闭拒绝冷却。锁外等待，醒来重查共享时间；实际请求前同时取得并发名额 |
 | `js_runtime`（ths） | 可选。生成同花顺 `hexin-v` 令牌用的 Deno 路径；不填就在 `PATH` 和常见安装位置里找。令牌脚本在 Deno 里**不给任何权限**运行（不能读写文件、联网、读环境变量）。没有 Deno 时同花顺资金流兜底会失败并记日志，不影响其他数据 |
 | `ths_data`（限速通道） | 同花顺数据中心页面（资金流兜底）默认 3 秒一页，与同花顺其他页面共用 1 个并发；可用 `[sources.ths_data] min_interval_seconds` 调整 |
@@ -92,13 +126,14 @@ cne config validate --config configs/cnequity.toml
 | `push2_shared_snapshot`（eastmoney） | 默认开。instruments、valuation_metrics、fund_flow 和 clist 行情兜底共用一次全市场翻页（取字段并集），收盘后到次日开盘前重复使用 |
 | `push2_min_interval_seconds` / `push2_max_concurrency`（eastmoney） | 默认 4.0 秒 / 1。push2 单独的限速通道，不和 datacenter 共用 |
 | `datacenter_breaker` / `datacenter_breaker_strikes`（eastmoney） | 默认开 / 3。datacenter 连续 3 次被拒（403 / 429 / 5xx、连接被拒/重置/断开）当天停用；读超时不算；「请求过于频繁」退避后仍在则立即停用 |
+| `news_breaker` / `news_breaker_strikes`（eastmoney） | 默认开 / 3。快讯通道（握手 + 列表主机）连续 3 次扫描被拒（403 / 429 / 共享冷却）后当天停用，次日恢复；代理不通、读超时不算，成功一次清零 |
 | `datacenter_daily_budget`（eastmoney） | 默认 0：只计数、不设上限（计数在 `CNE_RATE_LIMIT_ROOT/eastmoney_guard.json`，默认本湖 `meta/rate_limits/`）。按实测用量设上限 |
 | `daily_budget`（eastmoney） | 默认 0：只计数；设置后对同一出口的 push2 与 datacenter 请求实施共享日上限，避免分别未超额但厂商总请求过多。共享账本位于 `CNE_RATE_LIMIT_ROOT`。 |
 | `datacenter_min_interval_seconds` / `datacenter_max_concurrency`（eastmoney） | 默认 1.0 秒 / 2。datacenter 单独的限速通道；其他东财主机仍按 `min_interval_seconds` 和 `source_concurrency.eastmoney` |
 | `batch_size` / `batch_rest_seconds`（baostock） | 全市场回填的额外批次冷却。日请求上限 5 万次、单连接、黑名单冻结时长写在代码里，不能用配置调高 |
 | `verify`（ths_official） | 默认 **开**。只允许写 `meta/source_snapshots` 与 findings，从不碰 curated 行，所以有 key 就可以安全开着 |
 | `backfill`（ths_official） | 默认 **关**。它会改变湖里的内容，所以必须显式打开。持有凭证、启用源、允许它改数据是三个决定 |
-| `api_key`（ths_official） | 建议用环境变量 `HITHINK_FINANCE_API_KEY` 而非写进配置 |
+| `api_key` / `api_key_file`（ths_official） | 建议用环境变量 `HITHINK_FINANCE_API_KEY` 或 `api_key_file`，而非写进配置 |
 
 `cne serve` 的取数设置只改通达信、QMT 本地桥、东财、新浪日线、Baostock、北交所官网、同花顺页面和巨潮的 `enabled`，以及东财的 `push2_paused`。分钟线、分笔、期货开关和 `[universe] ingest` / `ingest_listed_funds` / `ingest_eligible_etfs` 也在那一页。确认前先列出差异，写入前备份；间隔、预算、熔断和凭据不动。环境变量 `CNE_PUSH2_PAUSED=1` 仍优先于配置里的暂停开关。
 
@@ -117,12 +152,14 @@ cne config validate --config configs/cnequity.toml
 | sina_bars | 1.0 | BJ/退市日线 fallback；独立于复权因子限速，配合 HTTP 456 有限重试 |
 | baostock | 1.0 + batch 20/120s | 历史市值/ST。另有写死的上海自然日 5 万次上限和单连接；黑名单冻结为本年次数 × 6 小时 |
 
+凭证（`[sources.tushare]` 的 token、`[sources.ths_official]` 的 api_key）按以下顺序读取：环境变量（`TUSHARE_TOKEN` / `HITHINK_FINANCE_API_KEY`）→ 文件（`token_file` / `api_key_file`，相对路径按配置文件所在目录解析，只读第一行）→ 配置里直接写的值。launchd / cron 启动的定时任务读不到登录 shell 里 export 的变量，所以定时运行的湖建议用权限为 600 的文件。凭证直接写在配置里时，`cne doctor` 会提示，配置文件其他用户可读时也会提示。
+
 ## THS 官方接口
 `ths_official` 是需要账号凭证的可选接口，与 `ths` 公共页面分开配置、限流与记录来源。它不能成为免费核心数据链的强依赖。源登记和数据使用条件见 [来源矩阵](../legal-and-data-sources.md#来源合规矩阵)；客户端代码许可证不等于数据再分发许可。
 
 ### 配置与入口
 
-通过调用环境设置 `HITHINK_FINANCE_API_KEY`；不要在公共模板、日志或问题报告中写入 Key。个人配置中显式启用 `[sources.ths_official] enabled = true`。`verify` 控制对照证据，`backfill` 控制内容补入，默认后者关闭。
+通过环境变量 `HITHINK_FINANCE_API_KEY` 或 `api_key_file` 提供 Key；不要在公共模板、日志或问题报告中写入 Key。个人配置中显式启用 `[sources.ths_official] enabled = true`。`verify` 控制对照证据，`backfill` 控制内容补入，默认后者关闭。
 
 | 命令 | 获取与写入边界 |
 |---|---|
@@ -217,11 +254,11 @@ Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）�
 
 ## 调度组
 
-`[job.daily.groups.<name>]`：`at`（文档/调度参考时间）、`steps`（含末尾 `compact`）。
+`[job.daily.groups.<name>]`：`at`（文档/调度参考时间）、`steps`（含末尾 `compact`）；继承默认值时用 `steps_add` / `steps_remove` / `enabled = false` 修改，见[继承内置默认值](#extends-builtin)。
 
 日更与补跑入口使用北京时间 `[job.daily].run_at`（默认 17:30）、`[job.stale].run_at`（默认 21:00）。组内字段 `at` 是运行参考，不会仅凭配置自动安装系统调度器。
 
-`core`、`capital`、`signals`、`fundamentals`、`macro_risk`、`research` 是日常数据组；分钟、分笔和衍生品按各自开关启用。以随包模板为准，升级后用 `cne config upgrade` 补上新增的 step；不复制个人主机的耗时来设定所有人的任务间隔。
+`core`、`capital`、`signals`、`fundamentals`、`macro_risk`、`research` 是日常数据组；分钟、分笔和衍生品按各自开关启用。以随包模板为准：继承默认值的配置升级后自动获得新增的 step，完整配置用 `cne config upgrade` 补上；不复制个人主机的耗时来设定所有人的任务间隔。
 
 各 daily 任务共用非阻塞写入锁。优先由一个调度入口顺序运行所需组；多个独立定时任务可能撞锁而跳过，必须检查退出码与 run 状态。
 
@@ -260,6 +297,25 @@ weekday = 5          # 每周组在哪天之前的最后一个交易日跑，ISO
   所以 `cne status`、`[job.stale].run_at`（默认北京时间 21:00）的补跑和健康门禁不会在休息日把它当成落后、再去抓一遍。
 - 一个数据集同时在每天和每周的组里时，按每天算。
 
+## `[source_health]`
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `vantage` | string | `local` | 本机网络出口的标签（`cn`、`overseas` 或自定义，如 `cn-sh`），源探针和源健康记录都带上它；有些来源拒绝非大陆出口，结果按标签分开解读。`CNE_SOURCE_VANTAGE` 和 `--vantage` 可在单次运行时覆盖 |
+
+## `[job.maintenance]`
+
+`cne run maintain` 的设置；`cne schedule install` 安装的定时任务在每个交易日日更后运行它，见[运行手册](../operations/runbook.md#maintain)。
+
+| 键 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `full_audit_weekday` | int | `6` | 全湖审计的 ISO 星期（1 = 周一 … 7 = 周日）；它读全部 Parquet，大湖可能要几个小时。0 表示从不 |
+| `backup_dir` | string | `{data.root}/backups` | 元数据备份目录；相对路径按配置文件所在目录解析，最好放在另一块盘 |
+| `backup_retention_days` | int | `14` | 删除早于这么多天的备份；0 不按天数删 |
+| `backup_retention_count` | int | `30` | 只保留最新的这么多份；0 不按份数删 |
+| `gate_groups` | list | `["core"]` | 这些日更组的运行失败时，维护立即判失败 |
+| `soft_fail_max_days` | int | `3` | 其他日更组失败只告警，连续失败这么多个交易日后判失败；0 表示从不升级 |
+
 ## 事件流调度组（7x24）
 
 `[job.events.groups.<name>]`：字段与调度组相同（`at`、`steps`、`parallel`），但属于
@@ -286,6 +342,33 @@ weekday = 5          # 每周组在哪天之前的最后一个交易日跑，ISO
 
 `sentiment_scores` 仍留在 `research` 组：它读的是**湖里已提交的**公告和资讯，
 从来不是同一次 run 里现抓的，所以拆开之后行为不变。
+
+### 事件流计划（`[[job.events.schedules]]`） {#event-schedules}
+
+打包定时任务（`cne schedule install --events`）按这里的计划运行事件组；没有写计划时，用控制台设置的单个事件组和间隔。可以写多条，每条一个事件组：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `group` | 不写 = 全部 | `[job.events.groups]` 中的组名；不写时按配置顺序跑全部组 |
+| `every_minutes` | `60` | 两次尝试开始之间的分钟数（1–1440） |
+| `jitter_seconds` | `0` | 每次运行后把下一次随机延后 0–N 秒（0–3600），避免整点齐发请求 |
+| `quiet_hours` | 不写 | 北京时间的静默时段，如 `"1-7"`（01:00–06:59），`"23-6"` 跨午夜 |
+| `quiet_every_minutes` | `60` | 静默时段内的间隔，留 5 分钟余量 |
+
+```toml
+[[job.events.schedules]]
+group = "news_wire"
+every_minutes = 15
+jitter_seconds = 120
+quiet_hours = "1-7"
+quiet_every_minutes = 60
+
+[[job.events.schedules]]
+every_minutes = 360
+jitter_seconds = 300
+```
+
+同一个组不能写两条；组名必须存在。控制台的定时任务页只读展示这些计划，修改要改配置。
 
 ## `[minute_bars]`
 
@@ -358,6 +441,17 @@ audit step 依赖 `compact`，所以它在**行已经进 curated 之后**才跑�
 | `datasets` | 内置关键/快照集合 | 留空使用默认集合；财报及股东回填的分页原始响应会逐页归档以保留中途成功的证据。显式列表可按磁盘预算收窄。 |
 
 **请求凭证、代理设置、Cookie 和 authorization 头一律不存档。**
+
+财报 PDF 等大原文可以放到独立磁盘或 iCloud Drive，本地仍保留来源、观察时间及哈希记录。先创建目标目录，再登记：
+
+```bash
+cne storage raw-external --dataset financial_statement_items --source cninfo \
+  --root "$HOME/Library/Mobile Documents/com~apple~CloudDocs/CNEquity/archives/my-lake"
+```
+
+默认仅把新 PDF 原文写到外置目录，其他响应继续留在本地。登记保存在该湖的 `meta/raw_storage.json`，所有归档读者自动识别；不使用软链接，不改写历史 `payload_path`。命令只登记，不自动迁移旧文件。迁移时按原 `payload_path` 在目标根下复制、核对字节和哈希；确认副本完整及云端上传完成后才移除本地原文，保留本地 `.json` 来源记录。
+
+原文重放需要外置目录可用；云端文件可能需要先下载。目录不可用时会明确报错，不会重建一个空目录或重新请求供应商。可移植快照会包含外置原文且不携带本机路径，生成快照可能触发云文件下载。iCloud 同步和“移除下载”由 macOS 管理，登记命令不代表已经上传成功。
 
 ## `[exchange_audit]`
 

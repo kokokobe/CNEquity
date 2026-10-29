@@ -236,6 +236,61 @@ def test_daily_comparative_keeps_notice_vintage_and_adds_marked_reconstruction(m
     assert any("REPORTDATE='2016-12-31'" in call and '"000002.SZ"' in call for call in calls)
 
 
+def test_daily_reconstruction_publishes_with_exact_wire_archive(tmp_path, monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+
+    import httpx
+    import polars as pl
+
+    from cnequity.config import Config
+    from cnequity.domain.pit import classify_pit_rows
+    from cnequity.steps.fundamentals import step_financial_statement_items
+    from cnequity.storage.raw_archive import captured_records
+
+    class WireClient:
+        def get(self, url, **kwargs):
+            params = parse_qs(urlparse(url).query)
+            report = params["reportName"][0]
+            expr = params["filter"][0]
+            rows = []
+            if report == _BALANCE.name:
+                rows = [_balance_row()]
+            elif report == _ANNOUNCE_SOURCE.name and "NOTICE_DATE" not in expr:
+                rows = [_lico_row()]
+            return httpx.Response(
+                200,
+                json={"success": True, "result": {"data": rows, "pages": 1, "count": len(rows)}},
+                request=httpx.Request("GET", url),
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(fundamentals_module, "EastMoneyClient", lambda **kw: WireClient())
+    cfg = Config(data_root=tmp_path / "lake")
+    result = step_financial_statement_items(cfg, date(2018, 3, 27), "run-1", {})
+    assert result["rows_written"] == 4
+    files = list((cfg.staging_root / "financial_statement_items").rglob("*.parquet"))
+    frame = pl.read_parquet(files)
+    assert set(frame["source"]) == {"eastmoney", "eastmoney_backfill"}
+    reconstructed = frame.filter(pl.col("source") == "eastmoney_backfill")
+    assert reconstructed["available_at"].null_count() == reconstructed.height
+    assert reconstructed["source_published_at"].null_count() == reconstructed.height
+    strict = classify_pit_rows(
+        frame, "financial_statement_items", as_of=date(2100, 1, 1), pit_mode="strict"
+    )
+    assert set(strict["source"]) == {"eastmoney"}
+    records = captured_records(
+        cfg,
+        "financial_statement_items",
+        "run-1",
+        source="eastmoney",
+        request_scope="daily:2018-03-27",
+    )
+    assert len(records) == 5
+    assert all(record.http_metadata["wire_exact"] for record in records)
+
+
 def test_daily_reconstruction_does_not_replace_a_committed_original(tmp_path, monkeypatch):
     import polars as pl
 

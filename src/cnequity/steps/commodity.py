@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+import logging
+import uuid
+from datetime import date, timedelta
 
 import polars as pl
 
@@ -11,10 +13,16 @@ from cnequity.adapters.eastmoney.commodity_bars import (
     fetch_commodity_bars,
     fetch_commodity_bars_range,
 )
+from cnequity.adapters.sina.global_futures import (
+    RECHECK_DAYS,
+    fetch_offshore_commodity_bars_range,
+)
 from cnequity.config import Config
 from cnequity.orchestrator.outcomes import SourceUnavailableError
 from cnequity.orchestrator.registry import register_step
 from cnequity.steps.http_common import run_incremental_fetched, write_fetched
+
+logger = logging.getLogger(__name__)
 
 
 def _backfill_range(config: Config, trade_date: date, run_id: str) -> dict:
@@ -53,7 +61,7 @@ def step_commodity_bars(config: Config, trade_date: date, run_id: str, context: 
         raise SourceUnavailableError("commodity_bars: both eastmoney and sina sources disabled")
     if getattr(config, "_backfill", False):
         return _backfill_range(config, trade_date, run_id)
-    return run_incremental_fetched(
+    result = run_incremental_fetched(
         config,
         trade_date,
         run_id,
@@ -64,3 +72,43 @@ def step_commodity_bars(config: Config, trade_date: date, run_id: str, context: 
         source="eastmoney",
         allow_empty=False,
     )
+    if sina:
+        _recheck_offshore(config, trade_date, run_id, result)
+    return result
+
+
+def _recheck_offshore(config: Config, trade_date: date, run_id: str, result: dict) -> None:
+    """Rewrite recent offshore sessions with their final values.
+
+    A COMEX session closes after the daily run, so the run-day row is either
+    skipped or (historically) an intraday capture.  Re-reading the trailing
+    window lets freshest-fetch dedupe replace it; the last session before a
+    weekend or holiday is otherwise never rewritten.  Best-effort: the
+    run-day result already stands on its own.
+    """
+    start = trade_date - timedelta(days=RECHECK_DAYS)
+    end = trade_date - timedelta(days=1)
+    try:
+        df = fetch_offshore_commodity_bars_range(start, end, config=config)
+        if df.is_empty():
+            return
+        recheck = write_fetched(
+            config,
+            run_id,
+            "commodity_bars",
+            df,
+            source="sina",
+            batch_id=f"offshore-recheck-{uuid.uuid4().hex}",
+        )
+    except Exception as exc:
+        logger.warning(
+            "commodity_bars: offshore recheck %s..%s failed: %s: %s",
+            start,
+            end,
+            type(exc).__name__,
+            exc,
+        )
+        return
+    for key in ("rows_read", "rows_written"):
+        if isinstance(recheck.get(key), int):
+            result[key] = int(result.get(key) or 0) + recheck[key]

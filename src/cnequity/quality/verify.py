@@ -52,6 +52,7 @@ from cnequity.query.parquet_scan import (
     scan_parquet_root,
     uses_hive_partitions,
 )
+from cnequity.storage.observation import freshness_mark
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +354,8 @@ def verify_dataset(
     last = max(days) if days else None
 
     # --- stale head ---------------------------------------------------------
-    mark = watermark or last
+    # An event dataset is also as fresh as the last clean look at its source.
+    mark = freshness_mark(config, spec.name, watermark or last)
     if mark is not None and is_stale(spec.name, mark, anchor, config):
         gaps.append(
             Gap(
@@ -440,21 +442,3 @@ def verify_lake(
         watermark = state.get_date(name) if spec.watermark else None
         out.extend(verify_dataset(config, spec, anchor=anchor, watermark=watermark))
     return out
-
-
-def repairable_gaps(
-    config: Config,
-    *,
-    anchor: date,
-    datasets: list[str] | None = None,
-    kinds: set[str] | None = None,
-) -> list[Gap]:
-    """Return only gaps with an honest registered repair path.
-
-    This is the programmatic counterpart used by scheduled ``daily`` and
-    ``stale-only`` repair modes. Snapshot-only datasets are excluded by
-    ``verify_dataset``'s contract gate, so a scheduler cannot accidentally
-    turn a live snapshot into historical data.
-    """
-    gaps = verify_lake(config, anchor=anchor, datasets=datasets)
-    return [gap for gap in gaps if gap.repairable and (kinds is None or gap.kind in kinds)]

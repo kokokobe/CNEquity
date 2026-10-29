@@ -116,8 +116,14 @@ def missing_group_steps(mine: dict, theirs: dict) -> dict[str, list[str]]:
 
 def config_drift(config_path: Path | str) -> ConfigDrift:
     """Compare *config_path* against the packaged example template."""
+    from cnequity.config.layers import effective_raw, is_layered
+
     with open(config_path, "rb") as handle:
         mine = tomllib.load(handle)
+    if is_layered(mine):
+        # Defaults fill every key, so only an opt-out-free view can drift: a
+        # full `steps =` override that shadows a step a release has added.
+        mine = effective_raw(mine, apply_opt_outs=False)
     theirs = tomllib.loads(example_toml_text())
 
     mine_flat = _flatten(mine)
@@ -201,7 +207,11 @@ def render_drift(drift: ConfigDrift, config_path: Path | str) -> list[str]:
         )
     if drift.missing_keys or drift.missing_sections:
         lines.append(
-            _("Missing config keys use built-in defaults; there is no need to add them by hand.")
+            _(
+                "Missing config keys fall back to built-in values. Rather than adding them by hand, "
+                "run `cne config upgrade --minimize --dry-run`: it shows how this config would "
+                "extend the built-in defaults instead, so it stops falling behind."
+            )
         )
     lines.append(
         _("Compared with: {path}").format(

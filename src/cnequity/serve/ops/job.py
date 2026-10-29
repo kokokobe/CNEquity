@@ -14,7 +14,7 @@ import json
 import os
 import sys
 import traceback
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -172,7 +172,7 @@ def launch_runs(config, launch_id: str, target_run_id: str | None) -> list[dict]
         "FROM ingestion_runs WHERE json_extract(metadata_json, '$.launch.id') = ?"
     )
     try:
-        with sqlite3.connect(f"file:{config.manifest_path}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{config.manifest_path}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             rows = [dict(row) for row in conn.execute(query, (launch_id,))]
             if target_run_id and all(row["run_id"] != target_run_id for row in rows):

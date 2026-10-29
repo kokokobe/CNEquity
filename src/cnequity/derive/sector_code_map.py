@@ -78,12 +78,19 @@ def _latest_member_boards(
     if df.is_empty():
         return df
     latest = df[partition].max()
+    snapshot = df.filter(pl.col(partition) == latest)
+    pairs = [(code_col, name_col)]
+    # industry_code is only the level-3 leaf; the level-1/2 boards are boards too.
+    pairs += [(f"l{n}_code", f"l{n}_name") for n in (1, 2, 3) if f"l{n}_code" in snapshot.columns]
     return (
-        df.filter(pl.col(partition) == latest)
-        .select(
-            pl.col(code_col).cast(pl.Utf8).alias("board_code"),
-            pl.col(name_col).alias("board_name"),
+        pl.concat(
+            snapshot.select(
+                pl.col(code).cast(pl.Utf8).alias("board_code"),
+                pl.col(name).cast(pl.Utf8).alias("board_name"),
+            )
+            for code, name in pairs
         )
+        .drop_nulls()
         .unique()
     )
 

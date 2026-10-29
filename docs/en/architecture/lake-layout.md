@@ -10,6 +10,7 @@ The lake root is determined by `[data].root` in the configuration. Demo lakes an
 | `meta/state/` | Update watermarks and coverage state |
 | `meta/quality/` | Quality check and source discrepancy reports |
 | `meta/raw/` | Archive of raw responses |
+| `meta/raw_storage.json` | Optional external payload locations; source sidecars stay in `meta/raw/`, and snapshots materialize external payloads without machine-specific paths |
 | `meta/source_snapshots/` | Snapshots used for source verification |
 | `meta/locks/` | Locks used to coordinate single runs, publishing, and writes |
 | `locks/` | Scheduler locks shared by the scheduling scripts and the operations page. Can be moved elsewhere with `CNE_SCHEDULER_LOCK_DIR` or `CNE_LOCK_DIR` |

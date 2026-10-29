@@ -140,7 +140,7 @@ def step_valuation_metrics(config: Config, trade_date: date, run_id: str, contex
 
 
 # A daily run fills at most this many missed sessions (~2 datacenter requests
-# each); a longer outage is `cne backfill valuation_metrics --fill-em-outage`.
+# each); a longer outage is `cne repair valuation-outage`.
 _VALUATION_GAP_FILL_SESSIONS = 30
 
 
@@ -235,7 +235,7 @@ def _em_outage_window(
 ) -> tuple[date, date]:
     """The sessions an EastMoney outage left without a snapshot, bounded.
 
-    Opt-in (``cne backfill valuation_metrics --fill-em-outage``). The ordinary
+    Opt-in (``cne repair valuation-outage``). The ordinary
     cap keeps baostock history behind the last complete EastMoney day, which
     is right while EastMoney publishes and leaves an outage permanently empty
     when it does not (push2 failed every host from 2026-09-22). This lets
@@ -247,11 +247,11 @@ def _em_outage_window(
     from cnequity.quality.cross_checks import last_complete_em_valuation_tip
 
     if requested_end is None:
-        raise RuntimeError("--fill-em-outage needs an explicit --end")
+        raise RuntimeError("the valuation outage repair needs an explicit --end")
     em_tip = last_complete_em_valuation_tip(config)
     if em_tip is None:
         raise RuntimeError(
-            "--fill-em-outage needs a complete EastMoney day to anchor on; "
+            "the valuation outage repair needs a complete EastMoney day to anchor on; "
             "use the ordinary backfill for a lake without one"
         )
     return max(start, em_tip + timedelta(days=1)), min(

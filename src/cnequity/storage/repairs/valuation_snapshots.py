@@ -71,10 +71,10 @@ def _repair_locked(config: Config, *, apply: bool, fetch: Fetch | None) -> dict:
     from cnequity.adapters.eastmoney.valuation_datacenter import SOURCE as DATACENTER
 
     store = RevisionStore(config.meta_root, config.curated_root, config.derived_root)
-    store.ensure_current(DATASET)
-    base = store.current_root(DATASET)
+    base = store.repair_base(DATASET, register=apply)
     report: dict = {"applied": False, "rows": 0}
     if base is None:
+        report["note"] = f"no {DATASET} data; nothing to repair"
         return report
     bad = misdated_snapshot_keys(
         scan_parquet_root(base, partition_col="trade_date")

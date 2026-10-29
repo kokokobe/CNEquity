@@ -134,6 +134,8 @@ def test_repair_labels_every_value_and_rebuilds_only_what_evidence_supports(lake
     assert plan["applied"] is False
     assert plan["partitions_changed"] == 1
     assert plan["counts"]["pe_moved_to_dynamic"] == 1
+    # Every fixture row gains a basis label, so all of them change; `rows` is what was read.
+    assert 0 < plan["rows_changed"] <= plan["rows"]
 
     report = repair_valuation_basis(lake, apply=True)
     assert report["applied"] is True
@@ -160,7 +162,8 @@ def test_repair_labels_every_value_and_rebuilds_only_what_evidence_supports(lake
     assert push2["total_mv_basis"] == MV_VENDOR_REPORTED
 
     # Idempotent: nothing left to change, and the old revision stays readable.
-    assert repair_valuation_basis(lake)["partitions_changed"] == 0
+    again = repair_valuation_basis(lake)
+    assert again["partitions_changed"] == 0 and again["rows_changed"] == 0
     old = load("valuation_metrics", config=lake, revision=1)
     assert old.filter(pl.col("symbol") == "601318.SH")["pe_ttm"].item() == 8.5
 

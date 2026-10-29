@@ -16,13 +16,16 @@ pipeline after it takes the scheduler lock, so each job runs once per session.
 
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 CST = ZoneInfo("Asia/Shanghai")
 OPEN = time(9, 15)
-JOBS = ("daily", "stale")
+JOBS = ("daily", "stale", "maintain")
+#: Jobs that follow the day's run: due at its run_at, never before it ran.
+_AFTER_DAILY = {"stale": "stale_run_at", "maintain": "daily_run_at"}
 
 
 def parse_run_at(value: str) -> time:
@@ -86,7 +89,7 @@ def _ran_in_manifest(config, job: str, session: date) -> bool:
         + "LIMIT 1"
     )
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
             return conn.execute(query, (pattern, session.isoformat())).fetchone() is not None
     except sqlite3.Error:
         return False
@@ -95,7 +98,8 @@ def _ran_in_manifest(config, job: str, session: date) -> bool:
 def is_done(meta_root: Path, job: str, session: date, config=None) -> bool:
     if marker_path(meta_root, job, session).exists():
         return True
-    return config is not None and _ran_in_manifest(config, job, session)
+    # Maintenance leaves no ingestion run behind; only its marker counts.
+    return config is not None and job != "maintain" and _ran_in_manifest(config, job, session)
 
 
 def mark_done(meta_root: Path, job: str, session: date) -> Path:
@@ -109,12 +113,13 @@ def pending_session(config, job: str, now: datetime | None = None) -> date | Non
     """The session *job* should run for now: due, and not already run."""
     if job not in JOBS:
         raise ValueError(f"unknown scheduled job {job!r}; expected one of {JOBS}")
-    run_at = parse_run_at(getattr(config, f"{job}_run_at"))
+    run_at = parse_run_at(getattr(config, _AFTER_DAILY.get(job, f"{job}_run_at")))
     session = due_session(now or datetime.now(timezone.utc), run_at)
     if session is None or is_done(config.meta_root, job, session, config):
         return None
-    if job == "stale" and not is_done(config.meta_root, "daily", session, config):
-        # The catch-up retries what the day's run missed; before that run it
-        # would only fetch the same snapshots twice.
+    if job in _AFTER_DAILY and not is_done(config.meta_root, "daily", session, config):
+        # The catch-up retries what the day's run missed, and maintenance
+        # checks and backs up what it wrote; before that run neither has
+        # anything to do.
         return None
     return session

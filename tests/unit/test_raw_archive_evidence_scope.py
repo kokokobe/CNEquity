@@ -8,7 +8,11 @@ import polars as pl
 import pytest
 
 from cnequity.config import Config
-from cnequity.steps.http_common import verify_raw_archive, write_fetched
+from cnequity.steps.http_common import (
+    _validate_raw_archive_evidence,
+    verify_raw_archive,
+    write_fetched,
+)
 from cnequity.storage.raw_archive import (
     RawArchiveError,
     RawPayloadArchive,
@@ -47,6 +51,33 @@ def _capture(
     )
     assert record is not None
     return record
+
+
+@pytest.mark.parametrize(
+    ("dataset", "source", "scope", "row_source"),
+    [
+        ("financial_statement_items", "eastmoney", "daily:2024-01-02", "ths"),
+        ("financial_statement_items", "eastmoney", "daily:2024-01-02", "eastmoney_migrated_bj"),
+        ("financial_statement_items", "eastmoney", "backfill:2024-01-02", "eastmoney_backfill"),
+        ("financial_statement_items", "eastmoney_backfill", "daily:2024-01-02", "eastmoney"),
+        ("corporate_actions", "eastmoney", "daily:2024-01-02", "eastmoney_backfill"),
+    ],
+)
+def test_daily_financial_reconstruction_allowance_does_not_relax_other_sources(
+    tmp_path, dataset, source, scope, row_source
+):
+    config = Config(data_root=tmp_path / "lake")
+    _capture(config, dataset=dataset, source=source, scope=scope)
+    evidence = verify_raw_archive(config, dataset, "run-1", source=source, request_scope=scope)
+    with pytest.raises(RawArchiveError, match="normalized rows contain source"):
+        _validate_raw_archive_evidence(
+            config,
+            dataset,
+            "run-1",
+            evidence,
+            source=source,
+            df=pl.DataFrame({"source": [row_source]}),
+        )
 
 
 @pytest.mark.parametrize(

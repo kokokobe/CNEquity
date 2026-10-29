@@ -75,7 +75,7 @@ cne status --datasets
 | 数据仍在 staging | `ls staging/*/run_id=*` | `cne run compact` 发布所有已结束未发布的 run，或 `cne run retry`；**先 compact 再** `cne run clean`（勿 `--force`，否则 demote 后只能重抓） |
 | 分组 run 未 compact | 组 steps 是否含 `compact` | 配置修正后重跑组 |
 | compact 被 gate 跳过 | `cne status` 看 failed batch | `cne run retry --run-id <id>` |
-| 路径错误 | `config.data_root` | 核对 `configs/cnequity.toml` |
+| 路径错误 | `config.data_root` | `cne config path` 查看实际生效的配置和数据目录 |
 | 初始化还在跑，不带 `symbols` 的 `load("daily_bars")` 为空 | 未发布的全市场扫描不会被当成已发布数据 | 指定已经封存的代码，例如 `load("daily_bars", symbols=["600519.SH"])`；复权因子要等 `adj_factors` 发布 |
 
 ## 症状：daily_bars「interior symbol×session key(s) remain absent; refusing to checkpoint」
@@ -162,22 +162,22 @@ EOF
 - **现象**：日志 `THS sweep: BKxxxx (板块名) failed: ...`；`failed_sectors` 数量偏高。
 - **原因**：**这是同花顺的源,不是东财**——`[sources.eastmoney] proxy` 对它不生效。
   `d.10jqka.com.cn` 对密集请求会限速甚至封禁。
-- **处理**：冷却后提高 `[sources.ths] min_interval_seconds`（默认 1.0，不是安全阈值保证），再 `cne backfill sector_bars --retry-failed`；
-  全量换源后用 `--force`。Checkpoint：`meta/state/sector_bars_backfill.json`。
+- **处理**：冷却后提高 `[sources.ths] min_interval_seconds`（默认 1.0，不是安全阈值保证），再 `cne backfill sector_bars`；
+  默认从断点续跑；换源后全量重拉用 `--refetch`。Checkpoint：`meta/state/sector_bars_backfill.json`。
   失败率超过 50% 时 step 状态为 `warning`，已成功的板块仍会写入。
 
 ### 在另一台机器部署
 
 先按安装指南配置独立环境和个人配置，再通过 `sources probe --only <key>` 小范围确认可用性。HTTP 代理不一定能承载 Baostock/TDX 的 TCP 协议；不要根据地域猜测源是否可用。
 
-需要历史回填时直接使用 `cne backfill sector_bars --retry-failed` 或 `cne backfill trading_status --symbols <代码>`，保留原 checkpoint，不自动强制整湖重抓。数据转移使用经过审查的快照流程，不把带个人凭证、日志和数据的整个工作目录当安装包复制。
+需要历史回填时直接使用 `cne backfill sector_bars` 或 `cne backfill trading_status --symbols <代码>`，保留原 checkpoint，不自动强制整湖重抓。数据转移使用经过审查的快照流程，不把带个人凭证、日志和数据的整个工作目录当安装包复制。
 
 ## 症状：audit --full UNHEALTHY
 
 | Finding 类型 | 含义 | 处理 |
 |--------------|------|------|
 | `pk_unique` | PK 重复；`--full` 对全历史执行检查 | 查最近 compact；必要时 backfill 重跑该分区 |
-| `mixed_partition_granularity` | 盘上仍有细粒度分区叠在年/月分区上，同一 PK 跨粒度重复 | 优先 `python scripts/migrations/repartition.py <dataset>`（或 `--all`）按 `DatasetSpec` 原子重写；仅在工具无法跑时再把细粒度目录移到 `_quarantine/`。`trading_status` 历史派生须走 `partition_for`（月分区），勿再写日目录 |
+| `mixed_partition_granularity` | 盘上仍有细粒度分区叠在年/月分区上，同一 PK 跨粒度重复 | 优先 `cne repair repartition <dataset> --apply`（或 `--all`）按 `DatasetSpec` 原子重写；仅在工具无法跑时再把细粒度目录移到 `_quarantine/`。`trading_status` 历史派生须走 `partition_for`（月分区），勿再写日目录 |
 | `mock_source` | 生产环境 mock 数据 | 关闭 `allow_mock`；清 mock 分区重采 |
 | `adj_close_discontinuity` | 复权收益异常 | `cne derive adj_factors`；查 Sina 源 |
 | `missing_corporate_action` | 除权日无 corp action | `cne backfill corporate_actions` |
@@ -224,7 +224,7 @@ Findings 文件：`meta/quality/findings/{run_id}.json`
 ## 症状：磁盘不足 / staging 膨胀
 
 1. `cne run compact`：自动找出并发布所有已结束、有 staging、还没有成功 compact 的 run
-2. `cne run clean` 查看候选；现在只预览，不再删除。历史版本与登记试验到 serve 存储运维页确认，staging 暂仅报告
+2. `cne run clean` 查看候选；现在只预览，不再删除。历史版本到 serve 存储运维页确认，staging 暂仅报告
 3. incomplete / 未 compact 的失败 run 默认保留供 `cne run retry`；只有确认可丢弃时才 `--force`
 4. 压缩或归档旧 `meta/source_snapshots/`（长期会膨胀）
 5. curated 勿删；用 backfill 重采而非部分删除

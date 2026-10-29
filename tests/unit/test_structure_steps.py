@@ -36,6 +36,22 @@ def test_month_end_trading_days(cfg, monkeypatch):
     ]
 
 
+def test_an_unfinished_month_has_no_month_end(cfg, monkeypatch):
+    """Run on Sunday 2026-10-25, October's last session (10-30) has not happened;
+    the last session up to the next one (10-26) is not a month end."""
+    days = [date(2026, 9, 29), date(2026, 9, 30), date(2026, 10, 23), date(2026, 10, 26)]
+    days += [date(2026, 10, 30)]
+    monkeypatch.setattr(st, "list_trading_dates", lambda c, a, b: [d for d in days if a <= d <= b])
+    monkeypatch.setattr(st, "last_closed_session", lambda: date(2026, 10, 23))
+    assert st._month_end_trading_days(cfg, date(2026, 9, 1), date(2026, 10, 26)) == [
+        date(2026, 9, 30)
+    ]
+    monkeypatch.setattr(st, "last_closed_session", lambda: date(2026, 10, 30))
+    assert st._month_end_trading_days(cfg, date(2026, 9, 1), date(2026, 10, 30))[-1] == date(
+        2026, 10, 30
+    )
+
+
 def test_existing_as_of_dates_empty_and_populated(cfg):
     assert st._existing_as_of_dates(cfg, "index_constituents") == set()
     part = cfg.curated_root / "index_constituents" / "as_of_date=2024-06"
@@ -359,7 +375,7 @@ def test_industry_members_backfill_delivers_thin_month(cfg, monkeypatch):
             "as_of_date": [date(2024, 1, 31)] * 5,
         }
     )
-    monkeypatch.setattr(st, "expand_sw_industry_as_of", lambda intervals, todo: thin)
+    monkeypatch.setattr(st, "expand_sw_industry_as_of", lambda intervals, todo, delist=None: thin)
     from cnequity.orchestrator.source_gaps import source_gap_scope
 
     with source_gap_scope(cfg) as gaps:
@@ -396,7 +412,9 @@ def test_industry_members_backfill_keeps_both_thin_and_healthy_months(cfg, monke
     )
     thin = healthy.head(5).with_columns(pl.lit(thin_date).alias("as_of_date"))
     monkeypatch.setattr(
-        st, "expand_sw_industry_as_of", lambda intervals, todo: pl.concat([thin, healthy])
+        st,
+        "expand_sw_industry_as_of",
+        lambda intervals, todo, delist=None: pl.concat([thin, healthy]),
     )
 
     from cnequity.orchestrator.source_gaps import source_gap_scope

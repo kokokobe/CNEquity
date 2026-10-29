@@ -9,7 +9,7 @@ from cnequity.config.bootstrap import path_for_toml
 from cnequity.orchestrator.engine import JobEngine
 from cnequity.orchestrator.init_phases import (
     missing_steps,
-    phases_never_started,
+    pending_phases,
 )
 from cnequity.orchestrator.manifest import Manifest
 from cnequity.storage.layout import init_data_layout
@@ -353,7 +353,7 @@ def test_retry_runs_missing_init_steps(cfg):
         "derive_industry_index",
         "audit",
     ]
-    assert phases_never_started(phases, batches) == ["phase3_index_and_status", "phase4_finalize"]
+    assert pending_phases(phases, batches) == ["phase3_index_and_status", "phase4_finalize"]
 
 
 def test_init_never_starts_a_second_run_over_an_incomplete_one(cfg, monkeypatch):
