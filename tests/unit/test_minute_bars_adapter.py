@@ -326,7 +326,7 @@ def _patch_client(monkeypatch):
     from cnequity.adapters.tdx_protocol import client as client_mod
 
     RecordingQuotes.instances = []
-    monkeypatch.setattr(client_mod, "_quotes_client", lambda config: RecordingQuotes())
+    monkeypatch.setattr(client_mod, "_quotes_client", lambda config, **_kwargs: RecordingQuotes())
     monkeypatch.setattr(client_mod, "_close_quotes_client", lambda c: None)
     return client_mod
 
@@ -499,7 +499,7 @@ def test_single_worker_records_a_raised_symbol_without_failing_the_batch(monkeyp
                 raise RuntimeError("bad symbol")
             return []
 
-    monkeypatch.setattr(client_mod, "_quotes_client", lambda config: Flaky())
+    monkeypatch.setattr(client_mod, "_quotes_client", lambda config, **_kwargs: Flaky())
     monkeypatch.setattr(client_mod, "_close_quotes_client", lambda c: None)
 
     df, failed = client_mod.fetch_minute_bars(
@@ -514,7 +514,7 @@ def test_wire_client_unavailable_raises_a_named_error(monkeypatch):
 
     monkeypatch.setattr(client_mod, "_CONNECT_RETRY_BACKOFF_SEC", 0)
 
-    def _boom(config):
+    def _boom(config, **_kwargs):
         raise ImportError("no wire module")
 
     monkeypatch.setattr(client_mod, "_quotes_client", _boom)
@@ -529,7 +529,7 @@ def test_general_fetch_failure_resets_server_cache_and_raises(monkeypatch):
     reset_calls = []
     monkeypatch.setattr(client_mod, "reset_tdx_server_cache", lambda: reset_calls.append(1))
 
-    def _boom(config):
+    def _boom(config, **_kwargs):
         raise RuntimeError("host unreachable")
 
     monkeypatch.setattr(client_mod, "_quotes_client", _boom)
@@ -580,7 +580,7 @@ def test_connect_with_retry_succeeds_after_one_failure(monkeypatch):
 
     attempts = []
 
-    def flaky(config):
+    def flaky(config, **_kwargs):
         attempts.append(1)
         if len(attempts) == 1:
             raise TimeoutError("timed out")
@@ -599,7 +599,7 @@ def test_connect_with_retry_raises_the_last_error_once_exhausted(monkeypatch):
     monkeypatch.setattr(client_mod, "_CONNECT_RETRY_BACKOFF_SEC", 0)
     monkeypatch.setattr(client_mod, "reset_tdx_server_cache", lambda: None)
 
-    def always_fails(config):
+    def always_fails(config, **_kwargs):
         raise TimeoutError("timed out")
 
     monkeypatch.setattr(client_mod, "_quotes_client", always_fails)

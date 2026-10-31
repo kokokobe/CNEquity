@@ -46,7 +46,7 @@ def test_fetch_index_bars_preserves_partial_rows_when_requested(monkeypatch, all
     )
     monkeypatch.setattr(
         "cnequity.adapters.tdx_protocol.client._quotes_client",
-        lambda config=None: MagicMock(),
+        lambda config=None, **_kwargs: MagicMock(),
     )
     monkeypatch.setattr(
         "cnequity.adapters.tdx_protocol.client._close_quotes_client",

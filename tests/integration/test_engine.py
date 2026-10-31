@@ -83,7 +83,7 @@ def test_daily_job_source_outage_finishes_without_fabricated_data(config, monkey
     """An unreachable TDX source completes with explicit gaps and fallback."""
     from cnequity.adapters.tdx_protocol import client as tdx
 
-    def _boom(_config=None):
+    def _boom(_config=None, **_kwargs):
         raise RuntimeError("simulated TDX outage")
 
     monkeypatch.setattr(tdx, "_quotes_client", _boom)

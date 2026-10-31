@@ -20,7 +20,7 @@ END = date(2024, 6, 28)
 
 @pytest.fixture(autouse=True)
 def _no_tdx_client(monkeypatch):
-    def _boom(_config=None):
+    def _boom(_config=None, **_kwargs):
         raise RuntimeError("simulated TDX outage")
 
     monkeypatch.setattr(tdx, "_quotes_client", _boom)
@@ -36,7 +36,7 @@ def test_instruments_raises_on_partial_market_failure(monkeypatch):
                 raise RuntimeError("SZ timeout")
             return pd.DataFrame({"code": ["600519"], "name": ["贵州茅台"]})
 
-    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: _FakeClient())
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None, **_kwargs: _FakeClient())
 
     with pytest.raises(tdx.TdxSourceError, match="market fetch failed"):
         tdx.fetch_instruments(allow_mock=False)
@@ -57,7 +57,7 @@ def test_instruments_survives_one_dropped_market_page(monkeypatch):
                 return pd.DataFrame({"code": ["000001"], "name": ["平安银行"]})
             return pd.DataFrame({"code": ["600519"], "name": ["贵州茅台"]})
 
-    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: _FlakyClient())
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None, **_kwargs: _FlakyClient())
 
     df = tdx.fetch_instruments(allow_mock=False)
     assert sorted(df["symbol"].to_list()) == ["000001.SZ", "600519.SH"]
@@ -145,7 +145,7 @@ def test_real_rows_get_real_source_label():
 
 def test_daily_bars_dedupes_duplicate_symbol_input(monkeypatch):
     row = {"symbol": "600519.SH", "trade_date": START, "close": 1.0}
-    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: object())
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None, **_kwargs: object())
     monkeypatch.setattr(tdx, "_close_quotes_client", lambda _client: None)
     monkeypatch.setattr(tdx, "fetch_bars_paginated", lambda *_a, **_k: [row])
 
@@ -164,7 +164,7 @@ def test_daily_bars_keeps_other_symbols_when_one_symbol_page_fails(monkeypatch):
         "volume": 100,
         "amount": 100.0,
     }
-    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: object())
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None, **_kwargs: object())
     monkeypatch.setattr(tdx, "_close_quotes_client", lambda _client: None)
 
     def _fetch(_client, symbol, *_args, **_kwargs):
@@ -191,7 +191,7 @@ def test_daily_bars_abandons_a_hung_symbol_request(monkeypatch):
         "amount": 100.0,
     }
     release = Event()
-    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None: object())
+    monkeypatch.setattr(tdx, "_quotes_client", lambda _config=None, **_kwargs: object())
     monkeypatch.setattr(tdx, "_close_quotes_client", lambda _client: None)
     monkeypatch.setattr(tdx, "_TDX_SYMBOL_REQUEST_TIMEOUT_SECONDS", 0.01)
 

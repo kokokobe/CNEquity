@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 from cnequity.adapters.tdx_protocol import client as tdx
@@ -34,7 +36,9 @@ def test_quotes_client_auto_binds_probed_server(monkeypatch):
     # flaky bestip scan; stub the probe so the test stays offline.
     _install_fake_quotes(monkeypatch, factory=fake_factory)
     monkeypatch.setattr(
-        tdx, "_pick_reachable_server", lambda config=None, timeout=10: ("1.2.3.4", 7709)
+        tdx,
+        "_pick_reachable_server",
+        lambda config=None, timeout=10, markets=(1, 0): ("1.2.3.4", 7709),
     )
     tdx.reset_tdx_server_cache()
     cfg = Config(data_root="/tmp/data")
@@ -94,7 +98,7 @@ def test_pick_reachable_server_returns_first_functional(monkeypatch):
     cfg.tdx_host_pool = ["9.9.9.9:7709", "8.8.8.8:7709"]
 
     # only 8.8.8.8 serves data
-    def fake_probe(host, port, timeout):
+    def fake_probe(host, port, timeout, markets=(1, 0)):
         return host == "8.8.8.8"
 
     monkeypatch.setattr(tdx, "_probe", fake_probe)
@@ -106,10 +110,115 @@ def test_pick_reachable_server_returns_first_functional(monkeypatch):
 
 def test_pick_reachable_server_raises_when_none_live(monkeypatch):
     _install_fake_quotes(monkeypatch)
-    monkeypatch.setattr(tdx, "_probe", lambda h, p, t: False)
+    monkeypatch.setattr(tdx, "_probe", lambda h, p, t, markets=(1, 0): False)
     monkeypatch.setattr(tdx, "_candidate_servers", lambda config: [("9.9.9.9", 7709)])
     with pytest.raises(tdx.TdxSourceError, match="no TDX server responded"):
         tdx._pick_reachable_server(None)
+
+
+def test_serves_data_requires_every_requested_market(monkeypatch):
+    """2026-10-31 的教训：探活只测 SH 在册码，一台只服务沪深之一的僵尸镜像
+    也能通过探活，然后整批退市码补额空手而归。探活必须对每个所需市场都拿到
+    真实行。"""
+
+    class _ShOnly:
+        def bars(self, *args, **kwargs):
+            return [{"close": 1.0}] if kwargs.get("market") == 1 else []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "cnequity.adapters.tdx_protocol.quotes.Quotes.factory",
+        staticmethod(lambda **kwargs: _ShOnly()),
+    )
+    # 默认要求沪深都在册可服务——实测全池没有只服务一边的活主机，加严无代价。
+    assert tdx._serves_data("1.2.3.4", 7709, timeout=5) is False
+    assert tdx._serves_data("1.2.3.4", 7709, timeout=5, markets=(1,)) is True
+
+
+def test_serves_data_probes_a_listed_code_per_market(monkeypatch):
+    seen: list[tuple[str, int]] = []
+
+    class _Live:
+        def bars(self, code, **kwargs):
+            seen.append((code, kwargs.get("market")))
+            return [{"close": 1.0}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "cnequity.adapters.tdx_protocol.quotes.Quotes.factory",
+        staticmethod(lambda **kwargs: _Live()),
+    )
+    assert tdx._serves_data("1.2.3.4", 7709, timeout=5, markets=(1, 0)) is True
+    assert ("000001", 1) in seen
+    assert ("000001", 0) in seen
+
+
+def test_required_markets_covers_the_boards_in_the_batch():
+    assert tdx._required_markets(["600005.SH", "000004.SZ"]) == (1, 0)
+    assert tdx._required_markets(["600005.SH"]) == (1,)
+    assert tdx._required_markets(["920001.BJ"]) == (2,)
+    assert tdx._required_markets(["600005.SH", "920001.BJ"]) == (1, 2)
+    # 无后缀/不可解析 → 协议契约是沪深（TDX_EXCHANGES），探活退回默认
+    assert tdx._required_markets([]) == (1, 0)
+    assert tdx._required_markets(["NOPE"]) == (1, 0)
+
+
+def test_pick_reachable_server_passes_markets_to_probe(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def fake_probe(host, port, timeout, markets=(1, 0)):
+        seen["markets"] = markets
+        return True
+
+    _install_fake_quotes(monkeypatch)
+    monkeypatch.setattr(tdx, "_probe", fake_probe)
+    monkeypatch.setattr(tdx, "_candidate_servers", lambda config: [("9.9.9.9", 7709)])
+    tdx._pick_reachable_server(None, markets=(2,))
+    assert seen["markets"] == (2,)
+
+
+def test_server_cache_is_keyed_by_market_set(monkeypatch):
+    """沪深批与京批需要的主机能力不同，缓存按市场集分键，互不串用。"""
+    calls: list[tuple[int, ...]] = []
+
+    def fake_pick(config=None, timeout=10, markets=(1, 0)):
+        calls.append(tuple(markets))
+        return ("1.2.3.4", 7709)
+
+    _install_fake_quotes(monkeypatch)
+
+    def fake_factory(**kwargs):
+        return object()
+
+    monkeypatch.setattr(
+        "cnequity.adapters.tdx_protocol.quotes.Quotes.factory", staticmethod(fake_factory)
+    )
+    monkeypatch.setattr(tdx, "_pick_reachable_server", fake_pick)
+    tdx.reset_tdx_server_cache()
+    cfg = Config(data_root="/tmp/data")
+    cfg.tdx_servers = "auto"
+    tdx._quotes_client(cfg, markets=(1, 0))
+    tdx._quotes_client(cfg, markets=(1, 0))
+    tdx._quotes_client(cfg, markets=(2,))
+    tdx.reset_tdx_server_cache()
+    assert calls == [(1, 0), (2,)]
+
+
+def test_fetch_daily_bars_derives_markets_from_symbols(monkeypatch):
+    seen: dict[str, tuple[int, ...]] = {}
+
+    def fake_client(config, markets=(1, 0)):
+        seen["markets"] = tuple(markets)
+        raise RuntimeError("sentinel")
+
+    monkeypatch.setattr(tdx, "_quotes_client", fake_client)
+    with pytest.raises(tdx.TdxSourceError):
+        tdx.fetch_daily_bars(["000004.SZ", "920001.BJ"], date(2026, 1, 5), date(2026, 1, 6))
+    assert seen["markets"] == (0, 2)
 
 
 def test_serves_data_true_when_bars_return(monkeypatch):

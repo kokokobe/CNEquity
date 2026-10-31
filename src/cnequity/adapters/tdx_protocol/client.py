@@ -79,9 +79,16 @@ class TdxSourceError(RuntimeError):
 # fails the actual fetch. Worse, some bundled hosts are TCP-reachable but
 # return zero rows for every symbol (dead data feed), so we validate a
 # candidate by actually fetching a known bar before trusting it.
-_TDX_SERVER_CACHE: tuple[str, int] | None = None
+_TDX_SERVER_CACHE: dict[tuple[int, ...], tuple[str, int]] = {}
 _TDX_TCP_TIMEOUT = 1.5
-_TDX_PROBE_SYMBOL = "000001"  # SSE composite; market=1
+_TDX_PROBE_SYMBOL = "000001"  # SSE composite on market 1; 平安银行 on market 0
+# One listed code per board. A probe that only asked market 1 (the 2026-10-31
+# lesson) let a partial mirror pass discovery and then return nothing for the
+# market it does not serve. BJ (market 2) is probed only when a batch actually
+# needs it — the current host pool serves none of it, and the wire contract
+# is 沪深 ("市场代码错误, 目前只支持沪深市场").
+_TDX_PROBE_SYMBOLS: dict[int, str] = {1: "000001", 0: "000001", 2: "833533"}
+_TDX_DEFAULT_MARKETS = (1, 0)
 _TDX_MAX_CANDIDATES = 16
 _TDX_PROBE_CONCURRENCY = 8  # parallel probes; first live responder wins
 _TDX_FETCH_ATTEMPTS = 3  # server rotations before a bar fetch fails loud
@@ -94,9 +101,31 @@ _TDX_MIN_LISTED_PRE_CLOSE = 0.001
 
 def reset_tdx_server_cache() -> None:
     """Forget the cached TDX server so the next client re-probes (on failure)."""
-    global _TDX_SERVER_CACHE
     with TDX_DISCOVERY_LOCK:
-        _TDX_SERVER_CACHE = None
+        _TDX_SERVER_CACHE.clear()
+
+
+def _required_markets(symbols: list[str]) -> tuple[int, ...]:
+    """Markets the batch actually needs, in canonical (SH, SZ, BJ) order.
+
+    Deriving this per batch is what keeps a Beijing code from holding the 沪深
+    leg hostage: a batch without BJ probes for SH+SZ capability only, and one
+    with BJ says so up front instead of discovering it as silent empty rows.
+    """
+    markets: set[int] = set()
+    for sym in symbols:
+        _, sep, exch = sym.rpartition(".")
+        if not sep:
+            continue
+        if exch == "SH":
+            markets.add(1)
+        elif exch == "SZ":
+            markets.add(0)
+        elif exch == "BJ":
+            markets.add(2)
+    if not markets:
+        return _TDX_DEFAULT_MARKETS
+    return tuple(m for m in (1, 0, 2) if m in markets)
 
 
 def _reachable(host: str, port: int, timeout: float = _TDX_TCP_TIMEOUT) -> bool:
@@ -113,8 +142,15 @@ def _reachable(host: str, port: int, timeout: float = _TDX_TCP_TIMEOUT) -> bool:
         sock.close()
 
 
-def _serves_data(host: str, port: int, timeout: int) -> bool:
-    """A server passes only if it returns a real bar — filters dead feeds.
+def _serves_data(
+    host: str, port: int, timeout: int, markets: tuple[int, ...] = _TDX_DEFAULT_MARKETS
+) -> bool:
+    """A server passes only if every requested market returns a real bar.
+
+    An empty answer is also what a host gives for a market it does not serve —
+    and for a retired code, which the wire cannot tell apart. The probe asks a
+    listed code per market and requires all of them; delisted routing happens
+    above this layer, where the code is known.
 
     Uses ``heartbeat=False`` so the throwaway probe leaves no lingering thread.
     """
@@ -123,8 +159,11 @@ def _serves_data(host: str, port: int, timeout: int) -> bool:
     client = None
     try:
         client = Quotes.factory(server=(host, int(port)), timeout=timeout, heartbeat=False)
-        rows = client.bars(_TDX_PROBE_SYMBOL, market=1, start=0, offset=1)
-        return bool(rows)
+        for market in markets:
+            rows = client.bars(_TDX_PROBE_SYMBOLS[market], market=market, start=0, offset=1)
+            if not rows:
+                return False
+        return True
     except Exception:
         return False
     finally:
@@ -175,11 +214,17 @@ def _candidate_servers(config: Config | None) -> list[tuple[str, int]]:
     return out
 
 
-def _probe(host: str, port: int, timeout: int) -> bool:
-    return _reachable(host, port) and _serves_data(host, port, timeout)
+def _probe(
+    host: str, port: int, timeout: int, markets: tuple[int, ...] = _TDX_DEFAULT_MARKETS
+) -> bool:
+    return _reachable(host, port) and _serves_data(host, port, timeout, markets)
 
 
-def _pick_reachable_server(config: Config | None = None, timeout: int = 10) -> tuple[str, int]:
+def _pick_reachable_server(
+    config: Config | None = None,
+    timeout: int = 10,
+    markets: tuple[int, ...] = _TDX_DEFAULT_MARKETS,
+) -> tuple[str, int]:
     """Probe candidates in parallel; return the first that serves real data.
 
     Parallel probing means the first future to resolve true is effectively the
@@ -198,7 +243,7 @@ def _pick_reachable_server(config: Config | None = None, timeout: int = 10) -> t
         from cnequity.domain.rate_limit import source_request
 
         with source_request(config, "tdx_protocol"):
-            return _probe(host, port, timeout)
+            return _probe(host, port, timeout, markets)
 
     pool = ThreadPoolExecutor(max_workers=min(len(candidates), _TDX_PROBE_CONCURRENCY))
     futures = {pool.submit(_probe_one, h, p): (h, p) for h, p in candidates}
@@ -217,12 +262,13 @@ def _pick_reachable_server(config: Config | None = None, timeout: int = 10) -> t
     )
 
 
-def _quotes_client(config: Config | None = None):
+def _quotes_client(config: Config | None = None, markets: tuple[int, ...] = _TDX_DEFAULT_MARKETS):
     """Build a TDX client bound to a reachable, cached server.
 
-    Isolated so tests can monkeypatch it.
+    Isolated so tests can monkeypatch it. The cache is keyed by the market set
+    a batch needs: a host that serves 沪深 is no use to a Beijing batch, and
+    the two selections must not evict each other.
     """
-    global _TDX_SERVER_CACHE
     from cnequity.adapters.tdx_protocol.quotes import Quotes
 
     timeout = config.tdx_connect_timeout_sec if config else 10
@@ -238,9 +284,11 @@ def _quotes_client(config: Config | None = None):
         # discovery/cache operation only; the returned client owns an
         # independent socket and all subsequent requests run concurrently.
         with TDX_DISCOVERY_LOCK:
-            if _TDX_SERVER_CACHE is None:
-                _TDX_SERVER_CACHE = _pick_reachable_server(config, timeout=timeout)
-            server = _TDX_SERVER_CACHE
+            if markets not in _TDX_SERVER_CACHE:
+                _TDX_SERVER_CACHE[markets] = _pick_reachable_server(
+                    config, timeout=timeout, markets=markets
+                )
+            server = _TDX_SERVER_CACHE[markets]
         kwargs["server"] = server
     else:
         host, sep, port = servers.partition(":")
@@ -271,12 +319,14 @@ _CONNECT_RETRY_ATTEMPTS = 2
 _CONNECT_RETRY_BACKOFF_SEC = 2.0
 
 
-def _connect_with_retry(config: Config | None = None):
+def _connect_with_retry(
+    config: Config | None = None, markets: tuple[int, ...] = _TDX_DEFAULT_MARKETS
+):
     """``_quotes_client``, retrying once (with a fresh server) on failure."""
     last_exc: Exception | None = None
     for attempt in range(_CONNECT_RETRY_ATTEMPTS):
         try:
-            return _quotes_client(config)
+            return _quotes_client(config, markets=markets)
         except Exception as exc:  # noqa: BLE001 — retried, then re-raised as-is
             last_exc = exc
             if attempt + 1 < _CONNECT_RETRY_ATTEMPTS:
@@ -698,7 +748,7 @@ def fetch_daily_bars(
         # Each parallel worker invokes this function independently and owns
         # its own Quotes/socket.  A process-wide lock here would serialize all
         # those workers and defeat the macOS thread backend.
-        client = _quotes_client(config)
+        client = _quotes_client(config, markets=_required_markets(symbols))
         rows = []
         for sym in symbols:
             if on_heartbeat is not None:

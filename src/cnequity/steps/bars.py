@@ -711,6 +711,7 @@ def _supplement_bj_amounts_from_tdx(
     start: date,
     end: date,
     subject: str = "Beijing",
+    deferred_symbols: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[pl.DataFrame, list[dict]]:
     """Fill Beijing turnover TDX serves and Sina never published.
 
@@ -728,42 +729,55 @@ def _supplement_bj_amounts_from_tdx(
 
     Only `amount` is written. Keeping the stored volume costs nothing and saves
     the 7,270 rows where Sina is the finer of the two.
+
+    Beijing and 沪深 codes are fetched as separate groups: a Beijing chunk
+    needs a market-2-capable host, and holding the batches together would let
+    that (currently unserved) market fail discovery for codes TDX can answer.
+    ``deferred_symbols`` names rows a later pass (baostock, for delisted 沪深
+    names) will retry, so the unserved/unavailable findings do not claim them.
     """
     from cnequity.adapters.tdx_protocol.client import fetch_daily_bars
 
     symbols = sorted(set(merged.get_column("symbol").to_list()))
     if not symbols:
         return merged, []
+    beijing = [s for s in symbols if s.endswith(".BJ")]
+    sh_sz = [s for s in symbols if not s.endswith(".BJ")]
     frames: list[pl.DataFrame] = []
     failed: list[str] = []
-    for index in range(0, len(symbols), _BJ_AMOUNT_REPAIR_BATCH):
-        chunk = symbols[index : index + _BJ_AMOUNT_REPAIR_BATCH]
-        try:
-            frame = fetch_daily_bars(chunk, start, end, config=config)
-        except Exception as exc:  # noqa: BLE001 — the stored rows stay as they are
-            logger.warning(
-                "TDX Beijing amount supplement failed for %d symbol(s): %s", len(chunk), exc
-            )
-            failed.extend(chunk)
-            continue
-        if not frame.is_empty():
-            frames.append(
-                frame.select(
-                    "symbol", "trade_date", "open", "high", "low", "close", "volume", "amount"
+    for group in (sh_sz, beijing):
+        for index in range(0, len(group), _BJ_AMOUNT_REPAIR_BATCH):
+            chunk = group[index : index + _BJ_AMOUNT_REPAIR_BATCH]
+            try:
+                frame = fetch_daily_bars(chunk, start, end, config=config)
+            except Exception as exc:  # noqa: BLE001 — the stored rows stay as they are
+                logger.warning(
+                    "TDX Beijing amount supplement failed for %d symbol(s): %s", len(chunk), exc
                 )
-            )
+                failed.extend(chunk)
+                continue
+            if not frame.is_empty():
+                frames.append(
+                    frame.select(
+                        "symbol", "trade_date", "open", "high", "low", "close", "volume", "amount"
+                    )
+                )
     findings: list[dict] = []
-    if failed:
+    retryable = set(deferred_symbols)
+    unretried_failed = [s for s in failed if s not in retryable]
+    if unretried_failed:
         findings.append(
             {
                 "dataset": "daily_bars",
                 "severity": "info",
                 "check": "daily_bars_tdx_amount_unavailable",
                 "message": (
-                    f"TDX served no {subject} history for {len(failed)} symbol(s) over {start}..{end}"
+                    f"TDX served no {subject} history for {len(unretried_failed)} symbol(s) "
+                    f"over {start}..{end}"
                 ),
                 "source": "tdx_protocol",
                 "source_limited": True,
+                "symbols": unretried_failed,
             }
         )
     if not frames:
@@ -802,8 +816,12 @@ def _supplement_bj_amounts_from_tdx(
     # Every candidate has to land somewhere. A key TDX simply did not serve is
     # neither supplied nor rejected, and counting it nowhere is how a repair
     # reports success over rows it never touched — the Beijing board's retired
-    # 8xxxxx/430xxx codes are ~218,000 such rows.
-    unserved = joined.filter(pl.col("_tdx_amount").is_null())
+    # 8xxxxx/430xxx codes are ~218,000 such rows. Rows deferred to the baostock
+    # pass are counted there instead, so no finding claims a row another pass
+    # is about to fix.
+    unserved = joined.filter(
+        pl.col("_tdx_amount").is_null() & ~pl.col("symbol").is_in(list(retryable))
+    )
     supplemented = joined.filter(supplement)
     updated = joined.with_columns(
         pl.when(supplement).then(pl.col("_tdx_amount")).otherwise(pl.col("amount")).alias("amount"),
@@ -866,7 +884,8 @@ def _sina_history_amount_rows(frame: pl.DataFrame) -> pl.DataFrame:
     Delisted names land here because TDX serves nothing once a code has left
     the market, and the daily gap-fill then keeps Sina's row. Asking TDX again
     is still the right pass: a code it can still see gets an amount, and a
-    code it cannot stays on the stored row.
+    code it cannot either falls back to baostock (delisted 沪深 stocks) or
+    stays on the stored row (BJ codes and funds, which baostock lacks too).
     """
     if frame.is_empty() or "source" not in frame.columns:
         return frame.clear()
@@ -1079,6 +1098,160 @@ def _repair_bj_amounts_from_qmt(
     return result
 
 
+def _supplement_null_amounts_from_baostock(
+    config: Config,
+    frame: pl.DataFrame,
+    *,
+    start: date,
+    end: date,
+    symbols: set[str],
+) -> tuple[pl.DataFrame, list[dict]]:
+    """Baostock backstop for the turnover TDX cannot serve: delisted 沪深 names.
+
+    TDX answers a retired code with the same authoritative empty it gives a
+    market it does not serve — the wire cannot tell the two apart (measured
+    across the host pool on 2026-10-31; that run left 100 delisted codes with
+    no amount and failed the downstream gap gate). Baostock keeps every
+    delisted Shanghai/Shenzhen name, so rows TDX leaves unserved for symbols
+    it serves route here.
+
+    Only `amount` is written. The gate is the turnover repair's: baostock must
+    be describing the same session — prices within half a cent, volume within
+    one lot — before the field moves, and the stored price and volume stay.
+    """
+    from cnequity.adapters.baostock.delisted_bars import fetch_delisted_bars
+
+    findings: list[dict] = []
+    if frame.is_empty() or not symbols:
+        return frame, findings
+    pending = frame.filter(
+        pl.col("amount").is_null() & pl.col("symbol").is_in(sorted(symbols))
+    )
+    if pending.is_empty():
+        return frame, findings
+    names = sorted(set(pending.get_column("symbol").to_list()))
+    try:
+        rows, _chunk_failed = fetch_delisted_bars(names, start, end, config=config)
+    except Exception as exc:  # noqa: BLE001 — the stored rows stay as they are
+        logger.warning("baostock amount fallback failed for %d symbol(s): %s", len(names), exc)
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_amounts_baostock_unavailable",
+                "message": (
+                    f"baostock amount fallback failed for {len(names)} symbol(s) over "
+                    f"{start}..{end}: {exc}"
+                ),
+                "source": "baostock",
+                "source_limited": True,
+            }
+        )
+        return frame, findings
+    if not rows:
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_amounts_baostock_unserved",
+                "message": (
+                    f"baostock served no row for {pending.height} key(s) over {start}..{end} "
+                    f"across {names and len(names)} symbol(s); those rows keep their null amount"
+                ),
+                "source": "baostock",
+                "source_limited": True,
+                "rows_unserved": pending.height,
+            }
+        )
+        return frame, findings
+    fresh = pl.DataFrame(
+        rows,
+        schema={
+            "symbol": pl.Utf8,
+            "trade_date": pl.Date,
+            **dict.fromkeys(("open", "high", "low", "close"), pl.Float64),
+            "volume": pl.Int64,
+            "amount": pl.Float64,
+        },
+    )
+    prices = ("open", "high", "low", "close")
+    joined = pending.select("symbol", "trade_date", *prices, "volume").join(
+        fresh.select(
+            "symbol",
+            "trade_date",
+            *[pl.col(c).alias(f"_bs_{c}") for c in (*prices, "volume", "amount")],
+        ),
+        on=["symbol", "trade_date"],
+        how="left",
+    )
+    served = pl.col("_bs_close").is_not_null() & pl.col("_bs_amount").is_not_null()
+    prices_match = pl.all_horizontal(
+        (pl.col(c) - pl.col(f"_bs_{c}")).abs() <= _TURNOVER_REPAIR_PRICE_TOLERANCE
+        for c in prices
+    )
+    within_a_lot = (pl.col("volume") - pl.col("_bs_volume")).abs() < _BJ_AMOUNT_REPAIR_LOT
+    accepted = joined.filter(served & prices_match & within_a_lot).select(
+        "symbol", "trade_date", pl.col("_bs_amount").alias("_bs_amount")
+    )
+    rejected = joined.filter(served & ~(prices_match & within_a_lot))
+    unserved = joined.filter(~served)
+    updated = frame.join(accepted, on=["symbol", "trade_date"], how="left").with_columns(
+        pl.when(pl.col("_bs_amount").is_not_null())
+        .then(pl.col("_bs_amount"))
+        .otherwise(pl.col("amount"))
+        .alias("amount"),
+        pl.when(pl.col("_bs_amount").is_not_null())
+        .then(pl.lit("baostock"))
+        .otherwise(pl.col("source"))
+        .alias("source"),
+    ).drop("_bs_amount")
+    if accepted.height:
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_amounts_baostock_fallback",
+                "message": (
+                    f"baostock supplied amount for {accepted.height} row(s) over "
+                    f"{start}..{end} after the session matched within half a cent"
+                ),
+                "source": "baostock",
+                "rows_supplemented": accepted.height,
+                "symbols_supplemented": accepted.get_column("symbol").n_unique(),
+            }
+        )
+    if unserved.height:
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_amounts_baostock_unserved",
+                "message": (
+                    f"baostock served no usable row for {unserved.height} key(s) over "
+                    f"{start}..{end}; those rows keep their null amount"
+                ),
+                "source": "baostock",
+                "source_limited": True,
+                "rows_unserved": unserved.height,
+            }
+        )
+    if rejected.height:
+        findings.append(
+            {
+                "dataset": "daily_bars",
+                "severity": "warning",
+                "check": "daily_bars_amounts_baostock_mismatch",
+                "message": (
+                    f"baostock disagreed on price or volume for {rejected.height} row(s) over "
+                    f"{start}..{end}; those rows keep their null amount"
+                ),
+                "source": "baostock",
+                "rows_rejected": rejected.height,
+            }
+        )
+    return updated, findings
+
+
 def _repair_null_amounts_from_tdx(
     config: Config,
     start: date,
@@ -1111,12 +1284,23 @@ def _repair_null_amounts_from_tdx(
         if candidate.is_empty():
             continue
         rows_read += candidate.height
+        # Delisted 沪深 names are TDX-unserved by construction (the wire answers
+        # them with an authoritative empty), so they defer straight to the
+        # baostock pass instead of being counted as TDX failures first.
+        deferred = {
+            s for s in candidate.get_column("symbol").unique().to_list() if _baostock_stock(s)
+        }
         updated, slice_findings = _supplement_bj_amounts_from_tdx(
-            config, candidate, start=lo, end=hi, subject=subject
+            config, candidate, start=lo, end=hi, subject=subject, deferred_symbols=deferred
         )
         findings.extend(slice_findings)
+        updated, baostock_findings = _supplement_null_amounts_from_baostock(
+            config, updated, start=lo, end=hi, symbols=deferred
+        )
+        findings.extend(baostock_findings)
         changed = updated.filter(
-            pl.col("amount").is_not_null() & (pl.col("source") == "tdx_protocol")
+            pl.col("amount").is_not_null()
+            & pl.col("source").is_in(["tdx_protocol", "baostock"])
         )
         if changed.is_empty():
             continue
@@ -1155,8 +1339,9 @@ def repair_sina_history_amounts_from_tdx(
 ) -> dict:
     """Fill turnover on Sina-sourced SH/SZ/BJ history from TDX, when TDX has it.
 
-    The stored price and volume stay. A delisted code TDX no longer serves is
-    counted and left on its Sina row; that absence is not a failed bar.
+    The stored price and volume stay. A delisted 沪深 code TDX no longer serves
+    falls back to baostock under the same session gate; BJ codes and funds have
+    no baostock route and are counted as unserved, left on their Sina row.
     """
     scope = _resolve_daily_bar_scope(config, symbols) if symbols else None
     return _repair_null_amounts_from_tdx(

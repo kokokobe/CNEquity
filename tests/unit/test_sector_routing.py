@@ -298,7 +298,7 @@ def test_fetch_tdx_indices_live_filters_88xxxx(monkeypatch):
     # Imported inside the function from client — patch the source module.
     monkeypatch.setattr(
         "cnequity.adapters.tdx_protocol.client._quotes_client",
-        lambda _config=None: client,
+        lambda _config=None, **_kwargs: client,
     )
     rows = sr._fetch_tdx_indices_live()
     assert {(r["tdx_code"], r["name"]) for r in rows} == {

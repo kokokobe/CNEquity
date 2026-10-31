@@ -26,7 +26,7 @@ def test_daily_bar_calls_overlap_with_one_client_per_invocation(monkeypatch):
     class FakeClient:
         pass
 
-    def factory(_config=None):
+    def factory(_config=None, **_kwargs):
         client = FakeClient()
         with clients_lock:
             clients.append(client)

@@ -2299,8 +2299,10 @@ def repair_ex_dates(config_path, ex_dates_str, symbols_str, apply):
 def repair_bar_amounts(config_path, start_str, end_str, symbols_str, apply):
     """Fill daily_bars turnover of Sina-filled rows from TDX, after checking OHLC and volume.
 
-    Turnover is filled only when open/high/low/close match and volume differs by under one lot;
-    codes TDX lacks keep their Sina rows. Stored prices and volumes are never touched.
+    Turnover is filled only when open/high/low/close match and volume differs by under one lot.
+    Delisted Shanghai/Shenzhen stocks TDX cannot serve fall back to Baostock under the same
+    gate; Beijing codes and funds have no fallback and keep their Sina rows. Stored prices
+    and volumes are never touched.
     """
     _run_on_backfill(
         "daily_bars",
