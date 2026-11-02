@@ -524,6 +524,45 @@ def status_traded(config_path: str, start, end, apply: bool):
     _emit(repair_status_traded(_cfg(config_path), start=start.date(), end=end.date(), apply=apply))
 
 
+@repair.command("delisted-day-status")
+@config_option
+@click.option(
+    "--start",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help=N_("Start of the recorded-delist-date window (YYYY-MM-DD)."),
+)
+@click.option(
+    "--end",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help=N_("End of the recorded-delist-date window (YYYY-MM-DD)."),
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    help=N_("Publish a new version after verification; by default only prints the plan."),
+)
+def delisted_day_status(config_path: str, start, end, apply: bool):
+    """Write delisted status rows for recorded delisting days the daily step missed.
+
+    
+    A stock with instruments.delist_date recorded stopped trading on that date: the day has
+    no bar and, on a lake joined after the fact, no status row, which fails candidate as_of
+    dates that fall on it. The recorded delist_date is the first-hand evidence; a delist-day
+    bar contradicts it and is reported, not overwritten.
+    The default preview writes nothing; --apply publishes under the lake lock, keeping the old version.
+
+    """
+    from cnequity.storage.repairs.delisted_day_status import repair_delisted_day_status
+
+    if end < start:
+        raise click.BadParameter(_("--end must be on or after --start"))
+    _emit(
+        repair_delisted_day_status(_cfg(config_path), start=start.date(), end=end.date(), apply=apply)
+    )
+
+
 @repair.command("phantom-bars")
 @config_option
 @click.option(
