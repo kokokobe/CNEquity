@@ -545,11 +545,13 @@ def status_traded(config_path: str, start, end, apply: bool):
     help=N_("Publish a new version after verification; by default only prints the plan."),
 )
 def phantom_bars(config_path: str, start, end, symbols_str: str | None, apply: bool):
-    """Drop zero-volume, null-amount SH/SZ bar rows no first-hand source corroborates.
+    """Drop SH/SZ bar rows no first-hand source corroborates.
 
     \b
-    A row is dropped only when a first-hand (non-derived) suspended status row covers its day
-    and neither Baostock nor TDX serves a bar for it; anything else is kept and reported.
+    Two phantom classes: zero-volume rows (dropped only when a first-hand, non-derived
+    suspended status row covers the day and neither Baostock nor TDX serves a bar), and
+    volume>0 copy artifacts (the stored row repeats the previous session byte for byte and
+    neither Baostock, TDX nor the QMT bridge serves a bar). Anything else is kept and reported.
     The default preview writes nothing; --apply publishes under the lake lock, keeping the old version.
 
     """

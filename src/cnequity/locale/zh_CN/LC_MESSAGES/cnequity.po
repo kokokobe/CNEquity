@@ -2524,6 +2524,18 @@ msgstr "下载并解析完整历史文件；仅显式诊断，日常优先用采
 msgid "Downstream derivation failed: {name}: {exc}"
 msgstr "下游派生失败：{name}: {exc}"
 
+#: cnequity/cli/repair_cmds.py
+msgid ""
+"Drop SH/SZ bar rows no first-hand source corroborates.\n"
+"\n"
+"\n"
+"Two phantom classes: zero-volume rows (dropped only when a first-hand, non-derived\n"
+"suspended status row covers the day and neither Baostock nor TDX serves a bar), and\n"
+"volume>0 copy artifacts (the stored row repeats the previous session byte for byte and\n"
+"neither Baostock, TDX nor the QMT bridge serves a bar). Anything else is kept and reported.\n"
+"The default preview writes nothing; --apply publishes under the lake lock, keeping the old version."
+msgstr "删除沪深日线里没有任何一手来源佐证的伪影行。\n\n两类：零成交行（仅当日有一手非 derived 停牌状态行、且 Baostock 与 TDX 都无该日 K 线时删除）；\nvolume>0 复制伪影行（存储行与前一会话逐位相同，且 Baostock、TDX、QMT 桥均无该日行）。\n其余行保留并在预览中报告。\n默认只预览；--apply 在湖锁下发布新版本并保留旧版本。"
+
 #: cnequity/storage/migrations.py
 msgid "Drop Shenwan industry rows dated on or after the stock's delisting"
 msgstr "删除日期在退市日及之后的申万行业行"
@@ -2547,16 +2559,6 @@ msgstr "删除落在证券上市窗口之外的 trading_status 行"
 #: cnequity/storage/migrations.py
 msgid "Drop zero-volume daily bars dated after a security's delisting"
 msgstr "删除退市日之后的零成交量日线"
-
-#: cnequity/cli/repair_cmds.py
-msgid ""
-"Drop zero-volume, null-amount SH/SZ bar rows no first-hand source corroborates.\n"
-"\n"
-"\n"
-"A row is dropped only when a first-hand (non-derived) suspended status row covers its day\n"
-"and neither Baostock nor TDX serves a bar for it; anything else is kept and reported.\n"
-"The default preview writes nothing; --apply publishes under the lake lock, keeping the old version."
-msgstr "删除沪深日线里没有任何一手来源佐证的零成交、缺成交额伪影行。\n\n仅当日有一手（非 derived）停牌状态行、且 Baostock 与 TDX 都无该日 K 线时才删除；其余行保留并在预览中报告。\n默认只预览；--apply 在湖锁下发布新版本并保留旧版本。"
 
 #: cnequity/serve/ops/settings.py
 msgid "EastMoney"
@@ -2798,7 +2800,10 @@ msgid ""
 "Delisted Shanghai/Shenzhen stocks TDX cannot serve fall back to Baostock under the same\n"
 "gate; Beijing codes and funds have no fallback and keep their Sina rows. Stored prices\n"
 "and volumes are never touched."
-msgstr "核对开高低收与成交量后，用 TDX 补 Sina 历史行的成交额。\n\n仅当开高低收一致且成交量差距不足一手时才补；TDX 不服务的沪深退市股按同一道门回退 Baostock；京码与基金无兜底，保留 Sina 行。存储的价量永不改动。"
+msgstr ""
+"核对开高低收与成交量后，用 TDX 补 Sina 历史行的成交额。\n"
+"\n"
+"仅当开高低收一致且成交量差距不足一手时才补；TDX 不服务的沪深退市股按同一道门回退 Baostock；京码与基金无兜底，保留 Sina 行。存储的价量永不改动。"
 
 #: cnequity/storage/migrations.py
 msgid "Fill fund listing dates from the exchanges' official lists"
