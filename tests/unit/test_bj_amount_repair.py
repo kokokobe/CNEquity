@@ -515,6 +515,40 @@ def test_symbols_baostock_cannot_serve_are_not_asked(tmp_path, monkeypatch):
     assert asked == []
 
 
+def test_a_sina_fund_row_supplements_from_qmt(tmp_path, monkeypatch):
+    """163907/164902 这类 LOF 在策略宇宙内：sina 缺额且 TDX 不服务基金 bars、
+    baostock 无基金、backfill anti-join 不覆盖旧行——QMT 桥是唯一权威源。
+    沪深码不得被 .BJ 过滤挡在这条修复路径之外。"""
+    from datetime import date
+
+    day = date(2025, 3, 12)
+    lake = _seed_lake(tmp_path, [_sina_row("163907.SZ", day)])
+    monkeypatch.setattr(
+        "cnequity.adapters.qmt_bridge.fetch_daily_bars_qmt",
+        lambda *a, **k: pl.DataFrame(
+            [
+                {
+                    "symbol": "163907.SZ",
+                    "trade_date": day,
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.5,
+                    "close": 10.5,
+                    "volume": 1000.0,
+                    "amount": 52_500.0,
+                }
+            ]
+        ),
+    )
+    result = bars._repair_bj_amounts_from_qmt(lake, day, day, "repair", symbols=["163907.SZ"])
+
+    stored = _read_lake(lake, day)
+    assert stored["163907.SZ"]["amount"] == 52_500.0
+    assert stored["163907.SZ"]["source"] == "qmt_bridge"
+    assert stored["163907.SZ"]["volume"] == 1000.0
+    assert result["rows_written"] == 1
+
+
 def test_the_window_is_walked_a_year_at_a_time():
     """Half a million rows is not one staging write."""
     assert bars._yearly_slices(date(2024, 3, 1), date(2026, 2, 1)) == [

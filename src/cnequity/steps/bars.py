@@ -1041,7 +1041,14 @@ def _repair_bj_amounts_from_qmt(
     *,
     symbols: list[str] | None,
 ) -> dict:
-    """Stage QMT-backed Beijing turnover for stored Sina rows."""
+    """Stage QMT-backed turnover for stored Sina rows the other repairs miss.
+
+    Beijing rows were the original scope; SH/SZ rows join them because the
+    wire-adjacent fallbacks each have a hole — TDX serves no fund bars
+    (163907/164902 LOF 2025-03-12 measured), baostock carries no funds, and
+    the daily backfill's anti-join never overwrites a stored row. QMT is the
+    terminal authority for all three boards.
+    """
     from cnequity.query.parquet_scan import collect_parquet_root
     from cnequity.steps.http_common import write_fetched
 
@@ -1060,7 +1067,7 @@ def _repair_bj_amounts_from_qmt(
         candidate = dedupe_by_primary_key(current, "daily_bars").filter(
             pl.col("amount").is_null()
             & (pl.col("source") == "sina")
-            & pl.col("symbol").str.slice(-3).is_in([".BJ"])
+            & pl.col("symbol").str.slice(-3).is_in([".BJ", ".SZ", ".SH"])
         )
         if candidate.is_empty():
             continue
@@ -1080,11 +1087,11 @@ def _repair_bj_amounts_from_qmt(
             "daily_bars",
             changed,
             source="qmt_bridge",
-            batch_id=f"qmt-bj-amount-repair-{index:04d}",
+            batch_id=f"qmt-amount-repair-{index:04d}",
         )
         rows_written += int(out.get("rows_written", 0))
         logger.info(
-            "QMT BJ amount repair %s..%s: %d/%d row(s) supplied",
+            "QMT amount repair %s..%s: %d/%d row(s) supplied",
             lo,
             hi,
             changed.height,

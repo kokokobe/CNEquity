@@ -235,9 +235,10 @@ from cnequity.orchestrator.engine import JobEngine
     is_flag=True,
     help=(
         N_(
-            "daily_bars only: fill the turnover of Sina rows for delisted BSE names from the "
-            "BigQMT bridge; fills only when open/high/low/close agree and the volume difference "
-            "is under one lot; stored prices and volumes are never touched. Requires --symbols "
+            "daily_bars only: fill the turnover of Sina rows (BSE names and SH/SZ rows the other "
+            "repairs cannot reach, e.g. funds) from the BigQMT bridge; fills only when "
+            "open/high/low/close agree and the volume difference is under one lot; stored prices "
+            "and volumes are never touched. Requires --symbols "
             "and --start/--end."
         )
     ),
