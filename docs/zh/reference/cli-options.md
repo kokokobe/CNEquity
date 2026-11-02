@@ -43,7 +43,7 @@
 | `--bse-tip-repair` | `False` | 仅 daily_bars，历史迁移用：用北交所官网补已有当期交易日的 BJ 成交额，不重抓 Sina。日更已以北交所行情板为 BJ 当期主源。 |
 | `--bj-amount-repair` | `False` | 仅 daily_bars，已由 --tdx-amount-repair 取代：从 TDX 补 Sina 从未发布过的北交所成交额，已存的价格和成交量一律不动。需要 --start/--end。 |
 | `--tdx-amount-repair` | `False` | 仅 daily_bars：新浪补上的沪深北历史行与通达信一起核对，只在开高低收一致且成交量差小于一手时补成交额；通达信没有的代码保留新浪行。已存的价格和成交量一律不动。需要 --start/--end。 |
-| `--qmt-amount-repair` | `False` | 仅 daily_bars：用 BigQMT 桥补退市 BJ 的 Sina 行成交额；开高低收一致且成交量差小于一手时才补，已存价格和成交量不动。需要 --symbols 和 --start/--end。 |
+| `--qmt-amount-repair` | `False` | 仅 daily_bars：用 BigQMT 桥补 Sina 行的成交额（北交所码及其他修复够不着的沪深行，如基金）；仅当开高低收一致且成交量差距不足一手时才补；存储的价量永不改动。需要 --symbols 与 --start/--end。 |
 | `--qmt-bars-repair` | `False` | 仅 daily_bars：用 BigQMT 桥补缺失的北交所日线；只写入 curated 湖缺失的 keys，上市区间外或零成交量行不作为覆盖。需要 --symbols 和 --start/--end。 |
 | `--tdx-volume-repair` | `False` | 仅 daily_bars：重读 TDX，只改写已存 TDX 行的成交量（修 2026-09-17 前的解码错误）；价格须一致，64.5 元以下被放大的成交额一并改写；不新增行。需要 --symbols 和 --start/--end。 |
 | `--turnover-repair` | `False` | 仅 daily_bars：成交额缺失、为 0 或量额单位错位的沪深股票行，用 Baostock 同日行整行替换；开高低收须在半分钱内一致，不一致或未提供的保留原值。需要 --start/--end。 |
@@ -67,8 +67,8 @@
 | `--force` | `False` | action=create 时覆盖已存在的配置文件。 |
 | `--data-root` | `—` | action=create 时设置 [data].root（默认把 ./data/cnequity 解析成绝对路径）。 |
 | `--dry-run` | `False` | action=upgrade 时只列出要补的 step 和调度组，不写文件。 |
-| `--minimize` | `False` | With action=upgrade: rewrite a full config to extend the built-in defaults, keeping only the settings that differ; lists every setting whose behaviour would change. |
-| `--defaults` | `False` | With action=show: print every setting with its built-in default and explanation. |
+| `--minimize` | `False` | 用于 action=upgrade：把完整配置改写为继承内置默认值，只保留不同的设置；会列出每项行为会变化的设置。 |
+| `--defaults` | `False` | 用于 action=show：打印每项设置及其内置默认值和说明。 |
 
 ## `cne contract diff`
 
@@ -145,7 +145,7 @@
 | `--full` | `False` | 重写 adj_factors / industry_index / option_greeks / minute_bars_15m\|30m\|60m 的全部分区（默认只补增量）。 |
 | `--start` | `—` | industry_index / trading_status / option_greeks / minute_bars_15m\|30m\|60m：只派生这个日期（YYYY-MM-DD）及之后的。 |
 | `--end` | `—` | industry_index / trading_status / option_greeks / minute_bars_15m\|30m\|60m：只派生这个日期（YYYY-MM-DD）及之前的。 |
-| `--apply` | `False` | adj_factor_source: write per-security source overrides and recompute factors for those securities (default: report only). |
+| `--apply` | `False` | adj_factor_source：写入逐证券来源覆盖并重算这些证券的因子（默认只报告）。 |
 
 ## `cne doctor`
 
@@ -160,14 +160,14 @@
 |---|---|---|
 | `archive` | `—` | 必填；位置参数 |
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--dataset` | `—` | 必填；Which daily bars the annual package holds. |
-| `--year` | `—` | 必填；Trading year it covers. |
-| `--accept-partial-fields` | `False` | Accept that the annual package lacks fields only the daily files have; existing complete daily bars are not overwritten. Required. |
-| `--url` | `—` | Optional: its original HTTPS URL on the SHFE site. |
-| `--downloaded-at` | `—` | Optional: when it was downloaded, ISO 8601 with zone. |
-| `--start` | `—` | Within --year: first day to import. |
-| `--end` | `—` | Within --year: last day to import. |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--dataset` | `—` | 必填；年度包包含哪类日线。 |
+| `--year` | `—` | 必填；它覆盖的交易年份。 |
+| `--accept-partial-fields` | `False` | 接受年度包缺少只有日文件才有的字段；已有的完整日线不会被覆盖。必填。 |
+| `--url` | `—` | 可选：它在上期所网站的原始 HTTPS 地址。 |
+| `--downloaded-at` | `—` | 可选：下载时间，带时区的 ISO 8601。 |
+| `--start` | `—` | 在 --year 之内：导入的第一天。 |
+| `--end` | `—` | 在 --year 之内：导入的最后一天。 |
+| `--apply` | `False` | 运行；不加只打印计划。 |
 
 ## `cne init`
 
@@ -210,8 +210,8 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--apply` | `False` | Run the owed migrations and record each result in meta/state/lake.json. |
-| `--only` | `—` | Comma-separated migration ids; runs them even when already recorded. Default: every migration this lake still owes. |
+| `--apply` | `False` | 运行欠下的迁移，并把每个结果记入 meta/state/lake.json。 |
+| `--only` | `—` | 逗号分隔的迁移 id；即使已记录也重新运行。默认：这个湖还欠的全部迁移。 |
 | `--json` | `False` | 输出机器可读的 JSON。 |
 
 ## `cne profile list`
@@ -232,7 +232,7 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--sql` | `SELECT COUNT(*) AS n FROM daily_bars` | Read-only DuckDB SQL; each dataset is a view named as in `cne status --datasets`. |
+| `--sql` | `SELECT COUNT(*) AS n FROM daily_bars` | 只读 DuckDB SQL；每个数据集是一个视图，名称同 `cne status --datasets`。 |
 | `--dataset` | `—` | 按需抓取的数据集名 |
 | `--symbol` | `—` | 按需抓取的标的代码 |
 | `--refresh` | `False` | 抓取前先刷新按需缓存（需要同时给 --dataset 和 --symbol）。 |
@@ -257,8 +257,8 @@
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
 | `--start` | `—` | 必填；窗口起点（YYYY-MM-DD）。 |
 | `--end` | `—` | 必填；窗口终点（YYYY-MM-DD）。 |
-| `--symbols` | `—` | Comma-separated symbols. |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--symbols` | `—` | 逗号分隔的证券代码。 |
+| `--apply` | `False` | 运行；不加只打印计划。 |
 
 ## `cne repair bar-turnover`
 
@@ -267,18 +267,18 @@
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
 | `--start` | `—` | 必填；窗口起点（YYYY-MM-DD）。 |
 | `--end` | `—` | 必填；窗口终点（YYYY-MM-DD）。 |
-| `--symbols` | `—` | Comma-separated symbols. |
-| `--peer-review` | `False` | Review price conflicts against historical exchange prices, TDX and EastMoney; replace whole bars only with agreeing evidence. |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--symbols` | `—` | 逗号分隔的证券代码。 |
+| `--peer-review` | `False` | 用交易所历史价格、通达信和东财复查价格冲突；只有证据一致时才整行替换。 |
+| `--apply` | `False` | 运行；不加只打印计划。 |
 
 ## `cne repair bse-tip-turnover`
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--symbols` | `—` | 必填；Comma-separated symbols. |
-| `--date` | `—` | 必填；The session (YYYY-MM-DD). |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--symbols` | `—` | 必填；逗号分隔的证券代码。 |
+| `--date` | `—` | 必填；交易日（YYYY-MM-DD）。 |
+| `--apply` | `False` | 运行；不加只打印计划。 |
 
 ## `cne repair corporate-action-gaps`
 
@@ -292,20 +292,29 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--source` | `—` | 必填；baostock for delisted Shanghai/Shenzhen symbols; ths for delisted Beijing symbols. |
-| `--symbols` | `—` | Comma-separated symbols. |
+| `--source` | `—` | 必填；baostock 用于已退市的沪深证券；ths 用于已退市的北交所证券。 |
+| `--symbols` | `—` | 逗号分隔的证券代码。 |
 | `--start` | `—` | 窗口起点（YYYY-MM-DD）。 |
 | `--end` | `—` | 窗口终点（YYYY-MM-DD）。 |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--apply` | `False` | 运行；不加只打印计划。 |
+
+## `cne repair delisted-day-status`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
+| `--start` | `—` | 必填；记录退市日窗口起始日（YYYY-MM-DD）。 |
+| `--end` | `—` | 必填；记录退市日窗口结束日（YYYY-MM-DD）。 |
+| `--apply` | `False` | 核验后发布新版本；默认只输出计划。 |
 
 ## `cne repair ex-dates`
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--ex-dates` | `—` | 必填；Comma-separated ex-dates, YYYY-MM-DD. |
-| `--symbols` | `—` | Comma-separated symbols. |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--ex-dates` | `—` | 必填；逗号分隔的除权日，YYYY-MM-DD。 |
+| `--symbols` | `—` | 逗号分隔的证券代码。 |
+| `--apply` | `False` | 运行；不加只打印计划。 |
 
 ## `cne repair financial-originals`
 
@@ -372,11 +381,21 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--symbols` | `—` | 必填；Comma-separated symbols. |
+| `--symbols` | `—` | 必填；逗号分隔的证券代码。 |
 | `--start` | `—` | 必填；窗口起点（YYYY-MM-DD）。 |
 | `--end` | `—` | 必填；窗口终点（YYYY-MM-DD）。 |
-| `--issuer-notices-only` | `False` | Use issuer implementation announcements only (reviewed list, CNINFO, BSE); unmatched events stay gaps and Baostock is not queried. |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--issuer-notices-only` | `False` | 只用发行人实施公告（已审清单、巨潮、北交所）；匹配不到的事件保留为缺口，不请求 Baostock。 |
+| `--apply` | `False` | 运行；不加只打印计划。 |
+
+## `cne repair phantom-bars`
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
+| `--start` | `—` | 必填；幻影行扫描窗口起始日（YYYY-MM-DD）。 |
+| `--end` | `—` | 必填；幻影行扫描窗口结束日（YYYY-MM-DD）。 |
+| `--symbols` | `—` | 逗号分隔的证券代码。 |
+| `--apply` | `False` | 核验后发布新版本；默认只输出计划。 |
 
 ## `cne repair repartition`
 
@@ -384,8 +403,8 @@
 |---|---|---|
 | `dataset` | `—` | 位置参数 |
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--all` | `False` | Every dataset whose layout needs it. |
-| `--apply` | `False` | Rewrite and swap the partitions; by default only previews. |
+| `--all` | `False` | 所有布局需要改写的数据集。 |
+| `--apply` | `False` | 改写并换上分区；默认只预览。 |
 
 ## `cne repair status-traded`
 
@@ -413,7 +432,7 @@
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
 | `--start` | `—` | 必填；窗口起点（YYYY-MM-DD）。 |
 | `--end` | `—` | 必填；窗口终点（YYYY-MM-DD）。 |
-| `--apply` | `False` | Run it; without this only the plan is printed. |
+| `--apply` | `False` | 运行；不加只打印计划。 |
 
 ## `cne run clean`
 
@@ -468,8 +487,8 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--groups` | `—` | Schedule groups the freshness gate fails on (space- or comma-separated). Default: the groups the scheduled update runs. |
-| `--notify` | `False` | On problems, also show a desktop notification (macOS). |
+| `--groups` | `—` | 新鲜度门禁判失败的调度组（空格或逗号分隔）。默认：定时日更实际运行的组。 |
+| `--notify` | `False` | 有问题时同时弹出桌面通知（macOS）。 |
 
 ## `cne run retry`
 
@@ -484,19 +503,19 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--pack` | `—` | Update only these research packs' schedule groups, without event streams. Repeatable. Default: keep the current selection (every schedule group on a first install). |
-| `--no-stale` | `False` | Do not retry missed snapshots after [job.stale].run_at. |
-| `--events-group` | `—` | Also run this event-stream group (announcements, news) on its own interval. |
-| `--events-every` | `60` | With --events-group: minutes between runs. |
-| `--events, --no-events` | `—` | Run the config's [[job.events.schedules]] (or turn them off). Default: keep the current setting; on when the config defines schedules and nothing is set yet. |
-| `--yes, -y` | `False` | Install without asking for confirmation. |
+| `--pack` | `—` | 只更新这些研究包的调度组，不含事件流。可重复。默认保留当前选择（首次安装为全部调度组）。 |
+| `--no-stale` | `False` | 不在 [job.stale].run_at 之后重试缺失的快照。 |
+| `--events-group` | `—` | 另按自己的间隔运行这个事件流组（公告、资讯）。 |
+| `--events-every` | `60` | 配合 --events-group：两次运行之间的分钟数。 |
+| `--events, --no-events` | `—` | 运行配置里的 [[job.events.schedules]]（或关闭）。默认保留现有设置；配置定义了计划且尚无设置时开启。 |
+| `--yes, -y` | `False` | 不询问确认直接安装。 |
 
 ## `cne schedule remove`
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--yes, -y` | `False` | Remove without asking for confirmation. |
+| `--yes, -y` | `False` | 不询问确认直接移除。 |
 
 ## `cne schedule status`
 
@@ -782,7 +801,7 @@
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
 | `--derivatives` | `False` | 只读验收衍生品研究窗口；需 --dataset、--start、--end。 |
-| `--industry` | `False` | Read-only completeness of industry_members by classification system, level and snapshot date; --start/--end narrow it. |
+| `--industry` | `False` | 只读检查 industry_members 按分类体系、层级、快照日的完整性；可用 --start/--end 缩小范围。 |
 | `--bars` | `False` | 改为检查「证券 × 交易日」，含窗口内一行都没有的证券。需要 --start。 |
 | `--runs` | `False` | 改为检查连续交易日的运行证据，不补任何缺口。 |
 | `--dataset` | `—` | 只校验这些数据集（逗号分隔）；默认校验注册表里的全部。 |

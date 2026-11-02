@@ -375,6 +375,10 @@ EFFECTS: dict[str, tuple[str, str]] = {
         "仅 --refresh-sources 联网",
         "默认离线预览并保存计划；--apply 发布有证据支持的修正、保留旧版本和未解决提示，分批保存历史进度",
     ),
+    "repair delisted-day-status": (
+        "无",
+        "默认只读预览；--apply 按 instruments 记录的退市日补写 delisted 状态行，经修复门禁发布并保留旧版本；与记录矛盾的退市日 bar 只报告不覆盖",
+    ),
     "repair stock-listing-dates": (
         "仅 --refresh-sources 联网",
         "默认离线回放 IPO 日历；--apply 补官方上市事件证实的股票上市日期，经修复门禁发布并保留旧版本",
@@ -398,6 +402,10 @@ EFFECTS: dict[str, tuple[str, str]] = {
     "repair fund-volume": (
         "仅 --refresh-sources 联网",
         "默认离线预览；联网归档上交所行情服务的历史 K 线，金额冲突时复用或采集东财证据；--apply 核验后修复沪深场内基金成交量，经修复门禁发布并保留旧版",
+    ),
+    "repair phantom-bars": (
+        "执行时",
+        "预演也取数（baostock/tdx/qmt 核对该日无行）；--apply 在湖锁下删除无一手佐证的零成交或复制伪影行，发布新版本并登记负证据防重抓",
     ),
     "repair repartition": (
         "无",

@@ -30,6 +30,7 @@
 | `cne repair bse-tip-turnover` | 仅 --apply 时 | 默认只读预览；--apply 请求北交所行情板，只补最近一个交易日的成交额 |
 | `cne repair corporate-action-gaps` | --apply 时 | 默认离线预览；--apply 按缺口查询 Baostock 与巨潮资讯，核验后发布新版本并保留旧版本 |
 | `cne repair delisted-actions` | 仅 --apply 时 | 默认只读预览；--apply 从 Baostock（沪深）或同花顺（北交所）补已退市证券的历史分红除权并写湖 |
+| `cne repair delisted-day-status` | 无 | 默认只读预览；--apply 按 instruments 记录的退市日补写 delisted 状态行，经修复门禁发布并保留旧版本；与记录矛盾的退市日 bar 只报告不覆盖 |
 | `cne repair ex-dates` | 仅 --apply 时 | 默认只读预览；--apply 按给定除权日逐日向东财请求历史除权行并写湖 |
 | `cne repair financial-originals` | 仅 --refresh-sources 联网 | 默认离线回放原始定期报告；--apply 追加能明确识别的合并报表当期数，经修复门禁发布并保留已有版本和真实采集时间 |
 | `cne repair fund-no-print` | 仅 --refresh-sources 联网 | 默认离线预览；联网采证会归档报表并更新缓存；--apply 保存基金竞价日线覆盖证明、结清对应欠账并刷新水位，不生成日线或停牌行 |
@@ -38,6 +39,7 @@
 | `cne repair index-snapshots` | 仅 --refresh-sources 联网 | 默认离线回放官方文件；--apply 按实际日期替换完整指数成分快照及真实权重，经修复门禁发布并保留旧版本 |
 | `cne repair layout` | 无 | 默认只预览；--apply 发布新版本，保留旧版本和重复观察证据 |
 | `cne repair payment-dates` | 仅 --apply 时 | 默认只读预览；--apply 用已审发行人公告（巨潮、北交所）与 Baostock 修复现金到账日，经回填门禁发布 |
+| `cne repair phantom-bars` | 执行时 | 预演也取数（baostock/tdx/qmt 核对该日无行）；--apply 在湖锁下删除无一手佐证的零成交或复制伪影行，发布新版本并登记负证据防重抓 |
 | `cne repair repartition` | 无 | 默认只读列出或预览；--apply 在湖锁下按登记粒度改写分区并整体换上 |
 | `cne repair status-traded` | 无 | 默认只读预览；--apply 用已提交成交日线补缺失状态键，ST 保持未知，发布新版本并保留旧版本 |
 | `cne repair stock-listing-dates` | 仅 --refresh-sources 联网 | 默认离线回放 IPO 日历；--apply 补官方上市事件证实的股票上市日期，经修复门禁发布并保留旧版本 |

@@ -838,7 +838,7 @@ _SPECS = [
         backup_source="eastmoney",
         # Each of these lands rows under its own label through
         # `_finish_daily_bars`' recovery chain.
-        supplementary_sources=("exchange", "bse", "sina", "ths", "ths_official", "baostock"),
+        supplementary_sources=("tdx_protocol", "exchange", "bse", "sina", "ths", "ths_official", "baostock"),
         tier="L1",
         partition_col="trade_date",
         reconciliation_lookback_days=5,
@@ -894,6 +894,7 @@ _SPECS = [
         reconciliation_lookback_mode="trading_day",
         intraday_frequency="1m",
         row_grain="1m",
+        supplementary_sources=("tdx_protocol",),
     ),
     # 5-minute bars — a separate dataset, not a `frequency` value inside
     # minute_bars, because the horizon differs by 5× and a dataset carries one
@@ -929,6 +930,7 @@ _SPECS = [
         reconciliation_lookback_mode="trading_day",
         intraday_frequency="5m",
         row_grain="5m",
+        supplementary_sources=("tdx_protocol",),
     ),
     # Transaction records (分笔). Not tick data: A-share Level-1 is a 3-second
     # snapshot, so a record aggregates 6–33 real trades (measured) and a

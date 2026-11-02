@@ -2534,7 +2534,13 @@ msgid ""
 "volume>0 copy artifacts (the stored row repeats the previous session byte for byte and\n"
 "neither Baostock, TDX nor the QMT bridge serves a bar). Anything else is kept and reported.\n"
 "The default preview writes nothing; --apply publishes under the lake lock, keeping the old version."
-msgstr "删除沪深日线里没有任何一手来源佐证的伪影行。\n\n两类：零成交行（仅当日有一手非 derived 停牌状态行、且 Baostock 与 TDX 都无该日 K 线时删除）；\nvolume>0 复制伪影行（存储行与前一会话逐位相同，且 Baostock、TDX、QMT 桥均无该日行）。\n其余行保留并在预览中报告。\n默认只预览；--apply 在湖锁下发布新版本并保留旧版本。"
+msgstr ""
+"删除沪深日线里没有任何一手来源佐证的伪影行。\n"
+"\n"
+"两类：零成交行（仅当日有一手非 derived 停牌状态行、且 Baostock 与 TDX 都无该日 K 线时删除）；\n"
+"volume>0 复制伪影行（存储行与前一会话逐位相同，且 Baostock、TDX、QMT 桥均无该日行）。\n"
+"其余行保留并在预览中报告。\n"
+"默认只预览；--apply 在湖锁下发布新版本并保留旧版本。"
 
 #: cnequity/storage/migrations.py
 msgid "Drop Shenwan industry rows dated on or after the stock's delisting"
@@ -2611,6 +2617,10 @@ msgstr "待修事件终点（YYYY-MM-DD）；累计影响延续到其后。"
 #: cnequity/cli/repair_cmds.py
 msgid "End of the phantom-row scan window (YYYY-MM-DD)."
 msgstr "幻影行扫描窗口结束日（YYYY-MM-DD）。"
+
+#: cnequity/cli/repair_cmds.py
+msgid "End of the recorded-delist-date window (YYYY-MM-DD)."
+msgstr "记录退市日窗口结束日（YYYY-MM-DD）。"
 
 #: cnequity/cli/quality_cmds.py
 msgid "End of the research window (defaults to the latest daily_bars; requires --research-start)."
@@ -5405,6 +5415,10 @@ msgid "Start of the phantom-row scan window (YYYY-MM-DD)."
 msgstr "幻影行扫描窗口起始日（YYYY-MM-DD）。"
 
 #: cnequity/cli/repair_cmds.py
+msgid "Start of the recorded-delist-date window (YYYY-MM-DD)."
+msgstr "记录退市日窗口起始日（YYYY-MM-DD）。"
+
+#: cnequity/cli/repair_cmds.py
 msgid "Start of the traded-status repair window (YYYY-MM-DD)."
 msgstr "成交状态补缺起点（YYYY-MM-DD）。"
 
@@ -6683,6 +6697,18 @@ msgstr "没有配置就无法检查 data.root 是否可用。"
 #: cnequity/cli/repair_cmds.py
 msgid "Write and publish a new version; by default only prints the plan."
 msgstr "写入并发布新版本；默认只输出计划。"
+
+#: cnequity/cli/repair_cmds.py
+msgid ""
+"Write delisted status rows for recorded delisting days the daily step missed.\n"
+"\n"
+"\n"
+"A stock with instruments.delist_date recorded stopped trading on that date: the day has\n"
+"no bar and, on a lake joined after the fact, no status row, which fails candidate as_of\n"
+"dates that fall on it. The recorded delist_date is the first-hand evidence; a delist-day\n"
+"bar contradicts it and is reported, not overwritten.\n"
+"The default preview writes nothing; --apply publishes under the lake lock, keeping the old version."
+msgstr "补写日更漏掉的退市日 delisted 状态行。\n\ninstruments 记录了 delist_date 的股票在该日停止交易：该日无 bar，事后并入的湖里也没有状态行，候选 as_of 日落在其上时核验失败。记录的 delist_date 即一手证据；与它矛盾的退市日 bar 只报告不覆盖。\n默认只预览；--apply 在湖锁下发布新版本并保留旧版本。"
 
 #: cnequity/cli/ths_official_cmds.py
 msgid "Write disputed rows here."
