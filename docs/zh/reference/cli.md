@@ -27,7 +27,7 @@
 | [`cne run events`](#cne-run-events) | 7×24 事件流（公告、资讯），走自然日历而非交易日历 |
 | [`cne run retry`](#cne-run-retry) | 重试一个 run，或每个 daily 分组最新的失败 run |
 | [`cne run compact`](#cne-run-compact) | 把已结束、未发布的 staging 合进 curated |
-| [`cne run clean`](#cne-run-clean) | 预览过期 staging、快照、日志与历史版本 |
+| [`cne run clean`](#cne-run-clean) | 预览过期 staging、快照、日志与历史版本；交互终端可接着确认删除 |
 | [`cne storage`](#cne-storage) | 版本保留登记、清理计划与原地待删除标记 |
 | [`cne backfill`](#cne-backfill-dataset) | 回填一个数据集 |
 | [`cne derive`](#cne-derive-name) | 派生计算数据集 |
@@ -346,7 +346,7 @@ diff 会把删列、改类型、改主键、单位/PIT/历史语义变化识别�
 
 ## cne run maintain
 
-日更之后的维护，`cne schedule install` 安装的定时任务每个交易日在日更后运行一次：运行审计（`[job.maintenance] full_audit_weekday` 那天改为全湖审计）、新鲜度门禁、源探针与 SLO、最近 20 个交易日的运行证据、元数据备份（manifest 数据库、收据、质量结论，不含 curated Parquet，按 `[job.maintenance]` 的保留期轮换），以及 `cne run clean` 的预览。
+日更之后的维护，`cne schedule install` 安装的定时任务每个交易日在日更后运行一次：运行审计（`[job.maintenance] full_audit_weekday` 那天改为全湖审计）、新鲜度门禁、源探针与 SLO、最近 20 个交易日的运行证据、元数据备份（manifest 数据库、收据、质量结论，不含 curated Parquet，按 `[job.maintenance]` 的保留期轮换），以及 `cne run clean` 的预览。定时任务没有终端，不会进入删除确认。
 
 | 选项 | 说明 |
 |------|------|
@@ -727,7 +727,7 @@ cne verify --derivatives --dataset futures_bars --start 2026-09-01 --end 2026-09
 
 | 选项 | 说明 |
 |------|------|
-| `--datasets` | 逐数据集新鲜度表（dataset / layer / freshness / 覆盖区间 / watermark）；加 `--gate` 时有 STALE 退出 1。freshness 取值：`fresh` / `STALE` / `empty`（还没抓过）/ `no source`（源已下线且无替代，如 `economic_calendar`）/ `retired`（源已下线但湖已抓到最后一天，如 `northbound_flows`）/ `removed`（配置用 `steps_remove` 或 `enabled = false` 有意移出调度、没有别的组再跑它；保留真实的最后日期，不判落后，`cne check`、审计和门禁都不计入）/ `n/a`（配置里关闭，或不按日判新鲜度） |
+| `--datasets` | 逐数据集新鲜度表（dataset / layer / freshness / 覆盖区间 / watermark）；加 `--gate` 时有 STALE 退出 1。freshness 取值：`fresh` / `STALE` / `empty`（还没抓过）/ `no source`（源已下线且无替代）/ `retired`（源已下线但湖已抓到最后一天，如 `northbound_flows`）/ `removed`（配置用 `steps_remove` 或 `enabled = false` 有意移出调度、没有别的组再跑它；保留真实的最后日期，不判落后，`cne check`、审计和门禁都不计入）/ `n/a`（配置里关闭，或不按日判新鲜度） |
 | `--gate` | 显式质量验收：失败 / 新鲜度不合格返回 1，覆盖不足或降级返回 2；普通只读查询成功返回 0 |
 | `--all-columns` | 配合 `--datasets`：打印 `list_datasets` 的全部列（契约指纹、revision、PIT 存储列等），而非仅新鲜度 |
 | `--groups` | 配合 `--datasets`：在 `--gate` 模式下只对这些调度组拥有的数据集判失败（空格或逗号分隔）。其它组的数据集照常列出、照常报为调度缺口，但不触发退出 1。只调度 `core` 的主机应指定这个范围，避免未安排采集的可选组持续触发门禁。无人调度的数据集（`(unscheduled)`）仍然判失败，须明确处理 |
@@ -756,30 +756,32 @@ init 不属于任何调度组，因此不受 `--groups` 豁免；截面校验则
 
 ## cne run clean
 
-预览已 compact 的终态 run staging、超龄 orphan、来源快照、日志和历史版本。即使不加 `--dry-run` 也不会标记或删除文件，定时脚本只能产生提示。
+预览已 compact 的终态 run staging、超龄 orphan、来源快照、日志和历史版本。交互终端在预览后分两次确认：先是历史版本，再是已合并且不在使用中的 staging。正在使用的数据和 staging 不会自动删除。定时脚本没有终端，仍然只预览。
+
+回补和日更结束时会按 [`[storage.retention].keep_generations`](../getting-started/configuration.md#storage-retention) 丢掉更老的代，默认 5。这个命令在确认后按 `--keep-revision-generations` 删，默认也是 5。设为 `0` 则不处理版本。
 
 | 选项 | 说明 |
 |------|------|
-| `--dry-run` | 兼容选项；不能与会修改运行状态的 `--reconcile-runs` 同用 |
+| `--dry-run` | 只打印预览，不提问；不能与会修改运行状态的 `--reconcile-runs` 同用 |
 | `--orphan-retention-days` | 无 manifest 的 orphan staging 保留天数（默认 7） |
 | `--snapshot-retention-days` | 来源快照保留天数（默认 14）；每个 dataset/source 的最新一份保留 |
-| `--keep-revision-generations` | 每个数据集保留最近 5 代，另保护 current 和 hold；`0` 跳过版本预览 |
+| `--keep-revision-generations` | 确认删除时每个数据集保留最近 5 代，另保护 current 和 hold；`0` 跳过版本 |
 | `--log-retention-days` | 预览超过指定天数的 `logs/cne-*.log`（默认 30）；`0` 跳过 |
 | `--reconcile-runs` | 显式把符合静默条件的孤儿 running 跑次标记为 failed，仍会修改运行状态 |
 | `--reconcile-after-seconds` | 覆盖对账静默窗口，默认取 `[orchestrator].batch_stale_seconds` |
 | `--force` | 将未 cleanup-ready 的 staging 也列入预览，不删除、不降级批次 |
 
-输出 `dry_run: true`、`confirmation_required: "serve_storage_page"`。`removed` / `removed_run_ids` 等实际删除字段为空或 0，`bytes_freed` 全部为 0；候选见 `candidate_run_ids`、`candidate_run_dirs`、`candidates`，账面大小见 `logical_bytes_selected`。历史版本和已成功 compact 且无未完成批次的终态 staging 可在 serve 存储运维页勾选、审核并确认删除。确认时重新核验运行锁、引用保留、运行状态和逐文件指纹；执行只处理原清单，并保留可恢复的删除收据。orphan、未合并和有未完成批次的 staging 不在网页删除范围，来源快照和日志仍仅报告。
+先输出预览：`dry_run: true`。实际删除字段仍为空或 0，`bytes_freed` 为 0；候选见 `candidate_run_ids`、`candidate_run_dirs`、`candidates`，账面大小见 `logical_bytes_selected`。交互终端在预览后会分两次提问，默认都不删。第一次只针对超出 `--keep-revision-generations` 的历史版本；正在使用的一代、hold 和收据不能用的代不删。第二次只针对已经成功 compact、没有未完成批次、也没有被锁住或保留的 staging。正在运行、被锁住、未合并、orphan 或 hold 的 staging 即使回答是也不删。来源快照和日志不删。回补和日更不会删 staging，也不会删当前正在使用的一代。`--dry-run`、管道和定时任务不提问。`confirmation_required` 为 `interactive` 或 `none`。删除前重新核验运行锁、引用保留、运行状态和逐文件指纹，并保留可恢复的删除收据。存储页仍可勾选最近 5 代里不是当前指针的版本。
 
 预览另返回 `staging_inventory`、`staging_run_count` 和 `skipped_reasons`，逐运行列出状态、大小、年龄、未完成批次和候选/保留原因。正在重试的运行由运行锁保护；`--force` 不绕过运行锁或 hold。未完成批次不会仅因年老或存在更新的成功运行而自动淘汰。
 
 ## cne storage
 
-版本生命周期包括引用登记、不可变计划、原地观察期和维护窗口下的物理回收。满 7 天不会自动删除。外部读取须由操作者停止。
+版本生命周期包括引用登记、不可变计划、原地观察期和维护窗口下的物理回收。满 7 天不会自动删除。回补和日更会按 [`[storage.retention].keep_generations`](../getting-started/configuration.md#storage-retention)（默认 5）删掉没有保留的更老代，不碰 staging，也不删当前正在使用的一代。交互终端里的 `cne run clean` 在预览后分两次确认，同样不等观察期。这些删除都不经过网页确认。设为 `0` 则回补和日更不删。外部读取须由操作者停止。
 
 | 命令 | 行为 |
 |---|---|
-| `inspect --keep 5` | 只读列出仍存在的版本和保留原因；未导入引用时仅为初筛 |
+| `inspect --keep 5` | 只读列出仍存在的版本和保留原因。`logical_bytes` 是文件大小合计；`exclusive_bytes` 是删掉这一代能腾出的字节，和其他代硬链接共享的文件不计。APFS 上的克隆是独立文件，仍会计入，不能当成腾出空间的承诺。未导入引用时仅为初筛 |
 | `explain OBJECT_ID` | 显示版本的 current/recent/hold 等依据 |
 | `import --manifest FILE` | 校验并合并已审核的本地引用清单；不会自动解除已有保护 |
 | `hold OBJECT_ID --reason TEXT` | 新增版本或清理资源的保留理由，取消相应待删除标记 |
@@ -1102,7 +1104,7 @@ apply 的安全边界值得单独说：add/replace/delete 逐条对基线指纹�
 
 （`cne verify` 的第三种模式，选项见上；原 `cne stability`。）
 
-从权威 `trading_calendar` 取最近窗口，按 logical trade date 选最新 `daily:core` attempt，验证连续交易日运行证据。
+从权威 `trading_calendar` 取最近窗口，每个交易日汇总所有 `daily:*` 运行、按数据集取最新 receipt，只判核心档数据集，验证连续交易日运行证据。
 
 | 选项 | 说明 |
 |------|------|

@@ -184,6 +184,12 @@ def daily_bars_calendar_findings(config: Config, trade_date: date) -> list[dict]
     # symbol. A terminal partition containing only suspension placeholders is
     # still checked above for calendar anomalies, but must not extend the
     # market-wide coverage interval and create a false missing-day finding.
+    # Market-wide history starts at the deep-history floor; delisted recovery
+    # lands lone 1990s stock histories (000508.SZ from 1993) that would turn
+    # every pre-floor session into a false missing day.
+    from cnequity.domain.market_profile import HISTORY_BACKFILL_START
+
+    traded_dates = {d for d in traded_dates if d >= HISTORY_BACKFILL_START}
     if not traded_dates:
         return findings
     first, last = min(traded_dates), max(traded_dates)
@@ -2746,6 +2752,78 @@ def daily_bars_arbitration_findings(config: Config) -> list[dict]:
 STATEMENT_PEER_TOLERANCE = 1e-3
 
 
+#: Below this share of shared members an index's two books disagree structurally.
+INDEX_PEER_MIN_OVERLAP = 0.95
+
+
+def index_constituents_peer_findings(config: Config) -> list[dict]:
+    """Compare EastMoney's latest index membership with the publishers' books.
+
+    The daily step writes the publisher's book to curated and EastMoney's to
+    ``meta/source_snapshots`` (``steps/structure.step_index_constituents``).
+    One finding per run lists, per index, the members each side alone holds.
+    Known methodology gaps stay visible rather than filtered: EastMoney carries
+    no B shares and lagged the SSE Composite's ST exclusions on 2026-10-26.
+    Info unless an index's overlap falls below ``INDEX_PEER_MIN_OVERLAP``.
+    """
+    from cnequity.domain.canonical import OFFICIAL_INDEX_SOURCES
+    from cnequity.storage.source_snapshots import SnapshotStore
+
+    peer = SnapshotStore(config.meta_root).read_latest("index_constituents", source="eastmoney")
+    if peer.is_empty() or "as_of_date" not in peer.columns:
+        return []
+    day = peer.get_column("as_of_date").max()
+    root = config.curated_root / "index_constituents"
+    if not dataset_has_parquet(root):
+        return []
+    official = (
+        scan_parquet_root(root, partition_col="as_of_date")
+        .filter((pl.col("as_of_date") == day) & pl.col("source").is_in(OFFICIAL_INDEX_SOURCES))
+        .select("index_symbol", "symbol")
+        .unique()
+        .collect()
+    )
+    if official.is_empty():
+        return []
+    vendor = peer.filter(pl.col("as_of_date") == day).select("index_symbol", "symbol").unique()
+    indices: dict[str, dict] = {}
+    worst = 1.0
+    for index_symbol in sorted(set(official["index_symbol"]) & set(vendor["index_symbol"])):
+        ours = set(official.filter(pl.col("index_symbol") == index_symbol)["symbol"])
+        theirs = set(vendor.filter(pl.col("index_symbol") == index_symbol)["symbol"])
+        overlap = len(ours & theirs) / max(len(ours), 1)
+        worst = min(worst, overlap)
+        indices[index_symbol] = {
+            "official": len(ours),
+            "eastmoney": len(theirs),
+            "overlap": round(overlap, 4),
+            "official_only": sorted(ours - theirs)[:50],
+            "eastmoney_only": sorted(theirs - ours)[:50],
+        }
+    if not indices:
+        return []
+    differing = [
+        name for name, item in indices.items() if item["official_only"] or item["eastmoney_only"]
+    ]
+    return [
+        {
+            "dataset": "index_constituents",
+            "severity": "warning" if worst < INDEX_PEER_MIN_OVERLAP else "info",
+            "check": "index_constituents_peer",
+            "as_of_date": day.isoformat() if hasattr(day, "isoformat") else str(day),
+            "message": (
+                f"publisher books vs EastMoney on {day}: "
+                + (
+                    "identical for every index"
+                    if not differing
+                    else "differ for " + ", ".join(differing)
+                )
+            ),
+            "indices": indices,
+        }
+    ]
+
+
 def financial_statement_peer_findings(config: Config) -> list[dict]:
     """Compare the statements the lake holds from one source against a peer.
 
@@ -2795,7 +2873,12 @@ def financial_statement_peer_findings(config: Config) -> list[dict]:
         curated.sort([*keys, *order], nulls_last=False)
         .group_by(keys, maintain_order=True)
         .agg(
-            pl.col("item_value").last().alias("_curated"), pl.col("source").last().alias("_source")
+            pl.col("item_value").last().alias("_curated"),
+            pl.col("source").last().alias("_source"),
+            # A later vintage with another value is a correction the lake
+            # recorded: 000909.SZ restated FY2024 operating cost on 2026-09-28
+            # (前期会计差错更正), while the peer keeps the first filing.
+            (pl.col("item_value").n_unique() > 1).alias("_revised"),
         )
     )
     peer_order = [c for c in ("announce_date", "observed_at", "fetched_at") if c in peer.columns]
@@ -2827,20 +2910,52 @@ def financial_statement_peer_findings(config: Config) -> list[dict]:
         .otherwise(pl.col("_rel"))
         .alias("_rel")
     )
+    # The peer overwrites a period with the restated comparative of a later
+    # annual report but keeps the first disclosure date; the lake keeps what
+    # was first disclosed. Measured 2026-10-29: 1,246 of 1,250 disagreements
+    # sat in periods older than the symbol's latest annual report (研发费用
+    # split out of 管理费用 for 2017, 解释16号 deferred tax for 2022, ...).
+    latest_annual = (
+        peer.filter(pl.col("report_period").str.ends_with("Q4"))
+        .group_by("symbol")
+        .agg(pl.col("report_period").max().alias("_latest_annual"))
+    )
+    scored = scored.join(latest_annual, on="symbol", how="left").with_columns(
+        (
+            (pl.col("report_period") < pl.col("_latest_annual")).fill_null(False)
+            | pl.col("_revised")
+        ).alias("_restatable")
+    )
+    breach = pl.col("_rel") > STATEMENT_PEER_TOLERANCE
+    restated = int(scored.select((breach & pl.col("_restatable")).sum()).item())
     by_code = (
         scored.group_by("item_code")
         .agg(
             pl.len().alias("compared"),
-            (pl.col("_rel") > STATEMENT_PEER_TOLERANCE).sum().alias("disagreed"),
+            (breach & ~pl.col("_restatable")).sum().alias("disagreed"),
         )
         .filter(pl.col("disagreed") > 0)
         .sort("disagreed", descending=True)
     )
+    findings: list[dict] = []
+    if restated:
+        findings.append(
+            {
+                "dataset": "financial_statement_items",
+                "severity": "info",
+                "check": "financial_statement_peer_restated",
+                "message": (
+                    f"{restated} value(s) differ from the peer in periods a later annual "
+                    "report may have restated, or the lake recorded a correction"
+                ),
+                "disagreed": restated,
+            }
+        )
     if by_code.is_empty():
-        return []
+        return findings
 
     total = int(by_code.get_column("disagreed").sum())
-    return [
+    return findings + [
         {
             "dataset": "financial_statement_items",
             "severity": "warning",

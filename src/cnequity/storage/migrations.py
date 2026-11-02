@@ -169,6 +169,24 @@ MIGRATIONS: tuple[Migration, ...] = (
         "0.20.0",
         _repair("sw_never_listed", "repair_sw_never_listed"),
     ),
+    Migration(
+        "financial-comparatives",
+        N_("Add statement items first seen only as a later filing's comparative on their own date"),
+        "0.21.0",
+        _repair("financial_announcements", "repair_financial_announcements"),
+    ),
+    Migration(
+        "delist-dates",
+        N_("Move delist dates stored as the removal date back to the last listed session"),
+        "0.21.0",
+        _repair("delist_dates", "repair_delist_dates"),
+    ),
+    Migration(
+        "bar-listing-window",
+        N_("Drop zero-volume daily bars dated after a security's delisting"),
+        "0.21.0",
+        _repair("bar_listing_window", "repair_bar_listing_window"),
+    ),
 )
 
 

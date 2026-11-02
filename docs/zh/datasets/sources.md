@@ -54,9 +54,10 @@
 | 项 | 值 |
 |------|-------|
 | 波次 | `trading_status`（core；依赖 `instruments`，排在它之后） |
-| 主源 | eastmoney（ST 板 + 停牌名单） |
-| 备源 | exchange（沪深交易所行情板，独立故障域） |
-| 补充源 | derived（`derived_bar_gap` / `derived_delisted` / `derived_traded`）；bse（北交所行情板） |
+| 主源 | exchange（沪深交易所股票与基金行情板，北交所行情板；板块请求失败退避重试） |
+| 备源 | eastmoney（ST 板 + 停牌名单，只问行情板没答到的代码；push2 暂停时跳过） |
+| 补充源 | derived（`derived_bar_gap` / `derived_delisted` / `derived_traded`）；bse（北交所公告） |
+| 沿用 | 都答不到的代码沿用 5 个交易日内最近一次一手读数，来源标为 `<原来源>_cached`（如 `exchange_cached`）；2026-10-28 前写入的沿用行一律标 `eastmoney_cached` |
 | 频率 | 每日 |
 | 主键 | (symbol, trade_date) |
 | 历史 ST 回补 | Baostock 覆盖 SH/SZ；可选 Tushare Pro `bak_basic`（2016）+ `stock_st`（2017-01-01 起）覆盖 BJ，需 token；缺少源端覆盖时审计保持 warning |
@@ -137,14 +138,14 @@
 | 项 | 值 |
 |------|-------|
 | 组 | `macro_risk`（日更） |
-| 主源 | eastmoney datacenter：`cnbond_yield_10y`（`RPTA_WEB_TREASURYYIELD`.`EMM00166466`）、`shibor_3m`（`RPT_IMP_INTRESTRATEN`，`INDICATOR_ID=203`）、`lpr_1y`（`RPTA_WEB_RATE`.`LPR1Y`）、`pmi_manufacturing`、`m2_yoy` |
+| 主源 | eastmoney datacenter：`cnbond_yield_10y`（`RPTA_WEB_TREASURYYIELD`.`EMM00166466`）、`shibor_3m`（`RPT_IMP_INTRESTRATEN`，`INDICATOR_ID=203`）、`lpr_1y`（`RPTA_WEB_RATE`.`LPR1Y`）、`pmi_manufacturing`、`m2_yoy`。另有 `usdcnh`：新浪外汇日 K `symbol=fx_susdcnh` 的收盘价（字段顺序 date,open,low,high,close，收盘是最后一个数），`source=sina`，单位是人民币元 / 美元 |
 | 补充源 | pboc：`social_financing`（社融增量） |
 | 主键 | (indicator_id, obs_date) |
-| 日更 | 三个利率逐日请求（`='{日期}'` 过滤），只走水位之后的交易日；两个日频利率另外回看最近 5 个交易日（一次范围查询）。运行当天的值还没发布时只记 `daily_series_pending` 提示、照常写入，次日回看补上；离开运行日仍缺的才是 `daily_series_gap` warning、挡住合并并重试。PMI、M2、社融每次都把整段历史读一遍 |
-| 回填 | `cne backfill macro_indicators --start 2016-01-01`：两个日频利率按窗口各发一次分页范围查询（`(COL>='…')(COL<='…')`），不再逐日请求；同时照旧做一次当天的日更抓取。默认起点 2016-01-01，`--end` 不超过当天 |
+| 日更 | 三个利率逐日请求（`='{日期}'` 过滤），只走水位之后的交易日；两个日频利率另外回看最近 5 个交易日（一次范围查询）。同一窗口再读一次新浪离岸人民币日 K。运行当天的利率还没发布时只记 `daily_series_pending` 提示、照常写入，次日回看补上；离开运行日仍缺的才是 `daily_series_gap` warning、挡住合并并重试。离岸人民币读失败只记来源单元 `sina:usdcnh`，不记 `daily_series_gap`，也不挡住国债和 Shibor，也不回退到 push2his。PMI、M2、社融每次都把整段历史读一遍 |
+| 回填 | `cne backfill macro_indicators --start 2016-01-01`：两个日频利率按窗口各发一次分页范围查询（`(COL>='…')(COL<='…')`），不再逐日请求；离岸人民币用新浪的一次日 K，再按窗口截取。同时照旧做一次当天的日更抓取。默认起点 2016-01-01，`--end` 不超过当天 |
 | 历史深度 | 10Y 国债与 Shibor 的历史起点不同；缺失交易日记录为 `daily_series_gap`，以实际覆盖报告为准。 |
 | 只留交易日 | 银行间市场在调休周末也开市，范围查询可能带回这些日子；回填按项目交易日历过滤，与日更的行密度一致 |
-| 已知限制 | `lpr_1y` 不走范围回填：`LPR1Y` 列 2013-10-25 至 2019-08 是旧的逐日贷款基础利率，此后才是改革后的月度 LPR，范围查询会把两种基准记在同一个指标下。它仍只在日更当天落盘 |
+| 已知限制 | `lpr_1y` 不走范围回填：`LPR1Y` 列 2013-10-25 至 2019-08 是旧的逐日贷款基础利率，此后才是改革后的月度 LPR，范围查询会把两种基准记在同一个指标下。它仍只在日更当天落盘。`usdcnh` 是离岸收盘，不是在岸中间价，也不是东财 push2his 的收盘。2026-10-31 测得新浪序列从 2014-11-07 起，当天收盘 6.65280，与东财同日 6.6533 相差约 5 个点；两条不拼接。新浪拒绝请求时这一列停更，利率照常写入。回填按交易日历丢掉非交易日，日更同样只落交易日 |
 
 #### futures_bars / option_bars / futures_contracts / option_contracts
 
@@ -297,7 +298,9 @@
 | 项 | 值 |
 |------|-------|
 | 主源 | eastmoney（`RPT_F10_EH_EQUITY` / `RPT_F10_EH_HOLDERNUM`） |
-| 分组 | fundamentals@17:35 |
+| 备源 | `share_structure`：tdx_protocol（除权除息记录里的股本变动，由每周 `actions_sweep` 顺带读取，不另发请求）。每周对照总股本和流通A股（审计 `share_structure_peer`）；东财数据超过 4 天未更新时，补写近 90 天只有通达信有的变动，`announce_date` 取复扫当天，`float_shares` 只在确认等于流通A股时填写（`share_structure_backup`） |
+| 分组 | core@16:00 |
+| `shareholder_counts` 分组 | fundamentals@17:35 |
 | 主键 | (symbol, change_date, announce_date) / (symbol, count_date, announce_date) |
 | 采集方式 | **按日期区间整市场扫**，不是按标的循环，也不是按报告期。`RPT_F10_EH_EQUITY.END_DATE` 是股本变动日；股东户数在旬末/月末也披露。只扫季末会静默漏掉其他披露日 |
 | 日更范围 | 按 `NOTICE_DATE` 回看 30 天。窗口开在公告日而不是变动日：几周前生效的变动今天才公告，按变动日开窗永远看不到它 |
@@ -351,11 +354,12 @@
 | baostock | TCP | 沪深历史 ST、估值、退市补数与证券身份补充 | — | 复用会话；上海自然日最多 5 万次请求，同时只一条连接；黑名单按本年次数 × 6 小时冻结。BJ 历史 ST 需独立来源 |
 | pboc | HTTP | 社会融资规模增量（`macro_indicators`） | — | 主写入要求全量序列；单年失败会阻止本次写入，避免带断档推进水位 |
 | nbs | HTTP | **仅审计**：PMI 发布稿，对照 `macro_indicators` | — | 按源开关执行；公共模板启用，失败或禁用状态进入核验报告 |
-| exchange | HTTP | `margin_trading` **主源**；`trading_status` / `trading_calendar` / `dragon_tiger` / `block_trades` 备源；`[exchange_audit]` 价格对照 | — | 融资融券由会员单位报送汇总，中间无转售方；龙虎榜与大宗交易只在东财答不上时才问，且两所都不发布北交所（记在 `backup_gaps`）；审计类 finding 为建议性，不让 run 失败 |
+| exchange | HTTP | `margin_trading` **主源**；`trading_status` / `trading_calendar` / `dragon_tiger` / `block_trades` 备源；`daily_bars` 场内基金不足一手成交的补数（交易所日 K，按份计量，金额取整到元）；`[exchange_audit]` 价格对照 | — | 融资融券由会员单位报送汇总，中间无转售方；龙虎榜与大宗交易只在东财答不上时才问，且两所都不发布北交所（记在 `backup_gaps`）；审计类 finding 为建议性，不让 run 失败 |
 | sina_bars | HTTP | Sina 日线兜底（与复权因子端点分开限速） | — | 跳过 + quality finding |
 | ths | HTTP | 同花顺公开页：行业、估值 | — | 跳过 + quality finding |
 | ths_pages | HTTP | `d.10jqka.com.cn` kline，`sector_bars` 唯一来源 | — | 该数据集**无第二个源**；失败即缺口 |
 | ths_bonus | HTTP | 同花顺分红送配页 | — | 限速更保守（3.0s）；跳过 + quality finding |
+| tdx_fin | HTTP | `financial_statement_items` 备源：全市场季度财务包（gpcw，MD5 校验） | — | 东财失败时日更只写近 14 天披露（`tdx_fin`）；`cne backfill --source tdx_fin` 只补湖中缺失的科目，旧季度值可能已被更正，标 `tdx_fin_backfill`，严格 PIT 排除；包内没有营业总收入，`revenue` 只给上一期营业收入等于湖里营业总收入的公司写入（有金融子公司、多出利息和手续费收入的公司留空）；不含 indicator 比率。每天 core 组在 compact 之后还用它对照近 14 天的新披露（容差 0.1%；`revenue` 只在通达信营业收入大于营业总收入时算不一致），并列出通达信已有、披露日早于当天、湖里却没有的报告（审计 `financial_statement_tdx_peer`）；包按 MD5 缓存在 `meta/source_cache/tdx_fin`，未变不重复下载 |
 | ths_official | HTTPS（keyed） | 可选有凭证来源：仲裁快照、财报补入、显式历史修复；版本化纠错遵循版本化发布规则 | — | 无 key 时全部 `skipped`，湖保持已有的源不变 |
 | tushare | HTTPS（keyed） | 可选：BJ 历史 ST 证据（`stock_st`，起 2017-01-01） | bak_basic 名称证据（2016） | 无 token 时更早的 BJ bar 保持 unresolved，**不认定为正常** |
 

@@ -600,6 +600,136 @@ def test_dense_single_day_rejects_same_count_identity_replacement(monkeypatch):
         fetch_announcement_index_range(target, client=Client())
 
 
+class _UncategorisedRowClient:
+    """A dense day whose plate buckets miss one row only a sorted walk returns."""
+
+    def __init__(self, target: date, sorted_rows: tuple[str, ...]):
+        self.target = target
+        self.sorted_rows = sorted_rows
+        self.calls: list[dict] = []
+
+    def post(self, _url, data):
+        self.calls.append(dict(data))
+        day = self.target.isoformat()
+        if data.get("sortName"):
+            rows = [_row(key, day) for key in self.sorted_rows]
+            return _Response({"announcements": rows, "totalRecordNum": 3, "totalpages": 101})
+        if not data["plate"]:
+            return _Response(
+                {
+                    "announcements": [_row("a", day)],
+                    "totalRecordNum": 3,
+                    "totalpages": 101,
+                    "hasMore": True,
+                }
+            )
+        identifier = {"sz": "a", "sh": "b"}[data["plate"]]
+        return _Response(
+            {
+                "announcements": [_row(identifier, day)],
+                "totalRecordNum": 1,
+                "totalpages": 1,
+                "hasMore": False,
+            }
+        )
+
+
+def test_dense_single_day_fills_rows_outside_every_bucket_from_sorted_walks(monkeypatch):
+    """Measured 2020-04-28: a category cover missed rows that had no category."""
+    _only_plate_partitions(monkeypatch)
+    target = date(2020, 4, 28)
+    client = _UncategorisedRowClient(target, sorted_rows=("c", "a"))
+    metrics: dict = {}
+
+    frame = fetch_announcement_index_range(target, client=client, metrics=metrics)
+
+    assert set(frame["announcement_id"].to_list()) == {"a", "b", "c"}
+    assert metrics["residual_splits"] == 1
+    assert {
+        (call["sortName"], call["sortType"]) for call in client.calls if call.get("sortName")
+    } == {("code", "asc"), ("code", "desc"), ("time", "asc"), ("time", "desc")}
+
+
+def test_dense_single_day_still_fails_when_sorted_walks_leave_a_gap(monkeypatch):
+    _only_plate_partitions(monkeypatch)
+    target = date(2020, 4, 28)
+
+    with pytest.raises(RuntimeError, match="plate coverage.*2.*unfiltered total is 3"):
+        fetch_announcement_index_range(
+            target, client=_UncategorisedRowClient(target, sorted_rows=("a",))
+        )
+
+
+class _FlippingViewClient:
+    """Two servers: one also lists a withdrawn report, answering in turn."""
+
+    def __init__(self, target: date, extra_title: str):
+        self.day = target.isoformat()
+        self.extra_title = extra_title
+        self.calls = 0
+
+    def post(self, _url, data):
+        self.calls += 1
+        rows = [_row(f"r{index}", self.day) for index in range(31)]
+        if self.calls % 2 == 0:
+            extra = _row("x", self.day)
+            extra["announcementTitle"] = self.extra_title
+            rows.insert(0, extra)
+        page = int(data["pageNum"])
+        return _Response(
+            {
+                "announcements": rows[(page - 1) * 30 : page * 30],
+                "totalRecordNum": len(rows),
+                "totalpages": 1,
+                "hasMore": page * 30 < len(rows),
+            }
+        )
+
+
+def test_flipping_views_keep_the_one_with_cancelled_announcements():
+    """Measured 2020-04-28: one cell answered 126 or 128 rows at random."""
+    target = date(2020, 4, 28)
+    metrics: dict = {}
+
+    frame = fetch_announcement_index_range(
+        target, client=_FlippingViewClient(target, "2019年年度报告（已取消）"), metrics=metrics
+    )
+
+    assert frame.height == 32
+    assert "x" in frame["announcement_id"].to_list()
+    assert metrics["wider_views"] == 1
+
+
+def test_flipping_views_keep_a_wider_view_of_ordinary_reports():
+    """Measured 2020-04-30: one server lacked seven ordinary annual reports."""
+    target = date(2020, 4, 30)
+
+    frame = fetch_announcement_index_range(
+        target, client=_FlippingViewClient(target, "2019年年度报告")
+    )
+
+    assert "x" in frame["announcement_id"].to_list()
+
+
+def test_flipping_views_that_are_not_nested_still_fail():
+    target = date(2020, 4, 30)
+    client = _FlippingViewClient(target, "2019年年度报告")
+    original = client.post
+
+    def post(url, data):
+        response = original(url, data)
+        if client.calls % 2 == 0 and response.payload["announcements"]:
+            # The wider view also drops a row the narrower one lists.
+            response.payload["announcements"] = [
+                row for row in response.payload["announcements"] if row["announcementId"] != "r0"
+            ]
+        return response
+
+    client.post = post
+    with pytest.raises(RuntimeError, match="not nested"):
+        fetch_announcement_index_range(target, client=client)
+
+
 def test_cninfo_step_uses_registry_date_chunks_for_default_backfill(tmp_path, monkeypatch):
     """The step must bound a direct/default backfill, not just CLI ranges."""
     config = Config(data_root=tmp_path / "data", raw_archive_enabled=False)
@@ -960,3 +1090,53 @@ def test_an_exhausted_ladder_fails_loud_rather_than_publishing_part_of_a_day(mon
     # walk reports the cap it could not get under and leaves the day failed.
     with pytest.raises(RuntimeError, match="exceeded 100 reported pages"):
         fetch_announcement_index_range(target, client=Client())
+
+
+def test_a_split_one_row_over_the_unfiltered_total_is_accepted():
+    """szse 2022-08-31: 5,854 split rows against a total of 5,853, on every try."""
+    from cnequity.adapters.cninfo.announcements import (
+        PartitionCoverageError,
+        _reconcile_partition_rows,
+    )
+
+    rows = [{"announcementId": str(i)} for i in range(5854)]
+    kept = _reconcile_partition_rows(
+        rows,
+        expected_total=5853,
+        label="announcement",
+        column="szse",
+        day=date(2022, 8, 31),
+        axis="category",
+        required_identities={"0", "5853"},
+    )
+    assert len(kept) == 5854
+    # A larger surplus is not a miscount but a different question.
+    with pytest.raises(PartitionCoverageError, match="5860 unique rows"):
+        _reconcile_partition_rows(
+            [{"announcementId": str(i)} for i in range(5860)],
+            expected_total=5853,
+            label="announcement",
+            column="szse",
+            day=date(2022, 8, 31),
+            axis="category",
+        )
+    # A shortfall still fails, and so does a surplus missing a control row.
+    with pytest.raises(PartitionCoverageError, match="5852 unique rows"):
+        _reconcile_partition_rows(
+            rows[:5852],
+            expected_total=5853,
+            label="announcement",
+            column="szse",
+            day=date(2022, 8, 31),
+            axis="category",
+        )
+    with pytest.raises(PartitionCoverageError, match="replaced 1"):
+        _reconcile_partition_rows(
+            rows,
+            expected_total=5853,
+            label="announcement",
+            column="szse",
+            day=date(2022, 8, 31),
+            axis="category",
+            required_identities={"missing"},
+        )

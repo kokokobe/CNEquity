@@ -163,6 +163,16 @@ def test_sector_members_rejects_a_single_board_with_enough_rows(cfg, monkeypatch
         st.step_sector_members(cfg, date(2024, 6, 28), "run-one-board", {})
 
 
+def _publishers_unreachable(monkeypatch):
+    """The publisher books fail, so EastMoney serves as the per-index backup."""
+    from cnequity.adapters.exchange import index_snapshots
+
+    def unreachable(*args, **kwargs):
+        raise ValueError("publisher unreachable in tests")
+
+    monkeypatch.setattr(index_snapshots, "fetch_official_books", unreachable)
+
+
 def test_index_constituents_daily_writes(cfg, monkeypatch):
     StateStore(cfg.meta_root).set_date("index_constituents", date(2024, 6, 27))
 
@@ -177,6 +187,7 @@ def test_index_constituents_daily_writes(cfg, monkeypatch):
         )
 
     monkeypatch.setattr(st, "fetch_index_constituents", fake_fetch)
+    _publishers_unreachable(monkeypatch)
     result = st.step_index_constituents(cfg, date(2024, 6, 28), "run-1", {})
     assert result["rows_written"] == 50
 
@@ -193,6 +204,7 @@ def test_index_constituents_daily_rejects_partial_snapshot(cfg, monkeypatch):
         )
 
     monkeypatch.setattr(st, "fetch_index_constituents", fake_fetch)
+    _publishers_unreachable(monkeypatch)
 
     with pytest.raises(RuntimeError, match="incomplete daily snapshot"):
         st.step_index_constituents(cfg, date(2024, 6, 28), "run-partial", {})
@@ -239,7 +251,7 @@ def test_index_constituents_backfill_writes_cni(cfg, monkeypatch):
     assert result["status"] == "warning"
     assert result["as_of_dates"] == 1
     findings = result["context_updates"]["audit_findings"]
-    assert findings[0]["code"] == "cni_index_backfill_incomplete"
+    assert findings[0]["check"] == "cni_index_backfill_incomplete"
 
 
 def test_index_constituents_backfill_empty_cni_is_retryable_warning(cfg, monkeypatch):
@@ -254,7 +266,7 @@ def test_index_constituents_backfill_empty_cni_is_retryable_warning(cfg, monkeyp
 
     assert result["status"] == "warning"
     assert result["rows_written"] == 0
-    assert result["context_updates"]["audit_findings"][0]["code"] == (
+    assert result["context_updates"]["audit_findings"][0]["check"] == (
         "cni_index_backfill_incomplete"
     )
 
@@ -425,7 +437,7 @@ def test_industry_members_backfill_keeps_both_thin_and_healthy_months(cfg, monke
     assert result["as_of_dates"] == 2
     assert result["status"] == "warning"
     finding = result["context_updates"]["audit_findings"][0]
-    assert finding["code"] == "sw_industry_thin_months"
+    assert finding["check"] == "sw_industry_thin_months"
     assert finding["thin_as_of_dates"] == [thin_date.isoformat()]
     assert finding["missing_as_of_dates"] == [missing_date.isoformat()]
 

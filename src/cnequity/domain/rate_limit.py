@@ -35,12 +35,14 @@ DEFAULT_SOURCE_INTERVALS: dict[str, float] = {
     "futures_exchange": 1.0,
     "sw": 1.0,
     "cni": 1.0,
+    "tdx_fin": 1.0,
     "sina": 0.3,
     "sina_bars": 1.0,
     "bse": 1.0,
     "baostock": 1.0,
     "tushare": 1.0,
     "ths_official": 0.4,
+    "jin10": 1.0,
 }
 DEFAULT_UNKNOWN_SOURCE_INTERVAL_SECONDS = 1.0
 # Family-wide in-flight defaults for configs that omit source caps. Aliases
@@ -58,11 +60,13 @@ DEFAULT_SOURCE_CONCURRENCY: dict[str, int] = {
     "futures_exchange": 1,
     "sw": 1,
     "cni": 1,
+    "tdx_fin": 1,
     "sina": 2,
     "bse": 2,
     "baostock": 1,
     "tushare": 2,
     "ths_official": 2,
+    "jin10": 1,
 }
 logger = logging.getLogger(__name__)
 

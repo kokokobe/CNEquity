@@ -1313,6 +1313,32 @@ def test_crosscheck_reads_back_the_prior_partition_for_an_append_run(crosscheck_
     assert findings[0]["trade_date"] == "2024-06-27"
 
 
+def test_crosscheck_reads_each_symbols_own_prior_row_in_a_mixed_run(crosscheck_config):
+    from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
+
+    # One run appends today's row for one symbol and rewrites years of history
+    # for another. The appended symbol's predecessor is yesterday's row, not one
+    # from the rewrite's distant start with every dividend since piled onto it.
+    old_days = (date(2020, 6, 3), date(2020, 6, 4))
+    stored = (date(2020, 6, 2), _DAYS[0])
+    _write_bars(crosscheck_config, "600519.SH", stored + _DAYS[1:2], 10.0)
+    for year in (2021, 2022, 2023):
+        _write_action(crosscheck_config, "600519.SH", date(year, 6, 1), cash_dividend=5.0)
+    for day in stored:
+        part = crosscheck_config.derived_root / "adj_factors" / f"trade_date={day.isoformat()}"
+        part.mkdir(parents=True)
+        _factor_frame("600519.SH", [day], [1.0]).write_parquet(part / "part-0.parquet")
+    _write_bars(crosscheck_config, "000001.SZ", old_days, 10.0)
+
+    out = pl.concat(
+        [
+            _factor_frame("600519.SH", _DAYS[1:2], [1.0]),
+            _factor_frame("000001.SZ", old_days, [1.0, 1.0]),
+        ]
+    )
+    assert _corporate_action_crosscheck_findings(crosscheck_config, out) == []
+
+
 def test_crosscheck_flags_an_action_row_implying_a_nonpositive_price(crosscheck_config):
     from cnequity.derive.adj_factors import _corporate_action_crosscheck_findings
 
@@ -1365,7 +1391,7 @@ def test_compute_adj_factors_surfaces_crosscheck_findings(adj_config, monkeypatc
     _write_action(adj_config, "600519.SH", date(2024, 6, 28), cash_dividend=0.5)
     monkeypatch.setattr(
         "cnequity.derive.adj_factors._prior_factor_rows",
-        lambda config, symbols, before: _factor_frame("600519.SH", [date(2024, 6, 27)], [1.0]),
+        lambda config, out: _factor_frame("600519.SH", [date(2024, 6, 27)], [1.0]),
     )
     _write_bars(adj_config, "600519.SH", [date(2024, 6, 27)], 1.0)
 
@@ -1862,6 +1888,59 @@ def test_pre_close_check_flags_a_step_the_factor_missed(crosscheck_config):
     assert sample["expected"] == pytest.approx(10.0 / 9.5)
 
 
+def _write_fund(cfg, symbol):
+    instruments = cfg.curated_root / "instruments"
+    instruments.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "symbol": [symbol],
+            "asset_type": ["etf"],
+            "fetched_at": [datetime(2024, 6, 28, tzinfo=timezone.utc)],
+        }
+    ).write_parquet(instruments / f"{symbol}.parquet")
+
+
+def test_fund_cash_dividend_is_not_a_missed_step(crosscheck_config):
+    """Fund hfq is split-only: a cash distribution leaves the factor at 1."""
+    from cnequity.derive.adj_factors import (
+        _corporate_action_crosscheck_findings,
+        _pre_close_step_findings,
+    )
+
+    _write_fund(crosscheck_config, "510180.SH")
+    _write_bars_with_pre_close(
+        crosscheck_config,
+        "510180.SH",
+        [(_DAYS[0], 4.0, None), (_DAYS[1], 4.0, 3.85), (_DAYS[2], 4.0, 4.0)],
+    )
+    _write_action(crosscheck_config, "510180.SH", _DAYS[1], cash_dividend=0.15)
+    out = _factor_frame("510180.SH", _DAYS, [1.0, 1.0, 1.0])
+
+    assert _corporate_action_crosscheck_findings(crosscheck_config, out) == []
+    assert _pre_close_step_findings(crosscheck_config, out) == []
+
+
+def test_fund_split_the_factor_missed_is_still_flagged(crosscheck_config):
+    from cnequity.derive.adj_factors import (
+        _corporate_action_crosscheck_findings,
+        _pre_close_step_findings,
+    )
+
+    _write_fund(crosscheck_config, "510180.SH")
+    _write_bars_with_pre_close(
+        crosscheck_config,
+        "510180.SH",
+        [(_DAYS[0], 4.0, None), (_DAYS[1], 2.0, 2.0), (_DAYS[2], 2.0, 2.0)],
+    )
+    _write_action(crosscheck_config, "510180.SH", _DAYS[1], action_type="split", transfer_ratio=1.0)
+    out = _factor_frame("510180.SH", _DAYS, [1.0, 1.0, 1.0])
+
+    findings = _corporate_action_crosscheck_findings(crosscheck_config, out)
+    assert [f["check"] for f in findings] == ["adj_factor_corporate_action_divergence"]
+    assert findings[0]["expected_ratio"] == pytest.approx(2.0)
+    assert _pre_close_step_findings(crosscheck_config, out)[0]["steps"] == 1
+
+
 def test_pre_close_check_is_silent_on_a_lake_without_the_column(crosscheck_config):
     from cnequity.derive.adj_factors import _pre_close_step_findings
 
@@ -2050,3 +2129,37 @@ def test_one_incremental_derive_heals_a_suspension_hole_and_settles(adj_config):
     assert date(2024, 7, 1) in _factor_dates(adj_config, "600519.SH")
     # A healed symbol must not be refetched again on every later run.
     assert _uncovered_symbols(adj_config) == set()
+
+
+def test_baostock_factors_do_not_move_when_the_tip_moves_by_a_float_bit(monkeypatch):
+    """Rescaling to 1.0 at the newest session must not rewrite history when the
+    newest ratio differs from yesterday's only in its last bit."""
+    import math
+
+    from cnequity.adapters.baostock import adj_factors as mod
+
+    days = [date(2026, 10, 28), date(2026, 10, 29), date(2026, 10, 30)]
+    raw = {days[0]: 10.0, days[1]: 10.0, days[2]: 10.0}
+    exact = 13.82376
+
+    def run(last_hfq):
+        hfq = {days[0]: 10.0 * exact, days[1]: 10.0 * exact, days[2]: last_hfq}
+        monkeypatch.setattr(
+            mod,
+            "_closes",
+            lambda bs, sym, s, e, flag, config=None: raw if flag == mod._RAW_FLAG else hfq,
+        )
+        monkeypatch.setattr(
+            mod,
+            "fetch_per_symbol",
+            lambda symbols, start, end, fn, **kw: (fn(None, symbols[0], start, end), []),
+        )
+        monkeypatch.setattr(mod, "serves", lambda source, symbol: True)
+        return mod.fetch_adj_factor_series_baostock("601628.SH", days[0], days[-1], bs=object())[
+            "factor"
+        ].to_list()
+
+    tip = 10.0 * exact
+    moved = math.nextafter(tip, 0.0)
+    assert moved / 10.0 != tip / 10.0  # the anchor really moves by a bit
+    assert run(tip) == run(moved)

@@ -32,6 +32,8 @@ DATASET_DATA_VERSION = {
     "daily_bars": "v2",
     # v2: industry_code is the level-3 leaf and the level columns are filled.
     "industry_members": "v2",
+    # v2: `float_a_shares` is filled.
+    "share_structure": "v2",
 }
 
 
@@ -42,7 +44,20 @@ def data_version_for(dataset: str) -> str:
 # Columns a writer may leave out; validation adds them as null. Older rows and
 # sources that do not publish the value read the same way.
 OPTIONAL_COLUMNS = frozenset(
-    {"pre_close", "l1_code", "l1_name", "l2_code", "l2_name", "l3_code", "l3_name"}
+    {
+        "pre_close",
+        "l1_code",
+        "l1_name",
+        "l2_code",
+        "l2_name",
+        "l3_code",
+        "l3_name",
+        "float_a_shares",
+        # economic_calendar rows written before 2026-10-30 carry no Jin10 id.
+        "indicator_code",
+        # Jin10 calendar and events rows written before 2026-10-31.
+        "withdrawn",
+    }
 )
 
 DAILY_BARS_SCHEMA = {
@@ -452,6 +467,10 @@ SHARE_STRUCTURE_SCHEMA = {
     "total_shares": pl.Float64,
     "float_shares": pl.Float64,
     "restricted_shares": pl.Float64,
+    # 流通A股 — listed tradable A shares only. `float_shares` also counts an
+    # A+H company's H shares (600188.SH: 7.66 bn against 5.96 bn A), so this is
+    # the count an A-share float market cap or turnover needs. Null before v2.
+    "float_a_shares": pl.Float64,
     # 自由流通股 — float minus strategic/locked holdings. The denominator an
     # index uses for free-float weighting; not the same as `float_shares`.
     "free_float_shares": pl.Float64,
@@ -845,6 +864,7 @@ FLASH_NEWS_WIRE_SCHEMA = {
 
 ECONOMIC_CALENDAR_SCHEMA = {
     "event_id": pl.Utf8,
+    "indicator_code": pl.Utf8,
     "event_date": pl.Date,
     "event_time": pl.Utf8,
     "country": pl.Utf8,
@@ -854,6 +874,36 @@ ECONOMIC_CALENDAR_SCHEMA = {
     "previous": pl.Float64,
     "actual": pl.Float64,
     "unit": pl.Utf8,
+    # True once a later capture of the event's window no longer lists it:
+    # Jin10 reissues a rescheduled release under a new data_id.
+    "withdrawn": pl.Boolean,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+ECONOMIC_EVENTS_SCHEMA = {
+    "event_id": pl.Utf8,
+    "event_date": pl.Date,
+    "event_time": pl.Utf8,
+    "time_status": pl.Utf8,
+    "country": pl.Utf8,
+    "importance": pl.Int8,
+    "people": pl.Utf8,
+    "content": pl.Utf8,
+    "withdrawn": pl.Boolean,
+    "source": pl.Utf8,
+    "data_version": pl.Utf8,
+    "fetched_at": FETCHED_AT_DTYPE,
+}
+
+MARKET_HOLIDAYS_SCHEMA = {
+    "holiday_id": pl.Utf8,
+    "holiday_date": pl.Date,
+    "country": pl.Utf8,
+    "exchange": pl.Utf8,
+    "name": pl.Utf8,
+    "note": pl.Utf8,
     "source": pl.Utf8,
     "data_version": pl.Utf8,
     "fetched_at": FETCHED_AT_DTYPE,
@@ -961,6 +1011,8 @@ DATASET_SCHEMAS = {
     "news_headlines": NEWS_HEADLINES_SCHEMA,
     "flash_news_wire": FLASH_NEWS_WIRE_SCHEMA,
     "economic_calendar": ECONOMIC_CALENDAR_SCHEMA,
+    "economic_events": ECONOMIC_EVENTS_SCHEMA,
+    "market_holidays": MARKET_HOLIDAYS_SCHEMA,
     "delisting_events": DELISTING_EVENTS_SCHEMA,
 }
 
@@ -1050,6 +1102,8 @@ PRIMARY_KEYS = {
     "news_headlines": ["news_id"],
     "flash_news_wire": ["wire_id", "wire_source"],
     "economic_calendar": ["event_id"],
+    "economic_events": ["event_id"],
+    "market_holidays": ["holiday_id"],
     "delisting_events": ["symbol"],
 }
 

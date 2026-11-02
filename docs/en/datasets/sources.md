@@ -54,9 +54,10 @@ Old staging status merges also recheck listing windows: normal status after the 
 | Item | Value |
 |------|-------|
 | Wave | `trading_status` (core; depends on `instruments` and runs after it) |
-| Primary | eastmoney (ST board + suspension list) |
-| Fallback | exchange (SSE and SZSE quote boards, an independent failure domain) |
-| Supplementary | derived (`derived_bar_gap` / `derived_delisted` / `derived_traded`); bse (BSE quote board) |
+| Primary | exchange (SSE and SZSE stock and fund boards, the BSE board; a failed board request is retried with backoff) |
+| Fallback | eastmoney (ST board + suspension list, asked only for codes the boards did not answer; skipped while push2 is paused) |
+| Supplementary | derived (`derived_bar_gap` / `derived_delisted` / `derived_traded`); bse (BSE announcements) |
+| Carried | A code nothing answers repeats its latest first-hand reading from the last 5 sessions, labelled `<origin>_cached` (for example `exchange_cached`); carried rows written before 2026-10-28 are all labelled `eastmoney_cached` |
 | Frequency | Daily |
 | Primary key | (symbol, trade_date) |
 | Historical ST backfill | Baostock covers SH/SZ; optional Tushare Pro `bak_basic` (2016) + `stock_st` (from 2017-01-01) covers BJ and needs a token; without source coverage the audit stays at warning |
@@ -137,14 +138,14 @@ So `failover` registers no fallback for `trade_ticks`: **a single source is the 
 | Item | Value |
 |------|-------|
 | Group | `macro_risk` (daily) |
-| Primary | eastmoney datacenter: `cnbond_yield_10y` (`RPTA_WEB_TREASURYYIELD`.`EMM00166466`), `shibor_3m` (`RPT_IMP_INTRESTRATEN`, `INDICATOR_ID=203`), `lpr_1y` (`RPTA_WEB_RATE`.`LPR1Y`), `pmi_manufacturing`, `m2_yoy` |
+| Primary | eastmoney datacenter: `cnbond_yield_10y` (`RPTA_WEB_TREASURYYIELD`.`EMM00166466`), `shibor_3m` (`RPT_IMP_INTRESTRATEN`, `INDICATOR_ID=203`), `lpr_1y` (`RPTA_WEB_RATE`.`LPR1Y`), `pmi_manufacturing`, `m2_yoy`. Also `usdcnh`: Sina forex day-k close for `symbol=fx_susdcnh` (field order date,open,low,high,close — close is the last number), `source=sina`, unit CNY per USD |
 | Supplementary | pboc: `social_financing` (increment in aggregate financing to the real economy) |
 | Primary key | (indicator_id, obs_date) |
-| Daily update | The three rates are requested day by day (`='{date}'` filter), only for trading days after the watermark; the two daily rates additionally look back over the last 5 trading days (one range query). When the value for the run day has not been published yet, only a `daily_series_pending` notice is recorded and the write proceeds as usual, with the next day's lookback filling it in; only values still missing once they are no longer the run day become a `daily_series_gap` warning, which blocks the merge and is retried. PMI, M2 and aggregate financing read the whole history every time |
-| Backfill | `cne backfill macro_indicators --start 2016-01-01`: the two daily rates each issue one paginated range query per window (`(COL>='…')(COL<='…')`) instead of daily requests; the usual same-day daily fetch is also done. Default start 2016-01-01; `--end` does not go past today |
+| Daily update | The three rates are requested day by day (`='{date}'` filter), only for trading days after the watermark; the two daily rates additionally look back over the last 5 trading days (one range query). The same window also reads Sina's offshore yuan day-k once. When a rate for the run day has not been published yet, only a `daily_series_pending` notice is recorded and the write proceeds as usual, with the next day's lookback filling it in; only values still missing once they are no longer the run day become a `daily_series_gap` warning, which blocks the merge and is retried. A failed offshore-yuan read is recorded only as source unit `sina:usdcnh` — not as `daily_series_gap`, and it does not block treasury or Shibor, and does not fall back to push2his. PMI, M2 and aggregate financing read the whole history every time |
+| Backfill | `cne backfill macro_indicators --start 2016-01-01`: the two daily rates each issue one paginated range query per window (`(COL>='…')(COL<='…')`) instead of daily requests; offshore yuan uses one Sina day-k fetch then clips to the window. The usual same-day daily fetch is also done. Default start 2016-01-01; `--end` does not go past today |
 | History depth | The 10Y treasury yield and Shibor start at different dates; missing trading days are recorded as `daily_series_gap`; the actual coverage report is authoritative. |
 | Trading days only | The interbank market also opens on make-up working weekends, and range queries may bring those days back; backfill filters by the project's trading calendar to match the row density of the daily update |
-| Known limits | `lpr_1y` does not use range backfill: from 2013-10-25 to 2019-08 the `LPR1Y` column is the old daily loan prime rate, and only after that is it the reformed monthly LPR, so a range query would record two benchmarks under the same indicator. It is still only written on the day of the daily update |
+| Known limits | `lpr_1y` does not use range backfill: from 2013-10-25 to 2019-08 the `LPR1Y` column is the old daily loan prime rate, and only after that is it the reformed monthly LPR, so a range query would record two benchmarks under the same indicator. It is still only written on the day of the daily update. `usdcnh` is the offshore close, not the onshore mid-price and not EastMoney push2his close. Measured 2026-10-31, the Sina series starts 2014-11-07 with close 6.65280 that day versus EastMoney's 6.6533 (~5 pips); the two are not stitched. When Sina refuses requests this series stops updating while rates still write. Backfill drops non-trading days by the trading calendar; the daily path likewise only lands trading days |
 
 #### futures_bars / option_bars / futures_contracts / option_contracts
 
@@ -297,7 +298,9 @@ Historical event contradictions never block `audit_gate`, `publication_gate` or 
 | Item | Value |
 |------|-------|
 | Primary | eastmoney (`RPT_F10_EH_EQUITY` / `RPT_F10_EH_HOLDERNUM`) |
-| Group | fundamentals@17:35 |
+| Backup | `share_structure`: tdx_protocol (the share changes in the xdxr record, read by the weekly `actions_sweep` at no extra request). Total shares and the A-share float are compared weekly (audit `share_structure_peer`); when EastMoney has not updated for more than 4 days, changes from the last 90 days that only TDX holds are written with the sweep's date as `announce_date`, and `float_shares` only where it is known to equal the A-share float (`share_structure_backup`) |
+| Group | core@16:00 |
+| `shareholder_counts` group | fundamentals@17:35 |
 | Primary key | (symbol, change_date, announce_date) / (symbol, count_date, announce_date) |
 | Collection method | **Whole-market scan by date range**, not a loop per security and not by reporting period. `RPT_F10_EH_EQUITY.END_DATE` is the share change date; shareholder counts are also disclosed at the end of ten-day periods and months. Scanning only quarter ends silently misses the other disclosure dates |
 | Daily range | Looks back 30 days by `NOTICE_DATE`. The window opens on the announcement date rather than the change date: a change that took effect weeks ago is only announced today, and a window keyed on the change date would never see it |
@@ -351,11 +354,12 @@ Not in the daily waves. Cached in `meta/on_demand/`, optionally written to DuckD
 | baostock | TCP | Shanghai and Shenzhen historical ST, valuation, delisted backfill and security identity supplements | — | Reuse sessions; at most 50,000 requests per Shanghai calendar day, one connection at a time; blacklisting freezes for this year's count × 6 hours. BJ historical ST needs an independent source |
 | pboc | HTTP | Increment in aggregate financing to the real economy (`macro_indicators`) | — | The main write requires the full series; a single-year failure blocks the write for this run, to avoid advancing the watermark across a gap |
 | nbs | HTTP | **Audit only**: PMI releases, cross-checked against `macro_indicators` | — | Runs per the source switch; enabled in the public template; failures or the disabled state go into the verification report |
-| exchange | HTTP | `margin_trading` **primary**; fallback for `trading_status` / `trading_calendar` / `dragon_tiger` / `block_trades`; `[exchange_audit]` price cross-check | — | Margin trading is aggregated from member firm reports with no reseller in between; the dragon-tiger list and block trades are only asked when EastMoney cannot answer, and neither exchange publishes for BSE (recorded in `backup_gaps`); audit findings are advisory and do not fail the run |
+| exchange | HTTP | `margin_trading` **primary**; fallback for `trading_status` / `trading_calendar` / `dragon_tiger` / `block_trades`; `daily_bars` fill for exchange-fund sessions under one lot (exchange day k-line, quantities in shares, amounts rounded to yuan); `[exchange_audit]` price cross-check | — | Margin trading is aggregated from member firm reports with no reseller in between; the dragon-tiger list and block trades are only asked when EastMoney cannot answer, and neither exchange publishes for BSE (recorded in `backup_gaps`); audit findings are advisory and do not fail the run |
 | sina_bars | HTTP | Sina daily bar last-resort fallback (rate-limited separately from the adjustment factor endpoint) | — | Skip + quality finding |
 | ths | HTTP | THS public pages: industry, valuation | — | Skip + quality finding |
 | ths_pages | HTTP | `d.10jqka.com.cn` kline, the sole source of `sector_bars` | — | This dataset has **no second source**; a failure is a gap |
 | ths_bonus | HTTP | THS dividend and rights issue pages | — | More conservative rate limit (3.0s); skip + quality finding |
+| tdx_fin | HTTP | `financial_statement_items` backup: whole-market quarterly packages (gpcw, MD5-checked) | — | When EastMoney fails, the daily run writes only disclosures from the last 14 days (`tdx_fin`); `cne backfill --source tdx_fin` fills only items the lake lacks, and older periods may carry restated values, so they are labelled `tdx_fin_backfill` and excluded by strict PIT; the package has no 营业总收入, so `revenue` is written only for companies whose previous-period 营业收入 equalled the lake's total (companies whose finance subsidiaries add interest and fee income get none); no indicator ratios. Each day the core group also checks the last 14 days of new filings against it after compact (0.1% tolerance; `revenue` disagrees only where TDX's 营业收入 exceeds the total) and lists reports TDX holds, disclosed before that day, that the lake lacks (audit `financial_statement_tdx_peer`); packages are cached by MD5 under `meta/source_cache/tdx_fin` and not downloaded again until they change |
 | ths_official | HTTPS (keyed) | Optional credentialed source: arbitration snapshots, financial statement supplements, explicit historical repairs; versioned corrections follow the versioned publishing rules | — | Without a key everything is `skipped`, and the lake keeps its existing sources unchanged |
 | tushare | HTTPS (keyed) | Optional: BJ historical ST evidence (`stock_st`, from 2017-01-01) | bak_basic name evidence (2016) | Without a token, earlier BJ bars stay unresolved and **are not assumed normal** |
 

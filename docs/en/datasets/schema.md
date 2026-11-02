@@ -104,7 +104,7 @@ Multi-source snapshot path: `meta/source_snapshots/{dataset}/source={source}/dat
 | exchange | string | SH/SZ/BJ |
 | asset_type | string | stock/etf/index; the legacy `etf` value also covers some LOFs, so it cannot be used to decide ETF research eligibility |
 | list_date | date | Nullable |
-| delist_date | date | Nullable |
+| delist_date | date | Nullable; the last listed session (inclusive, halt placeholders count), i.e. the session before the removal date |
 | prev_symbol | string | Nullable |
 | source | string |  |
 | data_version | string |  |
@@ -607,9 +607,10 @@ Daily update: `macro_risk` group. History: `cne backfill commodity_bars [--start
 > **Unit contract (per share).** All ratios and amounts are relative to "1 share held",
 > not the "per 10 shares" basis common in TDX (`xdxr`) and EastMoney. Before staging, the adapter
 > divides source-side "per 10 shares" values by 10 (e.g. "CNY 8.5 per 10 shares" → 0.85, "8 bonus shares per 10" → 0.8,
-> "4 capitalization shares per 10" → 0.4, "3 rights shares per 10" → 0.3). Downstream accounting works on actual holdings with no further division by 10:
+> "4 capitalization shares per 10" → 0.4, "3 rights shares per 10" → 0.3). TDX sends these amounts as single-precision floats, so they are half-up rounded to 6 decimal places before that division (the tail is at most 4e-8); the rights price and the unit-split factor are rounded the same way and are not divided by 10. Downstream accounting works on actual holdings with no further division by 10:
 > `shares_after = shares × (1 + bonus_ratio + transfer_ratio) × split_factor`,
 > `cash = shares × cash_dividend`. `allotment_price` is a per-share price, not a ratio, and is not divided by 10.
+> `cash_dividend` is the declared per-share amount. When a company holds repurchased shares, the exchange computes the ex-rights reference price from a virtual per-share amount spread over total shares, which is smaller, so the adjustment factor steps slightly less (up to about 0.5% observed).
 > Note: TDX `xdxr` does not split bonus and capitalization shares; it writes their sum to `bonus_ratio` (`transfer_ratio=0`);
 > the total multiplier is correct, but the bonus/capitalization split is distinguishable only on the EastMoney daily path. An EastMoney plan that
 > includes a cash dividend, bonus shares and capitalization shares together is split into several `(symbol, ex_date, action_type)` records, so that a single `action_type`
@@ -896,7 +897,7 @@ to `meta/industry_taxonomy.parquet`, with its level, name, `parent_id`, first an
 
 | Column | Type | Description |
 |--------|------|-------|
-| indicator_id | string | e.g. ``shibor_3m``, ``cnbond_yield_10y``, ``lpr_1y`` |
+| indicator_id | string | e.g. ``shibor_3m``, ``cnbond_yield_10y``, ``lpr_1y``, ``usdcnh`` (USD/offshore CNY close from Sina forex day-k, `source=sina`) |
 | obs_date | date | Observation / release date |
 | value | float64 |  |
 | frequency | string | ``daily`` / ``monthly`` |
@@ -1014,6 +1015,7 @@ Cached JSON: ``meta/on_demand/stock_news/{symbol}.json``; fetched via ``cne quer
 | total_shares | float64 |  |
 | float_shares | float64 |  |
 | restricted_shares | float64 |  |
+| float_a_shares | float64 |  |
 | free_float_shares | float64 |  |
 | change_reason | string |  |
 | announce_date | date |  |
@@ -1176,6 +1178,7 @@ THS industry and concept sector fund flow, written only when push2 cannot provid
 | Column | Type | Description |
 |--------|------|-------|
 | event_id | string |  |
+| indicator_code | string |  |
 | event_date | date |  |
 | event_time | string |  |
 | country | string |  |
@@ -1185,6 +1188,7 @@ THS industry and concept sector fund flow, written only when push2 cannot provid
 | previous | float64 |  |
 | actual | float64 |  |
 | unit | string |  |
+| withdrawn | bool |  |
 | source | string |  |
 | data_version | string |  |
 | fetched_at | timestamp |  |
@@ -1202,6 +1206,37 @@ THS industry and concept sector fund flow, written only when push2 cannot provid
 | worst_final_return | float64 |  |
 | final_window_return | float64 |  |
 | bars | int64 |  |
+| source | string |  |
+| data_version | string |  |
+| fetched_at | timestamp |  |
+
+#### economic_events
+
+| Column | Type | Description |
+|--------|------|-------|
+| event_id | string |  |
+| event_date | date |  |
+| event_time | string |  |
+| time_status | string |  |
+| country | string |  |
+| importance | int8 |  |
+| people | string |  |
+| content | string |  |
+| withdrawn | bool |  |
+| source | string |  |
+| data_version | string |  |
+| fetched_at | timestamp |  |
+
+#### market_holidays
+
+| Column | Type | Description |
+|--------|------|-------|
+| holiday_id | string |  |
+| holiday_date | date |  |
+| country | string |  |
+| exchange | string |  |
+| name | string |  |
+| note | string |  |
 | source | string |  |
 | data_version | string |  |
 | fetched_at | timestamp |  |

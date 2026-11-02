@@ -1206,7 +1206,9 @@ def test_stats_show_refreshes_tables_a_later_run_made_stale(cfg_path):
     cfg = load_config(cfg_path)
     rebuild_stats(cfg)
     manifest = Manifest(cfg.manifest_path)
-    manifest.finish_run(manifest.start_run("daily:core", {}), "success")
+    run_id = manifest.start_run("daily:core", {})
+    manifest.record_dataset_result(run_id, "daily_bars", "fetch", "success", rows_written=1)
+    manifest.finish_run(run_id, "success", rows_written=1)
     assert stats_freshness(cfg).stale
 
     result = CliRunner().invoke(cli, ["stats", "show", "--config", cfg_path])
@@ -2875,3 +2877,40 @@ def test_a_broken_config_names_the_line_but_not_its_text(tmp_path):
     assert result.exit_code == 1
     assert "TOMLDecodeError at line 2, column" in result.output
     assert "s3cret" not in result.output
+
+
+def test_backfill_does_not_replay_a_run_compacted_with_warnings(tmp_path):
+    # Measured 2026-10-29: a warning compact counted as never compacted, so the
+    # next targeted backfill republished 920021.BJ rows a repair had removed.
+    cfg = Config(data_root=tmp_path / "data")
+    manifest = Manifest(cfg.manifest_path)
+    run_id = manifest.start_run("backfill")
+    manifest.start_batch(run_id, "compact-0", task_id="compact", dataset="compact")
+    manifest.finish_batch(run_id, "compact-0", "warning")
+    manifest.finish_run(run_id, "degraded")
+    StagingWriter(cfg.staging_root).write_batch(
+        "trading_status",
+        run_id,
+        "batch-00000",
+        pl.DataFrame(
+            {
+                "symbol": ["600025.SH"],
+                "trade_date": [date(2020, 6, 19)],
+                "is_trading": [True],
+                "status": ["normal"],
+                "source": ["baostock"],
+                "data_version": ["v1"],
+                "fetched_at": [datetime.now(timezone.utc)],
+            }
+        ),
+    )
+
+    class FakeEngine:
+        def __init__(self):
+            self.config = cfg
+            self.manifest = manifest
+
+        def run_step(self, *args):
+            raise AssertionError("a compacted run must not be compacted again")
+
+    assert _recover_compactable_backfill_staging(FakeEngine(), "trading_status") == []

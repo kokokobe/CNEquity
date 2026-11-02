@@ -94,14 +94,47 @@ def test_item_set_covers_the_factor_building_blocks():
 def test_exactly_one_report_owns_the_announcement_date():
     owners = [r for r in _REPORTS if r.authoritative_announce_date]
     assert owners == [_ANNOUNCE_SOURCE]
-    # Stored LICO summary items are the date repair's evidence. Another
-    # report must not reuse these names without adding explicit report lineage.
+    # Stored LICO summary items are the date repair's evidence. Only the
+    # income statement may repeat revenue and net_profit: its NOTICE_DATE is a
+    # republication, never earlier than the first disclosure, and the evidence
+    # takes the minimum date, so a restated vintage cannot move a period early.
     for report in _REPORTS:
-        if report is not _ANNOUNCE_SOURCE:
-            assert not any(
-                statement == "indicator" or code in {"revenue", "net_profit"}
-                for statement, code in report.items
-            )
+        if report is _ANNOUNCE_SOURCE:
+            continue
+        assert not any(statement == "indicator" for statement, _code in report.items)
+        if report.name != "RPT_DMSK_FN_INCOME":
+            assert not any(code in {"revenue", "net_profit"} for _s, code in report.items)
+
+
+def test_backfill_keeps_the_first_announced_figure_on_a_shared_key(monkeypatch):
+    # A backfill dates the income statement's rows from LICO, so a restated
+    # TOTAL_OPERATE_INCOME lands on LICO's key and must not replace its figure.
+    import polars as pl
+
+    monkeypatch.setattr(fundamentals_module, "_report_period_dates", lambda *a, **k: ["2016-12-31"])
+    income = {
+        "SECURITY_CODE": "000002",
+        "SECUCODE": "000002.SZ",
+        "REPORT_DATE": "2016-12-31",
+        "NOTICE_DATE": "2018-03-27",
+        "TOTAL_OPERATE_INCOME": 250000000000.0,
+    }
+    monkeypatch.setattr(
+        fundamentals_module,
+        "_fetch_report",
+        lambda client, report, expr, **kwargs: (
+            [_lico_row()]
+            if report is _ANNOUNCE_SOURCE
+            else ([income] if report.name == "RPT_DMSK_FN_INCOME" else [])
+        ),
+    )
+    frame = fetch_financial_statement_items(
+        date(2026, 10, 9), backfill=True, client=FakeDatacenterClient({})
+    )
+    revenue = frame.filter(pl.col("item_code") == "revenue")
+    assert revenue.select("announce_date", "item_value").rows() == [
+        (date(2017, 3, 27), 240477236923.34)
+    ]
 
 
 # --- announce-date resolution ----------------------------------------------
@@ -287,7 +320,8 @@ def test_daily_reconstruction_publishes_with_exact_wire_archive(tmp_path, monkey
         source="eastmoney",
         request_scope="daily:2018-03-27",
     )
-    assert len(records) == 5
+    # One daily request per report, plus the LICO date lookup.
+    assert len(records) == len(_REPORTS) + 1
     assert all(record.http_metadata["wire_exact"] for record in records)
 
 
@@ -320,8 +354,23 @@ def test_daily_reconstruction_does_not_replace_a_committed_original(tmp_path, mo
     frame = fetch_financial_statement_items(
         date(2018, 3, 27), config=cfg, client=FakeDatacenterClient({})
     )
-    assert frame["source"].unique().to_list() == ["eastmoney"]
-    assert frame["announce_date"].unique().to_list() == [date(2018, 3, 27)]
+    # The 2018 filing repeats the committed 2016Q4 figures as comparatives: no
+    # new vintage, and the committed original stays the only one.
+    assert frame.is_empty()
+
+    restated = _balance_row(TOTAL_ASSETS=830674213925.0 * 1.01)
+    monkeypatch.setattr(
+        fundamentals_module,
+        "_fetch_report",
+        lambda client, report, expr, **kwargs: [restated] if report is _BALANCE else [],
+    )
+    frame = fetch_financial_statement_items(
+        date(2018, 3, 27), config=cfg, client=FakeDatacenterClient({})
+    )
+    # A changed figure is a restatement, kept on the date it was republished.
+    assert frame.select("item_code", "source", "announce_date").rows() == [
+        ("total_assets", "eastmoney", date(2018, 3, 27))
+    ]
 
 
 def test_backfill_retains_an_earlier_committed_lico_date(tmp_path, monkeypatch):
@@ -410,3 +459,9 @@ def test_backfill_keeps_other_report_units_when_one_request_fails(monkeypatch):
 
 def _REPORTS_in(urls: list[str]) -> set[str]:
     return {report.name for report in _REPORTS for url in urls if report.name in url}
+
+
+def test_closing_cash_comes_from_every_f10_cashflow_family():
+    """DMSK's END_CCE is empty; the F10 reports carry it for all four families."""
+    owners = {r.name for r in _REPORTS if ("cashflow", "end_cash") in r.items}
+    assert owners == {f"RPT_F10_FINANCE_{family}CASHFLOW" for family in "GBIS"}

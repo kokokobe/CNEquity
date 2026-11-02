@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Literal
 
@@ -169,6 +169,7 @@ _UNIT_CONTRACT_DEFAULTS: dict[str, UnitContract] = {
         "total_shares": "share",
         "float_shares": "share",
         "restricted_shares": "share",
+        "float_a_shares": "share",
         "free_float_shares": "share",
     },
     "shareholder_counts": {
@@ -286,6 +287,24 @@ Tier = Literal["L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9"]
 
 TIERS: tuple[Tier, ...] = ("L0", "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9")
 
+# How much the project stands behind a dataset, orthogonal to ``Tier`` (what it
+# is for). ``core`` is the promise: rebuildable history, a daily path that has
+# held up, an independent check. ``extended`` is rebuildable and steady but not
+# essential, or single-sourced. ``best_effort`` is either not rebuildable (a
+# live snapshot whose history starts the day a lake turns it on) or unsteady,
+# and is off unless a config opts in. ``optional`` has its own enable switch.
+Support = Literal["core", "extended", "best_effort", "optional"]
+
+SUPPORT_LEVELS: tuple[Support, ...] = ("core", "extended", "best_effort", "optional")
+
+#: Catalog messages: translate where shown, English in JSON.
+SUPPORT_LABELS: dict[Support, str] = {
+    "core": N_("Core"),
+    "extended": N_("Extended"),
+    "best_effort": N_("Best effort"),
+    "optional": N_("Optional"),
+}
+
 #: Catalog messages: translate where shown, English in JSON.
 TIER_LABELS: dict[Tier, str] = {
     "L0": N_("Reference"),
@@ -304,6 +323,11 @@ TIER_LABELS: dict[Tier, str] = {
 @dataclass(frozen=True)
 class DatasetSpec:
     """Orchestration/query metadata for one dataset.
+
+    support:
+        How much the project stands behind it (see ``Support``). Left None on
+        construction and set for every registered dataset from ``_SUPPORT``,
+        which must name each one exactly once.
 
     tier:
         L0–L9 research classification (see ``Tier``). Mandatory and without a
@@ -405,6 +429,7 @@ class DatasetSpec:
     name: str
     tier: Tier
     layer: Layer = "curated"
+    support: Support | None = None
     partition_col: str | None = None
     partition_granularity: Granularity = "day"
     date_col: str | None = None
@@ -749,7 +774,7 @@ _SPECS = [
         # the catalogue — it is the exchange's own listing and the only source
         # here that carries 证券简称 for it. Sina's code-space sweep names what
         # is left: recovered delistings, and any BJ code the board has dropped.
-        supplementary_sources=("bse", "sina", "qmt_bridge"),
+        supplementary_sources=("bse", "sina"),
         tier="L0",
         partition_col=None,
         watermark=False,
@@ -772,39 +797,29 @@ _SPECS = [
         "trading_calendar",
         primary_source="qmt_bridge",
         backup_source="exchange",
-        supplementary_sources=("tdx_protocol",),
         tier="L0",
         partition_col="trade_date",
         partition_granularity="year",
     ),
     DatasetSpec(
         "trading_status",
-        # The daily feed is EastMoney's current-state board. It is reached
-        # through `tdx_protocol.client.fetch_trading_status`, but that function
-        # only forwards to `fetch_trading_status_eastmoney` — TDX has no ST or
-        # halt feed at all. Declaring TDX as the primary put this dataset in
-        # the wrong failure domain: `cne sources resilience` counted it against
-        # `tdx` (measured 100% from the reference host) when it belongs to
-        # `eastmoney` (worst probe 0%), and naming EastMoney as its own backup
-        # made a same-domain pair look like an independent one.
-        #
-        # There is no second daily vendor. baostock's per-day `isST` is the one
-        # genuinely independent reading, but it is a per-symbol sweep and stays
-        # the backfill source; the in-step fallback is this lake's own previous
-        # snapshot, which is not an independent source either. The backup gate
-        # should say so rather than pass on a mislabel.
-        primary_source="eastmoney",
+        # The exchanges' own boards come first: both publish every listed
+        # security with its OHLC and its 证券简称, which carries the halt
+        # (Shanghai zeroes open/high/low beside a reference close; Shenzhen
+        # repeats the close with zero volume) and the ST designation, and the
+        # BSE board answers Beijing. Against EastMoney on 2026-09-15 ST agreed
+        # on 100.000% and halts on 99.923%, every disagreement a halt the
+        # exchange rule then missed. Since the 2026-09-22 push2 ban they have
+        # supplied the whole market.
+        primary_source="exchange",
         # Suspensions reconstructed from `daily_bars` interior gaps land under
         # `derived_bar_gap`/`derived_delisted`; the BSE board and its
-        # announcements are the Beijing route the vendor board does not cover.
+        # announcements are the Beijing route.
         supplementary_sources=("derived", "bse"),
-        # The independent daily second opinion, and the reason this dataset has
-        # a backup at all: both exchanges publish every listed security with its
-        # OHLC and its 证券简称, which carries the halt (Shanghai zeroes
-        # open/high/low beside a reference close; Shenzhen repeats the close
-        # with zero volume) and the ST designation. Shanghai and Shenzhen only —
-        # Beijing keeps the BSE route above.
-        backup_source="exchange",
+        # EastMoney's current-state board, reached through
+        # `tdx_protocol.client.fetch_trading_status` (which only forwards to it;
+        # TDX has no ST or halt feed). Asked only for what the boards leave.
+        backup_source="eastmoney",
         tier="L0",
         partition_col="trade_date",
         partition_granularity="month",
@@ -821,18 +836,9 @@ _SPECS = [
         partial_rows=True,
         primary_source="qmt_bridge",
         backup_source="eastmoney",
-        # QMT's local bridge is preferred when available because it can
-        # download and serve the terminal's own bar store.  TDX remains the
-        # recovery source for any symbol that bridge does not cover.
-        supplementary_sources=(
-            "tdx_protocol",
-            "exchange",
-            "bse",
-            "sina",
-            "ths",
-            "ths_official",
-            "baostock",
-        ),
+        # Each of these lands rows under its own label through
+        # `_finish_daily_bars`' recovery chain.
+        supplementary_sources=("exchange", "bse", "sina", "ths", "ths_official", "baostock"),
         tier="L1",
         partition_col="trade_date",
         reconciliation_lookback_days=5,
@@ -850,9 +856,8 @@ _SPECS = [
         partial_rows=True,
         primary_source="qmt_bridge",
         backup_source="eastmoney",
-        # QMT serves the terminal's own index bar store; TDX is the local
-        # protocol fallback when the bridge is unavailable. THS serves the
-        # board indices whose base the other two disagree on.
+        # THS serves the board indices whose base the other two disagree on;
+        # mixing them inside one series is what a dedicated route avoids.
         supplementary_sources=("tdx_protocol", "ths"),
         tier="L1",
         partition_col="trade_date",
@@ -873,7 +878,6 @@ _SPECS = [
         "minute_bars",
         partial_rows=True,
         primary_source="qmt_bridge",
-        supplementary_sources=("tdx_protocol",),
         tier="L1",
         partition_col="trade_date",
         partition_granularity="day",
@@ -907,7 +911,6 @@ _SPECS = [
         "minute_bars_5m",
         partial_rows=True,
         primary_source="qmt_bridge",
-        supplementary_sources=("tdx_protocol",),
         tier="L1",
         partition_col="trade_date",
         partition_granularity="day",
@@ -1056,14 +1059,16 @@ _SPECS = [
     DatasetSpec(
         "corporate_actions",
         schema_version=2,
-        # The daily step is EastMoney's date-filtered snapshot; TDX xdxr is
-        # QMT's local bridge has full per-symbol dividend/allotment history.
-        # Its API has no date-bulk sweep, so EastMoney remains the efficient
-        # daily same-date snapshot; TDX remains the historical peer/repair.
+        # Daily: the exchange's adjusted previous close (TDX quotes) names the
+        # session's ex-events and TDX xdxr records them; EastMoney's one
+        # market-wide query is the backup, the same-day peer, and the source
+        # of the 送/转 split TDX lacks. A weekly TDX sweep catches the rest.
+        # Keep this aligned with the failover config because the registry
+        # also controls canonical row precedence in query views.
         primary_source="qmt_bridge",
         backup_source="eastmoney",
-        # TDX is the historical peer; baostock supplies delisted repair and
-        # THS is the explicit BJ dividend repair route.
+        # baostock supplies actions for delisted names the live boards cannot
+        # answer for; the THS dividend page is the explicit BJ repair route.
         supplementary_sources=("tdx_protocol", "baostock", "ths"),
         # Issuer payment-date repair can publish CNINFO and exchange notice
         # evidence, but neither is an automatic failover for daily actions.
@@ -1071,7 +1076,7 @@ _SPECS = [
         tier="L2",
         partition_col="ex_date",
         partition_granularity="year",
-        backfill_source="qmt_bridge",
+        backfill_source="tdx_protocol",
         reconciliation_lookback_days=30,
     ),
     DatasetSpec(
@@ -1107,9 +1112,8 @@ _SPECS = [
     DatasetSpec(
         "financial_statement_items",
         primary_source="qmt_bridge",
-        # QMT carries terminal-local report metadata keyed by the first
-        # disclosure date. EastMoney remains the independent repair source when
-        # local QMT data is absent or a bridge request fails.
+        # 通达信's quarterly packages: the daily route when EastMoney fails, and
+        # the source `cne backfill --source tdx_fin` fills missing keys from.
         backup_source="eastmoney",
         # The keyed 同花顺 API is the arbitration peer and fills what the
         # EastMoney datacenter reports omit.
@@ -1128,7 +1132,12 @@ _SPECS = [
         pit_quality="reconstructed",
         pit_grade="partial",
         # Original-date rows rebuilt from a daily capture keep this label.
-        reconstructed_sources=(("eastmoney", "daily:", "eastmoney_backfill"),),
+        reconstructed_sources=(
+            ("eastmoney", "daily:", "eastmoney_backfill"),
+            # A package's older periods may hold restated values (see
+            # adapters/tdx_fin/packages.py); one capture yields both labels.
+            ("tdx_fin", "tdx_fin:", "tdx_fin_backfill"),
+        ),
         # Daily ingestion is keyed by NOTICE_DATE while storage is keyed by
         # report period.  Re-read the recent disclosure window so late
         # filings/restatements are captured; the adapter's period backfill
@@ -1145,7 +1154,14 @@ _SPECS = [
     # would let a July backtest read August's filing.
     DatasetSpec(
         "share_structure",
+        # v2: `float_a_shares` (流通A股).
+        schema_version=2,
         primary_source="eastmoney",
+        # TDX xdxr share-change events, read by the weekly corporate-actions
+        # sweep: the peer for total and A-share float, and the rows written
+        # when EastMoney has gone stale. They carry no disclosure date, so a
+        # backup row is dated by the sweep that observed it.
+        backup_source="tdx_protocol",
         tier="L3",
         partition_col="change_date",
         partition_granularity="year",
@@ -1162,7 +1178,6 @@ _SPECS = [
     DatasetSpec(
         "shareholder_counts",
         primary_source="eastmoney",
-        supplementary_sources=("qmt_bridge",),
         tier="L3",
         partition_col="count_date",
         partition_granularity="year",
@@ -1178,7 +1193,6 @@ _SPECS = [
     DatasetSpec(
         "top_holders",
         primary_source="eastmoney",
-        supplementary_sources=("qmt_bridge",),
         tier="L3",
         partition_col="record_date",
         partition_granularity="year",
@@ -1266,7 +1280,6 @@ _SPECS = [
     DatasetSpec(
         "dragon_tiger",
         primary_source="eastmoney",
-        supplementary_sources=("qmt_bridge",),
         # Availability, not equivalence. Both exchanges publish their own
         # 龙虎榜 and reach today's session, so a EastMoney outage costs the
         # Beijing names rather than the whole day. Measured 2026-09-16: SZSE 35
@@ -1311,14 +1324,19 @@ _SPECS = [
     ),
     DatasetSpec(
         "index_constituents",
-        primary_source="eastmoney",
+        # The publishers' own books: CSI files (labelled `exchange`) daily, and
+        # CNI (`cni` membership, `cni_weights` books) for the Shenzhen indices.
+        # EastMoney fills an index only when its publisher cannot be read.
+        primary_source="exchange",
+        backup_source="eastmoney",
+        supplementary_sources=("cni_weights",),
         tier="L5",
         partition_col="as_of_date",
         partition_granularity="month",
         fetch_semantics="snapshot",
         # CNI adjustment history reconstructs 399001/399006 from ~2021-12;
-        # CSI indices still accumulate via daily EM snapshots only.
-        supplementary_sources=("qmt_bridge",),
+        # CSI publishes only the current book, so CSI history is the retained
+        # daily snapshots.
         backfill_source="cni",
         # `cne repair index-snapshots` replays dated exchange index books.
         repair_sources=("exchange",),
@@ -1447,11 +1465,18 @@ _SPECS = [
         # A news wire does not close for the weekend.
         session_scope="calendar",
     ),
-    # EM datacenter report RPT_ECONOMICCALENDAR was retired (code 9501); keep the
-    # schema/registry for a replacement source, but do not fail lake health.
+    # EastMoney retired RPT_ECONOMICCALENDAR (code 9501); 金十数据's calendar
+    # replaced it on 2026-10-29.
     DatasetSpec(
         "economic_calendar",
-        primary_source="eastmoney",
+        # v2: backfill_source makes history_mode snapshot_with_backfill and
+        # pit_quality not_applicable. indicator_code and withdrawn, added in
+        # the same version, are nullable.
+        schema_version=2,
+        primary_source="jin10",
+        # The same per-day endpoint answers past days back to 2008, so
+        # `cne backfill economic_calendar` walks it month by month.
+        backfill_source="jin10",
         tier="L7",
         partition_col="event_date",
         partition_granularity="year",
@@ -1461,9 +1486,33 @@ _SPECS = [
         # must not advance a freshness watermark beyond the run day.
         watermark=False,
         required=False,
-        # The EastMoney report was retired; no replacement source is wired.
-        # Keep the registry entry for the schema and future replacement, but
-        # do not present its expected empty root as an active quality warning.
+        # An empty root before the first run is expected, as for the other
+        # best-effort snapshots. Past days are filled by backfill, not by
+        # the daily rolling window.
+        empty_severity="info",
+    ),
+    # Same Jin10 calendar host: scheduled events (central banks, speeches,
+    # meetings) and exchange closures, both rolling windows with future dates.
+    DatasetSpec(
+        "economic_events",
+        primary_source="jin10",
+        tier="L7",
+        partition_col="event_date",
+        partition_granularity="year",
+        fetch_semantics="snapshot",
+        watermark=False,
+        required=False,
+        empty_severity="info",
+    ),
+    DatasetSpec(
+        "market_holidays",
+        primary_source="jin10",
+        tier="L7",
+        partition_col="holiday_date",
+        partition_granularity="year",
+        fetch_semantics="snapshot",
+        watermark=False,
+        required=False,
         empty_severity="info",
     ),
     # L8 risk
@@ -1601,6 +1650,96 @@ _SPECS = [
     ),
 ]
 
+# Measured 2026-10-26 over 60 days of scheduled runs: core datasets failed on
+# at most two days in 30, with a backup source or an authority cross-check.
+_SUPPORT: dict[str, Support] = {
+    **dict.fromkeys(
+        (
+            "trading_calendar",
+            "instruments",
+            "trading_status",
+            "delisting_events",
+            "daily_bars",
+            "adj_factors",
+            "index_bars",
+            "corporate_actions",
+            "financial_statement_items",
+            "valuation_metrics",
+            "share_structure",
+            "index_constituents",
+        ),
+        "core",
+    ),
+    **dict.fromkeys(
+        (
+            "industry_members",
+            "industry_index",
+            "announcement_index",
+            "earnings_disclosure_schedule",
+            "shareholder_counts",
+            "top_holders",
+            "institutional_holdings",
+            "block_trades",
+            "dragon_tiger",
+            "margin_trading",
+            "market_breadth",
+            "macro_indicators",
+            "regulatory_events",
+            "share_unlock_schedule",
+            "etf_profiles",
+            "commodity_bars",
+        ),
+        "extended",
+    ),
+    # Not rebuildable (live snapshots, or a source retired in 2024) or unsteady:
+    # fund_flow and sector_fund_flow ride EastMoney push2, which bans an
+    # address after heavy use; the news feeds failed on up to half their days.
+    **dict.fromkeys(
+        (
+            "fund_flow",
+            "sector_fund_flow",
+            "fund_flow_ths",
+            "sector_fund_flow_ths",
+            "analyst_consensus",
+            "sector_members",
+            "northbound_holdings",
+            "northbound_flows",
+            "hot_rank",
+            "news_headlines",
+            "flash_news_wire",
+            "sentiment_scores",
+            "economic_calendar",
+            "economic_events",
+            "market_holidays",
+            "sector_bars",
+        ),
+        "best_effort",
+    ),
+    **dict.fromkeys(
+        (
+            "minute_bars",
+            "minute_bars_5m",
+            *RESAMPLED_MINUTE_DATASETS,
+            "trade_ticks",
+            "futures_bars",
+            "futures_continuous",
+            "futures_contracts",
+            "futures_minute_bars",
+            "option_bars",
+            "option_contracts",
+            "option_greeks",
+        ),
+        "optional",
+    ),
+}
+if set(_SUPPORT) != {spec.name for spec in _SPECS}:  # pragma: no cover - registry edit
+    raise RuntimeError(
+        "_SUPPORT must classify every registered dataset exactly once: "
+        f"missing {sorted({spec.name for spec in _SPECS} - set(_SUPPORT))}, "
+        f"unknown {sorted(set(_SUPPORT) - {spec.name for spec in _SPECS})}"
+    )
+_SPECS = [replace(spec, support=_SUPPORT[spec.name]) for spec in _SPECS]
+
 DATASETS: dict[str, DatasetSpec] = {spec.name: spec for spec in _SPECS}
 
 
@@ -1629,6 +1768,40 @@ def datasets_by_tier() -> dict[Tier, list[str]]:
     for spec in _SPECS:
         grouped[spec.tier].append(spec.name)
     return grouped
+
+
+def datasets_by_support() -> dict[Support, list[str]]:
+    """``{support level: [dataset, ...]}`` for every level, in registry order."""
+    grouped: dict[Support, list[str]] = {level: [] for level in SUPPORT_LEVELS}
+    for spec in _SPECS:
+        grouped[spec.support].append(spec.name)
+    return grouped
+
+
+#: Run-level criticality (orchestrator/manifest.py) by support level. Only a
+#: core dataset's failure fails a run and the stability gate; the rest degrade.
+_CRITICALITY: dict[Support, str] = {
+    "core": "core",
+    "extended": "research",
+    "best_effort": "advisory",
+    "optional": "advisory",
+}
+
+
+def dataset_criticality(dataset: str) -> str | None:
+    """``core`` / ``research`` / ``advisory`` for a registered dataset, else None."""
+    spec = DATASETS.get(dataset)
+    if spec is None or spec.support is None:
+        return None
+    return _CRITICALITY[spec.support]
+
+
+def core_dataset_names() -> frozenset[str]:
+    return frozenset(s.name for s in DATASETS.values() if s.support == "core")
+
+
+def best_effort_dataset_names() -> frozenset[str]:
+    return frozenset(s.name for s in DATASETS.values() if s.support == "best_effort")
 
 
 def pit_dataset_names() -> frozenset[str]:
@@ -1817,10 +1990,8 @@ def empty_freshness_label(dataset: str) -> str:
 
     A registry entry whose source has been retired with no replacement wired
     reads exactly like one the operator forgot to run — both print `empty`,
-    and only one is worth acting on. `economic_calendar` is the standing case:
-    EastMoney retired RPT_ECONOMICCALENDAR, the schema is kept for a
-    replacement, and its permanent emptiness was indistinguishable from a
-    schedule gap. The registry already says so through `empty_severity`, which
+    and only one is worth acting on. `economic_calendar` was the standing case
+    until 金十数据 replaced EastMoney's retired report. The registry already says so through `empty_severity`, which
     is `info` precisely for the datasets whose absence is not a finding.
     """
     spec = DATASETS.get(dataset)
@@ -1851,7 +2022,16 @@ def is_dataset_enabled(dataset: str, config) -> bool:
     Parquet on disk, but its old tip is not an ingestion failure and must not
     be reported as stale. Keep this mapping next to the registry so status,
     verify, and the dashboard share the same opt-in semantics.
+
+    A ``best_effort`` dataset is enabled only when the config opts in (see
+    ``config/layers.py``). A stand-in config without the field keeps every
+    dataset on, as before.
     """
+    spec = DATASETS.get(dataset)
+    if spec is not None and spec.support == "best_effort":
+        enabled = getattr(config, "best_effort_enabled", None)
+        if enabled is not None and dataset not in enabled:
+            return False
     if dataset in FUTURES_DATASETS:
         if not getattr(config, "futures_enabled", False):
             return False

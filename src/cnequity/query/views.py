@@ -12,10 +12,11 @@ import polars as pl
 
 from cnequity.config import Config
 from cnequity.domain.action_evidence import evidence_level_sql
+from cnequity.domain.canonical import OFFICIAL_INDEX_SOURCES
 from cnequity.domain.datasets import DATASETS, DatasetSpec
 from cnequity.domain.market_profile import OTC_SCOPED_DATASETS, otc_quote_sql
 from cnequity.domain.partitions import uses_hive
-from cnequity.domain.schemas import DATASET_SCHEMAS, PRIMARY_KEYS
+from cnequity.domain.schemas import DATASET_SCHEMAS, OPTIONAL_COLUMNS, PRIMARY_KEYS
 from cnequity.domain.trading_status import evidence_rank_sql
 from cnequity.storage.atomic import replace_with_retry
 from cnequity.storage.revisions import resolve_committed_root
@@ -154,6 +155,14 @@ def _view_select_sql(
     """
     primary_key = PRIMARY_KEYS.get(name, [])
     source = f"read_parquet({_sql_literal(glob_path)}, hive_partitioning={str(hive).lower()}, union_by_name=true)"
+    if columns is not None:
+        # An optional column no fragment carries yet reads as null, as it does
+        # through the Python reader, rather than failing the query that names it.
+        schema = DATASET_SCHEMAS.get(name, {})
+        absent = [c for c in sorted(OPTIONAL_COLUMNS) if c in schema and c not in columns]
+        if absent:
+            extra = ", ".join(f"CAST(NULL AS {_duckdb_type(schema[c])}) AS {c}" for c in absent)
+            source = f"(SELECT *, {extra} FROM {source})"
     # A few pre-schema-migration fragments in the wild (and lightweight
     # bootstrap fixtures) do not carry provenance. If no provenance field is
     # available, keep the raw view readable and let the schema/quality checks
@@ -199,13 +208,25 @@ def _view_select_sql(
                 ) = 1
             )
         """
-    return (
+    canonical = (
         "SELECT * FROM "
         f"{source} "
         "QUALIFY ROW_NUMBER() OVER ("
         f"PARTITION BY {partition_by} ORDER BY {order_by}"
         ") = 1"
     )
+    if name == "index_constituents" and {"source", "index_symbol", "as_of_date"} <= set(
+        columns or ()
+    ):
+        # Mirrors domain/canonical.one_book_per_index_date: an official book
+        # replaces, rather than merges with, a vendor's on the same index-date.
+        official = ", ".join(_sql_literal(item) for item in OFFICIAL_INDEX_SOURCES)
+        return (
+            f"SELECT * FROM ({canonical}) "
+            f"QUALIFY source IN ({official}) OR NOT bool_or(source IN ({official})) "
+            "OVER (PARTITION BY index_symbol, as_of_date)"
+        )
+    return canonical
 
 
 def views_connection(config: Config, *, require_data: bool = False) -> duckdb.DuckDBPyConnection:
@@ -350,6 +371,8 @@ def _define_views(con: duckdb.DuckDBPyConnection, config: Config, *, require_dat
         ) = 1
         """
     )
+
+    _define_central_bank_rates(con)
 
     # Adjusted bars per ADR-0004: only hfq factors are stored.
     #   hfq price = raw * factor
@@ -521,5 +544,38 @@ def _define_views(con: duckdb.DuckDBPyConnection, config: Config, *, require_dat
                 close * COALESCE(_hfq, 1.0) * _mult AS adj_close
             FROM multiplied
         )
+        """
+    )
+
+
+def _define_central_bank_rates(con: duckdb.DuckDBPyConnection) -> None:
+    """One row per rate decision, joined from the calendar by Jin10 series id."""
+    from cnequity.domain.central_banks import CENTRAL_BANK_RATES
+
+    series = ", ".join(
+        f"({_sql_literal(s.indicator_code)}, {_sql_literal(s.bank)}, "
+        f"{_sql_literal(s.rate)}, {str(s.policy).upper()})"
+        for s in CENTRAL_BANK_RATES
+    )
+    columns = {row[0] for row in con.execute("DESCRIBE economic_calendar").fetchall()}
+    # A lake written before indicator_code existed has no series to join.
+    extra = ", ".join(
+        f"NULL::{kind} AS {name}"
+        for name, kind in (("indicator_code", "VARCHAR"), ("withdrawn", "BOOLEAN"))
+        if name not in columns
+    )
+    calendar = f"(SELECT *, {extra} FROM economic_calendar)" if extra else "economic_calendar"
+    con.execute(
+        f"""
+        CREATE OR REPLACE VIEW central_bank_rates AS
+        SELECT s.bank, s.rate, s.policy, c.country, c.event_date, c.event_time,
+               c.forecast, c.previous, c.actual,
+               c.actual - c.previous AS change,
+               c.actual - c.forecast AS surprise,
+               c.indicator, c.indicator_code, c.event_id
+        FROM {calendar} c
+        JOIN (VALUES {series}) AS s(indicator_code, bank, rate, policy)
+          ON c.indicator_code = s.indicator_code
+        WHERE NOT coalesce(c.withdrawn, FALSE)
         """
     )

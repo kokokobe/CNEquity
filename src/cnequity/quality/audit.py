@@ -29,6 +29,7 @@ from cnequity.quality.cross_checks import (
     daily_bars_calendar_findings,
     daily_bars_close_crosscheck_findings,
     financial_statement_peer_findings,
+    index_constituents_peer_findings,
     instrument_listing_order_findings,
     share_structure_vendor_findings,
     st_label_crosscheck_findings,
@@ -224,11 +225,20 @@ def _unregistered_curated_dirs(config: Config) -> list[dict]:
 def _stale_dataset_names(config: Config, trade_date: date) -> set[str]:
     """Datasets already behind, judged exactly as `cne status --datasets` judges.
 
+    A dataset the config took out of its schedule counts too: its last
+    partition stops part-way through a period for good, which is not a shrink
+    (2026-10-31: sector_fund_flow, removed on 09-21, warned on its September).
+
     Best effort: a lake too young or too damaged to answer must not stop the
     audit, so an unreadable inventory means "nothing known to be stale" rather
     than an exception.
     """
-    from cnequity.domain.datasets import DATASETS, is_dataset_enabled, is_stale
+    from cnequity.domain.datasets import (
+        DATASETS,
+        is_dataset_enabled,
+        is_stale,
+        removed_from_schedule,
+    )
     from cnequity.query.reader import list_datasets
 
     try:
@@ -242,6 +252,9 @@ def _stale_dataset_names(config: Config, trade_date: date) -> set[str]:
         if name not in DATASETS or not row.get("has_data") or not row.get("watermarked"):
             continue
         if not is_dataset_enabled(name, config):
+            continue
+        if removed_from_schedule(config, name):
+            out.add(name)
             continue
         mark = row.get("watermark") or row.get("coverage_end")
         if mark is not None and is_stale(name, mark, anchor, config):
@@ -437,10 +450,20 @@ def _collect_lake_findings(
                 "Historical ST evidence is an optional backfill outside init; "
                 "use cne backfill trading_status for historical ST research. " + message
             )
+        # Every supported symbol is covered and the rest sit on an exchange no
+        # free historical ST source serves (359 BSE codes): nothing a run can
+        # do, so it is a stated limit rather than a daily warning.
+        source_limited_only = evidence.get("reason") == "unsupported_exchange_symbols"
+        if source_limited_only and not evidence["verified"]:
+            message += "; a Tushare Pro token can fill BSE history (`cne backfill trading_status`)"
         findings.append(
             {
                 "dataset": "trading_status",
-                "severity": "info" if evidence["verified"] or optional_for_init else "warning",
+                "severity": (
+                    "info"
+                    if evidence["verified"] or optional_for_init or source_limited_only
+                    else "warning"
+                ),
                 "check": "trading_status_coverage_start",
                 "message": message,
                 "coverage_start": ts_start.isoformat(),
@@ -558,6 +581,7 @@ def _collect_lake_findings(
     if feeds("daily_bars"):
         findings.extend(daily_bars_arbitration_findings(config))
     findings.extend(financial_statement_peer_findings(config))
+    findings.extend(index_constituents_peer_findings(config))
     findings.extend(
         corporate_action_classification_findings(
             config, trade_date - timedelta(days=ADJ_RECON_LOOKBACK_DAYS), trade_date
@@ -618,7 +642,15 @@ def recorded_step_findings(config: Config, run_id: str) -> list[dict]:
         return []
     with path.open(encoding="utf-8") as handle:
         payload = json.load(handle)
-    return payload.get("step_findings", payload.get("findings", []))
+    findings = payload.get("step_findings", payload.get("findings", []))
+    # Some steps used to name the check `code`; carry it under `check` so
+    # a rewrite of an old report does not keep the unnamed finding.
+    return [
+        {**finding, "check": finding["code"]}
+        if "check" not in finding and "code" in finding
+        else finding
+        for finding in findings
+    ]
 
 
 def _unique_findings(findings: list[dict]) -> list[dict]:

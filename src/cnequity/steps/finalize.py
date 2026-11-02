@@ -55,11 +55,18 @@ def _record_dataset_result(
 
 
 def _dataset_criticality(dataset: str) -> str:
-    """Classify a physical dataset for the run-level degraded policy."""
-    if dataset in {"adj_factors", "industry_index"}:
-        return "research"
+    """Classify a physical dataset for the run-level degraded policy.
+
+    A registered dataset takes its support level's criticality, whichever
+    schedule group runs it; anything else falls back to its step's group.
+    """
     if dataset in {"compact", "audit"}:
         return "core"
+    from cnequity.domain.datasets import dataset_criticality
+
+    by_support = dataset_criticality(dataset)
+    if by_support is not None:
+        return by_support
     try:
         from cnequity.orchestrator.registry import get_step
 
@@ -295,11 +302,13 @@ def _watermark_date_for(config: Config, dataset: str, partition_col: str) -> dat
 
     spec = DATASETS.get(dataset)
     if spec is not None and spec.coverage_mode == "session_dense":
-        if dataset == "index_bars":
+        if dataset in ("index_bars", "daily_bars"):
             # THS supplies legacy index history before the reliable TDX daily
             # source begins. The old history contains source/calendar holes
             # (for example 1991 Saturdays), which must remain audit findings
-            # but must not pin the live incremental watermark in 2000.
+            # but must not pin the live incremental watermark in 2000. Delisted
+            # recovery likewise lands lone 1990s stock histories (000508.SZ
+            # pinned daily_bars at 1993-09-16).
             from cnequity.steps.common import BACKFILL_START
 
             return last_contiguous_dense_date(config, spec, start=BACKFILL_START)
@@ -474,7 +483,11 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
     from cnequity.domain.contracts import contract_fingerprint, dataset_contract
     from cnequity.orchestrator.compact_gate import compact_allowed, publication_files
     from cnequity.orchestrator.manifest import Manifest
-    from cnequity.storage.coverage import candidate_gaps, resolved_outstanding_keys
+    from cnequity.storage.coverage import (
+        candidate_gaps,
+        gap_summary,
+        resolved_outstanding_keys,
+    )
     from cnequity.storage.provenance import runtime_lineage
     from cnequity.storage.revisions import RevisionStore
 
@@ -709,7 +722,8 @@ def _compact_locked(config: Config, trade_date: date, run_id: str, context: dict
                 "end": trade_date.isoformat(),
                 "universe": config.ingest_universe,
             },
-            "gaps": remaining,
+            "gaps": gap_summary(remaining),
+            "gaps_source": "dataset_state",
             "resolved_outstanding_keys": len(resolved_keys[ds]),
         }
 
@@ -1080,7 +1094,55 @@ def step_derive_adj_factors(config: Config, trade_date: date, run_id: str, conte
             f"{len(result.failed)} symbol×type fetch failure(s)" if result.failed else None
         ),
     )
+    status_finding = _fill_traded_status(config, trade_date)
+    if status_finding is not None:
+        updates = out.setdefault("context_updates", {})
+        updates["audit_findings"] = [*(updates.get("audit_findings") or []), status_finding]
     return out
+
+
+# Sessions back the daily fill re-reads: a late bar repair can land a print a
+# few days after the status step ran.
+_TRADED_STATUS_LOOKBACK_DAYS = 10
+
+
+def _fill_traded_status(config: Config, trade_date: date) -> dict | None:
+    """Give a status row to every listed key that printed but no board listed.
+
+    Some funds print on a day no board the status step reads lists them
+    (158036.SZ on 2026-10-23), and that key went without a row until a manual
+    `cne repair status-traded`. A positive-volume bar is first-hand proof of
+    trading; this runs here, after compact, because the status step runs
+    before the day's bars exist. It only adds missing keys, and a zero-volume
+    bar proves nothing, so a fund that did not trade stays without a row.
+    """
+    from cnequity.storage.repairs.status_traded import repair_status_traded
+
+    try:
+        report = repair_status_traded(
+            config,
+            start=trade_date - timedelta(days=_TRADED_STATUS_LOOKBACK_DAYS),
+            end=trade_date,
+            apply=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — a missing status row is not a factor failure
+        logger.warning("trading_status: traded-status fill failed: %s", exc)
+        return {
+            "dataset": "trading_status",
+            "severity": "warning",
+            "check": "trading_status_traded_fill_failed",
+            "message": str(exc),
+        }
+    if report.get("rows"):
+        logger.info("trading_status: filled %d traded key(s) from bars", report["rows"])
+        return {
+            "dataset": "trading_status",
+            "severity": "info",
+            "check": "trading_status_traded_fill",
+            "message": f"{report['rows']} printed key(s) without a status row filled from bars",
+            "sample": report.get("sample", [])[:10],
+        }
+    return None
 
 
 @register_step(

@@ -278,10 +278,14 @@ def _expected_failure(exc: Exception) -> str | None:
     from cnequity.orchestrator.run_lock import RunLockError
     from cnequity.query.reader import ReaderError
     from cnequity.storage.lifecycle import LifecycleError
+    from cnequity.storage.revisions import DiskSpaceError
 
     # Another job holding the lake is the lake's state too: `cne backfill`
-    # beside a running init printed the refusal under a traceback.
-    if isinstance(exc, ReaderError | InputUnavailableError | RunLockError | LifecycleError):
+    # beside a running init printed the refusal under a traceback. A full disk
+    # is the same kind of failure: the message says what to do.
+    if isinstance(
+        exc, ReaderError | InputUnavailableError | RunLockError | LifecycleError | DiskSpaceError
+    ):
         return str(exc)
     return None
 
@@ -445,6 +449,9 @@ CONTEXT_SETTINGS = {"token_normalize_func": str.lower, "help_option_names": ["-h
 @click.version_option(package_name="cnequity", help=N_("Show the version and exit."))
 def cli():
     """cnequity: a CLI for collecting China A-share data."""
+    from cnequity.fd_limit import raise_open_file_limit
+
+    raise_open_file_limit()
 
 
 @cli.group()

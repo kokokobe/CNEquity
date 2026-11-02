@@ -412,9 +412,10 @@ def _merge_ownership_result(
     if ownership.delegated_delisted and not delegated_complete:
         out["status"] = "warning"
         out["delegated_symbols"] = len(ownership.delegated_delisted)
-    settlement = _settle_official_etf_prelisting_debts(config, end, run_id)
-    if settlement:
-        context.setdefault("audit_findings", []).append(settlement)
+    for settle in (_settle_official_etf_prelisting_debts, _settle_official_etf_delisted_debts):
+        settlement = settle(config, end, run_id)
+        if settlement:
+            context.setdefault("audit_findings", []).append(settlement)
     return out
 
 
@@ -611,6 +612,116 @@ def _settle_official_etf_prelisting_debts(config: Config, on: date, run_id: str)
         "severity": "info",
         "check": "official_etf_prelisting_debts_settled",
         "message": f"{len(resolved)} ETF prelisting keys settled from official directory dates",
+        "keys_settled": len(resolved),
+        "profile_receipt_id": read.receipt["receipt_id"],
+        "repair_receipt": str(path.relative_to(config.meta_root)),
+    }
+
+
+def _settle_official_etf_delisted_debts(config: Config, on: date, run_id: str) -> dict | None:
+    """Retire owed ETF sessions after a delisting two sources agree on.
+
+    A fund being wound up stops quoting, so its post-delisting tip keys can
+    never be filled. A key is retired only when curated instruments carry a
+    delist date before the session and the latest official exchange directory
+    no longer lists a fund an earlier snapshot did. A fund the directory has
+    never covered (LOFs) has only the instruments delisting, which already
+    takes repeated snapshot absences and leaves the fetch scope on its own.
+    The pinned directory receipt and exact keys are saved first.
+    """
+    if not (config.ingest_eligible_etfs or config.ingest_listed_funds):
+        return None
+    from cnequity.query import load_with_receipt
+    from cnequity.query.receipt import ReadReceiptError
+    from cnequity.storage.atomic import write_json_atomic
+    from cnequity.storage.instrument_catalog import load_curated_instruments
+
+    store = StateStore(config.meta_root)
+    owed = store.get_outstanding_keys("daily_bars")
+    if not owed:
+        return None
+    instruments = load_curated_instruments(config)
+    if instruments is None or not {"symbol", "asset_type", "delist_date"} <= set(
+        instruments.columns
+    ):
+        return None
+    delisted = dict(
+        instruments.filter(
+            pl.col("asset_type").is_in(["etf", "lof"]) & pl.col("delist_date").is_not_null()
+        )
+        .select("symbol", "delist_date")
+        .iter_rows()
+    )
+    candidates = [
+        row
+        for row in owed
+        if row.get("symbol") in delisted
+        and row.get("trade_date")
+        and row["trade_date"] > delisted[row["symbol"]].isoformat()
+    ]
+    if not candidates:
+        return None
+    try:
+        read = load_with_receipt("etf_profiles", config=config, end=on, require_replayable=True)
+    except (ReadReceiptError, FileNotFoundError, ValueError):
+        return None
+    frame = read.frame
+    if not {"symbol", "as_of_date"} <= set(frame.columns):
+        return None
+    frame = frame.filter(pl.col("as_of_date") <= on)
+    if frame.is_empty():
+        return None
+    latest = frame["as_of_date"].max()
+    listed_now = set(frame.filter(pl.col("as_of_date") == latest)["symbol"].to_list())
+    listed_before = set(frame.filter(pl.col("as_of_date") < latest)["symbol"].to_list())
+    listed_ever = listed_before | listed_now
+    resolved = sorted(
+        (row["symbol"], date.fromisoformat(row["trade_date"]))
+        for row in candidates
+        if row["symbol"] not in listed_now
+        and (row["symbol"] in listed_before or row["symbol"] not in listed_ever)
+    )
+    if not resolved:
+        return None
+    receipt = {
+        "run_id": run_id,
+        "dataset": "daily_bars",
+        "reason": "instruments_delisting_confirmed_by_directory_where_covered",
+        "profile_receipt_id": read.receipt["receipt_id"],
+        "profile_revision": read.receipt["dependencies"]["etf_profiles"]["revision_id"],
+        "directory_as_of": latest.isoformat(),
+        "as_of": on.isoformat(),
+        "status": "prepared",
+        "resolved_keys": [
+            {
+                "symbol": symbol,
+                "trade_date": day.isoformat(),
+                "instrument_delist_date": delisted[symbol].isoformat(),
+            }
+            for symbol, day in resolved
+        ],
+    }
+    receipt_digest = hashlib.sha256(
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    path = config.meta_root / "repairs" / "etf_delisted_debts" / f"{run_id}-{receipt_digest}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, receipt, ensure_ascii=False, indent=2)
+    remaining = store.clear_outstanding_keys("daily_bars", resolved)
+    receipt["status"] = "settled"
+    receipt["remaining_outstanding"] = remaining
+    write_json_atomic(path, receipt, ensure_ascii=False, indent=2)
+    logger.info(
+        "Retired %d delisted ETF debt(s) using exchange directory receipt %s; %d remain",
+        len(resolved),
+        read.receipt["receipt_id"],
+        remaining,
+    )
+    return {
+        "dataset": "daily_bars",
+        "severity": "info",
+        "check": "official_etf_delisted_debts_settled",
+        "message": f"{len(resolved)} delisted ETF keys settled from directory absence",
         "keys_settled": len(resolved),
         "profile_receipt_id": read.receipt["receipt_id"],
         "repair_receipt": str(path.relative_to(config.meta_root)),
@@ -4260,6 +4371,101 @@ def _gapfill_complete_symbols_via_exchange(
     }
 
 
+#: Per-fund requests a single gap-fill may spend on exchange day k-lines.
+_EXCHANGE_DAYK_MAX_SYMBOLS = 20
+
+
+def _gapfill_fund_keys_via_exchange_dayk(
+    config: Config,
+    run_id: str,
+    *,
+    missing: set[tuple[str, date]],
+    start: date,
+    end: date,
+) -> dict:
+    """Stage exact missing exchange-fund keys from the exchange's own day k-line.
+
+    For the sub-lot sessions TDX leaves unpublished (zero lots, positive
+    turnover; ``adapters/tdx_protocol/bars.py``). The vendor fallbacks behind
+    this one are EastMoney, which bans an address after heavy use, and THS,
+    which may not have the day yet: 501217.SH traded 15 shares on 2026-10-26
+    and stayed unresolved through both while the SSE published the bar.
+    """
+    import httpx
+
+    from cnequity.adapters.exchange.fund_volume import fetch_fund_dayk
+    from cnequity.domain.symbols import is_etf_symbol, parse_symbol
+
+    def is_fund(symbol: str) -> bool:
+        try:
+            info = parse_symbol(symbol)
+        except ValueError:
+            return False
+        return info.exchange in {"SH", "SZ"} and is_etf_symbol(info.code, info.exchange)
+
+    wanted: dict[str, set[date]] = {}
+    for symbol, day in missing:
+        if is_fund(symbol):
+            wanted.setdefault(symbol, set()).add(day)
+    if not wanted or not config.sources.get("exchange", False):
+        return {"rows_read": 0, "rows_written": 0, "source_outcomes": {}}
+    symbols = sorted(wanted)[:_EXCHANGE_DAYK_MAX_SYMBOLS]
+    frames, failed = [], []
+    with httpx.Client(timeout=30.0) as client:
+        for symbol in symbols:
+            try:
+                frame = fetch_fund_dayk(
+                    symbol, trade_dates=wanted[symbol], client=client, config=config
+                )
+            except (httpx.HTTPError, OSError, ValueError) as exc:
+                logger.warning("exchange dayk %s failed: %s", symbol, exc)
+                failed.append(symbol)
+                continue
+            if not frame.is_empty():
+                frames.append(frame)
+    fetched = pl.concat(frames, how="vertical_relaxed") if frames else pl.DataFrame()
+    rows_written = 0
+    if not fetched.is_empty():
+        rows_written = _stage_daily_gap_batch(
+            config,
+            run_id,
+            batch_id="exchange-dayk-gapfill",
+            source="exchange",
+            frame=fetched,
+            symbols=sorted(set(fetched["symbol"].to_list())),
+            start=start,
+            end=end,
+        )
+    outcome = {
+        "status": "success"
+        if rows_written and not failed
+        else "partial"
+        if rows_written
+        else "empty",
+        "requests": len(symbols),
+        "rows": fetched.height,
+        "failed_symbols": failed,
+    }
+    return {
+        "rows_read": fetched.height,
+        "rows_written": rows_written,
+        "audit_findings": [
+            {
+                "dataset": "daily_bars",
+                "severity": "info",
+                "check": "daily_bars_exchange_dayk_gapfill",
+                "message": (
+                    f"exchange day k-lines staged {fetched.height} fund session(s) "
+                    f"for {len(symbols)} symbol(s)"
+                ),
+                "symbols": symbols,
+                "rows_written": rows_written,
+            }
+        ],
+        "source_outcomes": {"exchange_dayk": outcome},
+    }
+
+
 def _gapfill_missing_keys_via_ths(
     config: Config,
     run_id: str,
@@ -4782,6 +4988,15 @@ def _gapfill_multiday_via_kline(
     findings.extend(exchange.get("audit_findings") or [])
     source_outcomes.update(exchange.get("source_outcomes") or {})
     exchange_complete = set(exchange.get("complete_symbols") or [])
+    # Then the exchange's own per-fund day k-line, for the sub-lot fund
+    # sessions TDX cannot express and no bulk snapshot carries.
+    dayk = _gapfill_fund_keys_via_exchange_dayk(
+        config, run_id, missing=missing_keys(), start=start, end=end
+    )
+    rows_read += int(dayk.get("rows_read", 0))
+    rows_written += int(dayk.get("rows_written", 0))
+    findings.extend(dayk.get("audit_findings") or [])
+    source_outcomes.update(dayk.get("source_outcomes") or {})
     pending_symbols = _research_first(
         {symbol for symbol, _day in missing_keys()} - exchange_complete
     )
@@ -5973,7 +6188,7 @@ def step_index_bars(config: Config, trade_date: date, run_id: str, context: dict
 # The primary vendor serves 2016 onward; 同花顺 keeps per-year files back to each
 # listing. Deep history is a separate step, not a wider window on the daily one:
 # it uses a different source, runs for hours, and must never be on the daily path.
-HISTORY_BACKFILL_START = date(2001, 1, 1)
+from cnequity.domain.market_profile import HISTORY_BACKFILL_START  # noqa: E402
 
 
 def _validate_planned_stock_bars(

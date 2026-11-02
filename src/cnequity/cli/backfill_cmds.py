@@ -21,6 +21,7 @@ from cnequity.cli._shared import (
     _cfg,
     _run_status_exit_code,
     attach_log_file,
+    attach_revision_retention,
     comma_option,
     comma_values,
     config_option,
@@ -65,7 +66,8 @@ from cnequity.orchestrator.engine import JobEngine
     default=None,
     help=N_(
         "Source to use for this backfill instead of the configured one, without editing the config. "
-        "Supported for margin_trading (exchange or eastmoney)."
+        "Supported for margin_trading (exchange or eastmoney) and financial_statement_items "
+        "(tdx_fin: fill only the items the lake lacks)."
     ),
 )
 @click.option(
@@ -340,9 +342,16 @@ def backfill(
 
     """
     dataset = _require_known_dataset(dataset)
+    if source == "tdx_fin" and dataset == "financial_statement_items":
+        _backfill_financials_tdx_fin(config_path, start_str, end_str)
+        return
     if source is not None:
         if dataset != "margin_trading":
-            raise click.ClickException(_("--source is only supported for margin_trading for now"))
+            raise click.ClickException(
+                _(
+                    "--source is supported for margin_trading and financial_statement_items (tdx_fin)"
+                )
+            )
         if source not in {"exchange", "eastmoney"}:
             raise click.BadParameter(
                 _("margin_trading sources are exchange and eastmoney"), param_hint="--source"
@@ -1694,6 +1703,11 @@ def _finish_backfill_run(engine, result: dict) -> dict:
     persisted = engine.manifest.get_run(run_id) if hasattr(engine.manifest, "get_run") else None
     if persisted is not None:
         result["status"] = persisted["status"]
+    # Test doubles stand in for the engine and have no lake config. A real
+    # engine always does; retention is a no-op unless the config asks for it.
+    config = getattr(engine, "config", None)
+    if config is not None:
+        attach_revision_retention(config, result)
     return result
 
 
@@ -1767,7 +1781,13 @@ def _recover_compactable_backfill_staging(engine: JobEngine, dataset: str) -> li
         if run["status"] in ("running", "stale"):
             continue
         batches = engine.manifest.get_batches_for_run(run_id)
-        if any(batch["dataset"] == "compact" and batch["status"] == "success" for batch in batches):
+        # A compact that published with warnings is as done as a clean one.
+        # Reading only ``success`` replayed such runs' staging on every later
+        # backfill and republished rows a repair had since removed (920021.BJ).
+        if any(
+            batch["dataset"] == "compact" and batch["status"] in ("success", "warning")
+            for batch in batches
+        ):
             continue
         if not writer.list_run_files(dataset, run_id):
             continue
@@ -1843,13 +1863,15 @@ def _run_delisted_profile(cfg, since: date) -> dict:
         rows_written=result.get("rows_written", 0),
         error_message=error_message,
     )
-    return {
+    payload = {
         "run_id": run_id,
         **result,
         "status": run_status,
         "compact": compact_out,
         **engine._public_outcome(run_id),
     }
+    attach_revision_retention(cfg, payload)
+    return payload
 
 
 def _run_shfe_annual_archive(
@@ -1908,7 +1930,9 @@ def _run_shfe_annual_archive(
         if status != "success"
         else None,
     )
-    return {"run_id": run_id, **result, "status": status, "compact": compact}
+    payload = {"run_id": run_id, **result, "status": status, "compact": compact}
+    attach_revision_retention(cfg, payload)
+    return payload
 
 
 def _require_known_dataset(dataset: str) -> str:
@@ -2448,3 +2472,30 @@ def import_shfe_archive(
         start_str=start_str,
         end_str=end_str,
     )
+
+
+def _backfill_financials_tdx_fin(config_path: str, start_str: str | None, end_str: str | None):
+    """Fill the statement items the lake lacks from 通达信's quarterly packages."""
+    from cnequity.adapters.tdx_fin.packages import latest_periods
+    from cnequity.cli.ths_official_cmds import _publish_staged, _staged_run
+    from cnequity.steps.fundamentals import stage_financials_tdx_fin
+
+    cfg = _cfg(config_path)
+    today = shanghai_today()
+    end = parse_date_option(end_str, "--end") if end_str else today
+    start = parse_date_option(start_str, "--start") if start_str else date(2001, 1, 1)
+    if start > end:
+        raise click.BadParameter(_("--start is after --end"), param_hint="--start")
+    periods = latest_periods(end, count=4 * (end.year - start.year + 1))
+    periods = sorted(p for p in periods if p >= f"{start.year}Q{(start.month - 1) // 3 + 1}")
+    attach_log_file(cfg, "backfill-financial_statement_items-tdx_fin")
+    with _staged_run(
+        cfg,
+        "tdx_fin_backfill",
+        "tdx-fin-backfill",
+        {"start": start.isoformat(), "end": end.isoformat()},
+    ) as (run_id, outcome):
+        result = stage_financials_tdx_fin(cfg, run_id, today, periods=periods, gap_only=True)
+        outcome["result"] = result
+    compact = _publish_staged(cfg, run_id, result)
+    click.echo(json.dumps({"run_id": run_id, **result, "compact": compact}, indent=2, default=str))

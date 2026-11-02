@@ -216,6 +216,9 @@ class Config:
     event_schedules: list[EventSchedule] = field(default_factory=list)
     #: Steps the config removed on purpose (``steps_remove``, ``enabled = false``).
     opted_out_steps: frozenset[str] = frozenset()
+    #: ``best_effort`` datasets this config turned on (see config/layers.py).
+    #: None on a hand-built Config: every dataset stays on, as before.
+    best_effort_enabled: frozenset[str] | None = None
     init_phases: list[str] = field(default_factory=list)
     on_demand_enabled: bool = True
     on_demand_datasets: list[str] = field(default_factory=list)
@@ -409,6 +412,9 @@ class Config:
     # Deno binary for the 同花顺 hexin-v token (adapters/ths/hexin.py); None
     # finds it on PATH or in the usual install locations.
     ths_js_runtime: str | None = None
+    # Generations kept after ``cne backfill`` and ``cne run daily``. Matches
+    # the existing retention count of 5. 0 keeps every generation.
+    revision_keep_generations: int = 5
 
     def __post_init__(self) -> None:
         """Normalize path-like fields for programmatic configurations.
@@ -599,6 +605,9 @@ class Config:
             "shareholder_counts",
             "top_holders",
             "corporate_actions",
+            # Backfillable, but a day's consensus is only seen live: the
+            # rolling capture is the point-in-time record of each forecast.
+            "economic_calendar",
         } or (dataset in DATASETS and history_mode_for(DATASETS[dataset]) == "snapshot_only")
 
     def adj_factor_worker_count(self) -> int:
@@ -806,12 +815,14 @@ def configured_data_root(path: str | Path) -> Path:
 
 
 def load_config(path: str | Path) -> Config:
-    from cnequity.config.layers import OPTED_OUT_KEY, effective_raw
+    from cnequity.config.layers import BEST_EFFORT_KEY, OPTED_OUT_KEY, effective_raw
 
     config_path = Path(path).expanduser().resolve()
     with open(config_path, "rb") as f:
         raw = effective_raw(tomllib.load(f))
     opted_out_steps = frozenset(raw.pop(OPTED_OUT_KEY, ()))
+    best_effort_enabled = frozenset(raw.pop(BEST_EFFORT_KEY, ()))
+    raw.pop("datasets", None)
 
     data_root = _data_root(raw, config_path.parent)
     lake_profile = raw.get("data", {}).get("profile") or None
@@ -1093,6 +1104,20 @@ def load_config(path: str | Path) -> Config:
     )
     derive_workers_raw = orch.get("derive_workers", derive_raw.get("workers"))
 
+    storage_raw = raw.get("storage") or {}
+    if not isinstance(storage_raw, dict):
+        raise ValueError("[storage] must be a table")
+    retention_raw = storage_raw.get("retention") or {}
+    if not isinstance(retention_raw, dict):
+        raise ValueError("[storage.retention] must be a table")
+    revision_keep_generations = retention_raw.get("keep_generations", 5)
+    if (
+        isinstance(revision_keep_generations, bool)
+        or not isinstance(revision_keep_generations, int)
+        or revision_keep_generations < 0
+    ):
+        raise ValueError("[storage.retention].keep_generations must be an integer >= 0")
+
     if "default" in raw.get("universe", {}):
         # Parsed into `universe_default` for a long time and read by nothing:
         # `load()` resolves its universe from the call and the profile, never
@@ -1181,6 +1206,7 @@ def load_config(path: str | Path) -> Config:
         eastmoney_datacenter_daily_budget=eastmoney_datacenter_daily_budget,
         eastmoney_daily_budget=eastmoney_daily_budget,
         ths_js_runtime=ths_js_runtime,
+        revision_keep_generations=revision_keep_generations,
         eastmoney_timeout_sec=eastmoney_timeout_sec,
         baostock_batch_size=baostock_batch_size,
         baostock_batch_rest_seconds=baostock_batch_rest_seconds,
@@ -1213,6 +1239,7 @@ def load_config(path: str | Path) -> Config:
         events_groups=events_groups,
         event_schedules=event_schedules,
         opted_out_steps=opted_out_steps,
+        best_effort_enabled=best_effort_enabled,
         init_phases=init_phases,
         on_demand_enabled=bool(on_demand.get("enabled", True)),
         on_demand_datasets=list(on_demand.get("datasets", [])),

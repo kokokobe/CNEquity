@@ -26,6 +26,7 @@ def cfg(tmp_path):
 
 def test_financial_statement_items_disabled(cfg):
     cfg.sources["eastmoney"] = False
+    cfg.sources["tdx_fin"] = False
     with pytest.raises(RuntimeError, match="eastmoney source disabled"):
         fund.step_financial_statement_items(cfg, date(2024, 6, 28), "run-1", {})
 
@@ -616,7 +617,7 @@ def test_backfill_valuation_locked_aborts_on_runtime_error(cfg, monkeypatch):
     assert result["rows_written"] == 0
     assert "baostock banned" in result["aborted"]
     finding = result["context_updates"]["audit_findings"][0]
-    assert finding["code"] == "baostock_backfill_incomplete"
+    assert finding["check"] == "baostock_backfill_incomplete"
 
 
 def test_shareholder_backfill_surfaces_empty_windows(cfg, monkeypatch):

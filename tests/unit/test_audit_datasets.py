@@ -59,7 +59,7 @@ def test_audit_checks_all_partition_col_datasets(tmp_path):
     # nothing to be missing; every other registered dataset is judged.
     assert exists_checks == {ds for ds in PARTITION_COLS if is_dataset_enabled(ds, cfg)}
     assert "futures_bars" not in exists_checks and "trade_ticks" not in exists_checks
-    # Optional datasets (source not yet wired) must not fail lake health alone.
+    # Optional snapshot datasets must not fail lake health alone.
     optional_exists = [
         f
         for f in payload["findings"]
@@ -875,6 +875,21 @@ def test_a_stale_dataset_shrink_is_reported_without_accusing_the_data(tmp_path):
     assert "cne status --datasets" in cold["message"]
 
 
+def test_a_dataset_behind_the_audited_day_is_treated_as_stale(tmp_path):
+    """No partition covers the day: the newest one is short because the feed
+    stopped (sector_fund_flow after the push2 ban), not because rows vanished."""
+    cfg = Config(data_root=tmp_path / "data")
+    _write_daily_bars_partition(cfg, date(2024, 6, 26), [f"60{i:04d}.SH" for i in range(400)])
+    _write_daily_bars_partition(cfg, date(2024, 6, 27), ["600519.SH"])
+    root = cfg.curated_root / "daily_bars"
+
+    findings = audit_curated_dataset("daily_bars", "trade_date", root, date(2024, 7, 5))
+
+    mutation = next(f for f in findings if f["check"] == "row_count_mutation")
+    assert mutation["severity"] == "info"
+    assert mutation["stale_dataset"] is True
+
+
 def test_sample_profile_only_downgrades_the_synthetic_source_checks():
     """The profile allowance covers mock-source findings and nothing else, so
     an unconditional "these are expected" would speak for errors it has never
@@ -947,3 +962,25 @@ def test_trading_status_coverage_warning_names_the_keys_it_left_out(tmp_path):
 
     assert finding["severity"] == "warning"
     assert "unknown_listing_date: 1" in finding["message"]
+
+
+def test_recorded_step_findings_carry_a_legacy_code_as_check(tmp_path):
+    """Steps used to name the check `code`; a rewrite must keep the name."""
+    import json
+
+    from cnequity.quality.audit import recorded_step_findings
+
+    cfg = Config(data_root=tmp_path / "lake")
+    root = cfg.meta_root / "quality" / "findings"
+    root.mkdir(parents=True)
+    legacy = {
+        "dataset": "sector_bars",
+        "severity": "warning",
+        "code": "sector_bars_sweep_incomplete",
+    }
+    current = {"dataset": "daily_bars", "severity": "info", "check": "row_count"}
+    (root / "run-1.json").write_text(json.dumps({"step_findings": [legacy, current]}))
+
+    findings = recorded_step_findings(cfg, "run-1")
+
+    assert [f["check"] for f in findings] == ["sector_bars_sweep_incomplete", "row_count"]

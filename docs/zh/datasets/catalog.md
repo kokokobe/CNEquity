@@ -1,3 +1,7 @@
+---
+description: CNEquity 数据集目录：A 股行情、财务、期货、资金流、公告事件、指数行业与宏观数据的来源、历史起点与采集语义。
+---
+
 # 数据集目录
 
 本页回答两件事：湖里登记了哪些数据集，以及每个数据集从哪来、能补多远。先按下方 L0–L9 分层找到数据集，再看它的采集语义和历史限制；要复制查询代码，去[查询指南](query-guide.md)。
@@ -11,7 +15,7 @@
 !!! note "登记不等于默认采集"
     - 默认关闭、需要显式开启：分钟线 `minute_bars` / `minute_bars_5m`（`[minute_bars]`）、分笔 `trade_ticks`（独立的 `[trade_ticks]`）、期货/期权四张主表 `futures_contracts`、`option_contracts`、`futures_bars`、`option_bars`（`[futures]`，不进 `cne init`，见[产品边界](../architecture/overview.md)）。
     - derived 数据由已入湖数据派生：`adj_factors`、`industry_index`、`futures_continuous`、`option_greeks`、`delisting_events`；`minute_bars_15m` / `30m` / `60m` 默认不计算，按需派生。
-    - **on-demand** 数据集不进 curated 主路径。`flash_news_wire` 是新闻兼容读取，`economic_calendar` 是停用源占位。
+    - **on-demand** 数据集不进 curated 主路径。`flash_news_wire` 是新闻兼容读取。
     - 所以登记数既不是物理表数，也不是默认采集完成数。
 
 **图例**（下表）：语义 `by_date` / `snapshot`；水位 ✓ = 维护 `meta/state` 水位。
@@ -27,13 +31,24 @@
 | **L4** 资金面 | 北向、融资、主力 | fund_flow, fund_flow_ths, northbound_*, margin_trading, dragon_tiger, block_trades, institutional_holdings |
 | **L5** 结构行业 | 板块、指数成分、行业 | sector_members, index_constituents, industry_members, industry_index |
 | **L6** 宏观 | 利率、景气、货币 | macro_indicators, market_breadth |
-| **L7** 舆情 / 轮动 | 新闻、情绪、板块、人气、事件流 | sentiment_scores, hot_rank, sector_bars, sector_fund_flow, sector_fund_flow_ths, news_headlines, flash_news_wire, economic_calendar*（stock_news 为 on-demand） |
+| **L7** 舆情 / 轮动 | 新闻、情绪、板块、人气、事件流 | sentiment_scores, hot_rank, sector_bars, sector_fund_flow, sector_fund_flow_ths, news_headlines, flash_news_wire, economic_calendar*, economic_events*, market_holidays*（stock_news 为 on-demand） |
 | **L8** 风险合规 | 解禁、监管 | share_unlock_schedule, regulatory_events |
 | **L9** 衍生品 | 期货/期权合约、逐合约行情、连续合约、希腊字母、分钟线，以及商品期货主连 | commodity_bars*, futures_contracts*, option_contracts*, futures_bars*, option_bars*, futures_continuous*, option_greeks*, futures_minute_bars* |
 
-\*可选或 `required=false`：分钟线默认关；商品期货需显式回填；期货/期权四张表需 `[futures] enabled = true`；`economic_calendar` 东财源已下线，仅占位。
+\*可选或 `required=false`：分钟线默认关；商品期货需显式回填；期货/期权四张表需 `[futures] enabled = true`；`economic_calendar`、`economic_events`、`market_holidays` 来自金十数据；财经日历可用 `cne backfill economic_calendar` 回补 2008 年以来的历史，另外两张只能从启用后逐日积累。
 
 分层是**研究用途**，与存储 `layer` 正交：`adj_factors` / `delisting_events`（L1）和 `industry_index`（L5）落在 `derived/` 而非 `curated/`，但按用途归入各自层，所以没有单独的「派生」层。期货/期权按 [产品边界](../architecture/overview.md) 放在股票体系旁边，合约、行情与派生统一归 L9，面板和目录里作为一个整体查看。权威来源是 `DatasetSpec.tier`；`test_docs_catalog.py` 断言本文档与注册表逐层一致。
+
+## 支持档位
+
+档位说明项目对一个数据集承诺到什么程度，与上面的研究分层正交。权威来源是 `DatasetSpec.support`，`list_datasets()` 的 `support` / `enabled` 两列给出每个数据集的档位和本湖是否启用；`test_docs_catalog.py` 断言本表与注册表一致。
+
+| 档位 | 默认 | 含义 | 数据集 |
+|------|------|------|--------|
+| `core` 核心 | 开 | 历史可重建、日更稳定、有备源或权威对照；`cne check` 和稳定性门槛（`cne verify --runs`）只看这一档，不论由哪个调度组采集 | `instruments`, `trading_calendar`, `trading_status`, `daily_bars`, `index_bars`, `corporate_actions`, `financial_statement_items`, `share_structure`, `valuation_metrics`, `index_constituents`, `adj_factors`, `delisting_events` |
+| `extended` 扩展 | 开 | 历史可重建、日更基本稳定，但非必需或只有单一来源 | `etf_profiles`, `commodity_bars`, `announcement_index`, `earnings_disclosure_schedule`, `shareholder_counts`, `top_holders`, `margin_trading`, `dragon_tiger`, `block_trades`, `institutional_holdings`, `industry_members`, `macro_indicators`, `market_breadth`, `share_unlock_schedule`, `regulatory_events`, `industry_index` |
+| `best_effort` 尽力而为 | **关** | 只有启用后才开始积累的实时快照、已停更的来源，或经常失败的接口（东财 push2 资金流、新闻、人气榜）；在 `[datasets] best_effort` 中列出才启用 | `analyst_consensus`, `fund_flow`, `northbound_holdings`, `northbound_flows`, `sector_members`, `sentiment_scores`, `hot_rank`, `sector_bars`, `sector_fund_flow`, `fund_flow_ths`, `sector_fund_flow_ths`, `news_headlines`, `flash_news_wire`, `economic_calendar`, `economic_events`, `market_holidays` |
+| `optional` 可选 | 关 | 由各自开关启用（`[minute_bars]`、`[trade_ticks]`、`[futures]`） | `minute_bars`, `minute_bars_5m`, `trade_ticks`, `futures_contracts`, `option_contracts`, `futures_bars`, `futures_minute_bars`, `option_bars`, `futures_continuous`, `option_greeks`, `minute_bars_15m`, `minute_bars_30m`, `minute_bars_60m` |
 
 ## 采集模式
 
@@ -59,8 +74,8 @@
 | history_mode | 含义 | 数据集 |
 |--------------|------|--------|
 | `by_date` | 可按日回补 / 缺口填补 | 绝大多数行情与事件表 |
-| `snapshot_with_backfill` | 日更是快照，但有专用历史源 | `valuation_metrics`→baostock；`index_constituents`→cni；`industry_members`→sw；`sector_bars`→ths |
-| `snapshot_only` | 只返回当前快照；可从启用后逐日积累，不能回补未采到的过去 | `analyst_consensus`、`fund_flow`、`sector_members`、`hot_rank`、`sector_fund_flow`、`news_headlines`、`flash_news_wire`、`economic_calendar` |
+| `snapshot_with_backfill` | 日更是快照，但有专用历史源 | `valuation_metrics`→baostock；`index_constituents`→cni；`industry_members`→sw；`sector_bars`→ths；`economic_calendar`→jin10（2008 起） |
+| `snapshot_only` | 只返回当前快照；可从启用后逐日积累，不能回补未采到的过去 | `analyst_consensus`、`fund_flow`、`sector_members`、`hot_rank`、`sector_fund_flow`、`news_headlines`、`flash_news_wire`、`economic_events`、`market_holidays` |
 
 `trading_status` 的停牌覆盖可从 `daily_bars` 起点派生；ST 覆盖必须以完整的 `historical_st_evidence` 收据为准。没有覆盖请求窗口的收据时，**不要**假定 2001 起 `universe="all_a"` 已剔除历史 ST。BJ 可选用 Tushare Pro：2016 年通过 `bak_basic` 的历史简称、2017-01-01 起通过 `stock_st`；2016 年以前仍需独立的更深历史源。
 
@@ -210,7 +225,7 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | qmt_bridge（回填） | 日更仍用 eastmoney 日期快照；TDX/修理源补缺口；混粒度用 `cne repair repartition` |
+| corporate_actions | ex_date（按年） | symbol, ex_date, action_type | by_date | ✓ | tdx_protocol（日更：按交易所调整后的前收盘找出当日除权，再取 TDX 除权记录；东财为备源、同日对照，并提供送股/转增拆分；`actions_sweep` 组每周全市场复扫近 30 天） | 回填：tdx_protocol；混粒度用 `cne repair repartition` |
 | announcement_index | announce_date | announcement_id | by_date PIT | ✓ | cninfo | `as_of` 过滤 |
 | earnings_disclosure_schedule | report_period | symbol, report_period | by_date | — | eastmoney | 预约披露时间表（RPT_PUBLIC_BS_APPOIN）；现值语义非 PIT：变更覆盖 scheduled_date（first_scheduled_date 保留首约，actual_date 披露后回填）；`cne backfill` 走 2016 起全报告期 |
 
@@ -218,7 +233,7 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 | 备注 |
 |--------|--------|------|------|------|------|------|
-| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`cne backfill` 默认自 2001 起（`--start`/`--end` 分块）；日更保留实际公告版本并补明确标记的原始披露日重建版本；baostock 不用于 FSI |
+| financial_statement_items | report_period | symbol, report_period, statement_type, item_code | by_date PIT | — | eastmoney | 按报告期分区；`cne backfill` 默认自 2001 起（`--start`/`--end` 分块）；日更保留实际公告版本并补明确标记的原始披露日重建版本；baostock 不用于 FSI；备源 tdx_fin（东财失败时的日更路由与缺口回填） |
 | valuation_metrics | trade_date | symbol, trade_date | snapshot | ✓ | eastmoney | 回填：baostock |
 | analyst_consensus | forecast_date | symbol, forecast_date | snapshot | ✓ | eastmoney | |
 | share_structure | change_date | symbol, change_date, announce_date | by_date PIT | — | eastmoney | 总股本/流通/限售/自由流通。**按变动日期扫，不是按报告期**：END_DATE 是股本变动日，不能只请求季末日期 |
@@ -261,7 +276,7 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 | 数据集 | 分区键 | 主键 | 语义 | 水位 | 主源 |
 |--------|--------|------|------|------|------|
 | sector_members | as_of_date | symbol, sector_code, as_of_date | snapshot | ✓ | eastmoney |
-| index_constituents | as_of_date | index_symbol, symbol, as_of_date | snapshot | ✓ | eastmoney |
+| index_constituents | as_of_date | index_symbol, symbol, as_of_date | snapshot | ✓ | exchange（中证文件）/ cni；备源 eastmoney |
 | industry_members | as_of_date | symbol, classification_system, as_of_date | snapshot | ✓ | eastmoney |
 | industry_index | trade_date（按年） | trade_date, industry_code, level, weighting | derived | ✓ | derived (industry_members × hfq daily_bars) |
 
@@ -271,6 +286,8 @@ THS 官方估值快照只能从启用后按日积累，不能用旧日期重放�
 
 历史回填（C2）：`cne backfill industry_members` = 申万 SwClass2021 月度（`classification_system=sw`，2020 起）；
 `cne backfill index_constituents` = 国证调样史（399001/399006，约 2021-12 起）。沪深 300、科创 50 等其他指数依赖采集后积累的 EM 快照及下面的官方带日期文件；更早历史仍可能缺失。当前名单不能回填到更早日期，否则会产生幸存者偏差；EM 适配器只接受当前已收盘交易日。历史读取只使用当时已存的快照，早于最早快照的成员关系未知。
+
+日更（自本版起）：上证指数、沪深 300、科创 50 取中证每日成分文件（来源记为 `exchange`），深证成指、创业板指按国证调样区间推出当日成分（`cni`）；中证月末权重文件与国证权重文件按其自身日期另存。某指数的官方文件当日取不到时，只为该指数用东财补当天快照，并在审计里报 `index_constituents_official_unavailable`。东财成分每天另存为对照快照，审计 `index_constituents_peer` 列出两边各自独有的成员（东财不含 B 股）。同一指数、同一天只读一个来源：有官方成分时忽略东财的行；7 月以来已存的东财快照原样保留，只在当天没有官方成分时被读取。
 
 EM 和国证调样史都不提供成分权重，`weight=null`，不能把它当成真实零权重或自动推断为等权。每个指数、来源的快照起止与数量可直接查询：`cne query --sql "SELECT index_symbol, source, min(as_of_date), max(as_of_date), count(DISTINCT as_of_date) FROM index_constituents GROUP BY ALL ORDER BY ALL"`。0.17 及更早版本留下的权重占位零由 `cne migrate` 改为空值，不制造缺失的历史成分或权重。
 
@@ -300,7 +317,9 @@ EM 响应若已包含尚未生效的调样行，会拒绝整份快照：删除�
 | sector_fund_flow_ths | trade_date | board_type, sector_code, trade_date | snapshot | ✓ | ths | 只在 push2 取不到 `sector_fund_flow` 时由同花顺补：行业（881xxx）+ 概念板块的流入/流出/净额，金额单位亿、精确到 0.01；同花顺板块分类，和东财板块代码不对应。新鲜度规则同 `fund_flow_ths` |
 | news_headlines | publish_date | news_id | snapshot | ✓ | eastmoney | 新闻标题 |
 | flash_news_wire | publish_date | wire_id, wire_source | 兼容读取 | ✓ | eastmoney | 由 `news_headlines` 事实表投影，兼容旧 revision 的实体文件；不再重复写入 |
-| economic_calendar | event_date（按年） | event_id | snapshot | ✓ | —（源已下线） | EM `RPT_ECONOMICCALENDAR` 已退役（code 9501），保留 schema 等替代源；`required=false`，空表不判 UNHEALTHY |
+| economic_calendar | event_date（按年） | event_id | snapshot | ✓ | jin10 | 金十数据财经日历，每日抓取前 2 天到后 14 天；同一事件以金十的 `data_id` 为键，公布实际值后更新同一行；`indicator_code`（金十 `indicator_id`）跨年份标识同一指标序列，2026-10-30 之前写入的行为空；窗口内金十不再列出的事件（改期后换了新编号）标记 `withdrawn = true`，不删除；`cne backfill economic_calendar` 按月回补，只抓湖里缺的日子；`required=false`，空表不判 UNHEALTHY |
+| economic_events | event_date（按年） | event_id | snapshot | ✓ | jin10 | 金十数据财经事件（央行议息、官员讲话、重要会议），窗口同财经日历；`event_time` 为空且 `time_status=待定` 表示时间未定；窗口内不再出现的事件标记 `withdrawn = true`；`required=false` |
+| market_holidays | holiday_date（按年） | holiday_id | snapshot | ✓ | jin10 | 金十数据全球交易所休市安排，每日抓取当日起的 30 条（约两个月）；`note` 注明港股通南、北向是否关闭；`required=false` |
 
 `sector_bars` 使用同花顺板块行情；历史通过 `cne backfill sector_bars` 分窗口补入。先用 `--plan` 检查范围；失败后重跑同一命令即从断点续跑，避免无故 `--refetch` 全量重抓。网络可达性以当前出口的小范围探测为准。
 

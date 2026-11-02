@@ -239,6 +239,17 @@ Explicitly enabling `[universe].ingest_listed_funds = true` adds listed ETF/LOF 
 
 With fund ingestion off, the full corporate-actions sweep skips ETF/LOF. If either switch is turned on later, the daily corporate-actions step sweeps the xdxr history of funds never swept before, at most 500 per run (about 2,200 market-wide, so it takes a few days); newly listed funds are swept once as well. Until the sweep finishes, each run warns `fund_history_unswept` and lists some of the codes; meanwhile those funds' adjustment factors lack their older unit splits.
 
+## `[datasets]` {#datasets}
+
+Best-effort datasets (`best_effort`, see [support levels](../datasets/catalog.md#support-levels)) are not scheduled by default: live snapshots whose history starts the day a lake turns them on, a retired source, and feeds that fail often. List the ones to run:
+
+```toml
+[datasets]
+best_effort = ["news_headlines", "flash_news_wire", "hot_rank"]   # or ["all"]
+```
+
+A best-effort dataset named in the config file's own schedule-group `steps` or `steps_add` is also on; only what the file itself says counts, never the built-in defaults under it. So a full legacy config keeps running what it lists, and a new `extends = "builtin"` config starts with all of them off. A dataset left off is dropped from every schedule group and its freshness reads `removed`, not `stale`; `cne backfill` can still run it explicitly. `cne config minimize` writes the set a full config enabled into `best_effort`, so its behaviour does not change.
+
 ## `[job.daily.waves]`
 
 Wave DAG: each wave has `name`, `parallel` (whether steps within the wave run in parallel) and `steps` (a list of step names).
@@ -452,6 +463,18 @@ cne storage raw-external --dataset financial_statement_items --source cninfo \
 By default only new PDF payloads go to the external folder; other responses stay local. The lake stores the registration in `meta/raw_storage.json`, which all archive readers recognize automatically. Historical `payload_path` values stay unchanged and no symlinks are used. Registration does not migrate existing files. Copy them under the external root at their original `payload_path`, verify bytes and hashes, and confirm cloud upload before removing local payloads. Keep the local `.json` source sidecars.
 
 Replay requires the external folder to be available; cloud files may need downloading first. An unavailable folder fails explicitly rather than being recreated empty or fetching the provider again. Portable snapshots materialize external payloads without machine-specific locations, which may download cloud files. macOS manages iCloud synchronization and Remove Download; registration alone does not confirm upload.
+
+## `[storage.retention]` {#storage-retention}
+
+Every backfill and daily publish leaves an immutable generation. At the end of `cne backfill` and `cne run daily`, each dataset keeps the newest 5 generations and the older generation directories are removed. That is the same count the storage page uses for a recent generation. The generation currently being read, a generation registered with `cne storage hold`, a generation whose receipt is missing or unusable, and all staging are never removed by this automatic cleanup. Receipts stay under `meta/revisions/` as the record of what was published; reading a removed generation fails explicitly and does not follow a newer one. An interactive `cne run clean` can confirm deletion after the preview. Deleting a generation inside the newest 5 that is not the current pointer is still confirmed on the storage page of `cne serve`.
+
+| Key | Default | Description |
+|----|------|------|
+| `keep_generations` | `5` | Newest generations to keep per dataset. `0` does not delete automatically |
+
+A file hard-linked from a generation that is staying does not disappear with the old directory. `freed_bytes` counts only bytes that no kept generation still points at. With no imported reference inventory, "not registered" is treated as "no external reference". To pin one publication for a reproduction, run `cne storage import` and then `cne storage hold`, or set `keep_generations` to `0`. A small disk can lower the count.
+
+A retention failure (a stale reference inventory, or an unfinished deletion) does not fail a publish that already succeeded. The reason is printed on stderr, and the next backfill or daily run tries again.
 
 ## `[exchange_audit]`
 

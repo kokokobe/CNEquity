@@ -130,6 +130,43 @@ _CNINFO_CATEGORIES: tuple[str, ...] = (
 #: appear in a bucket identity.
 _PARTITION_AXES: tuple[str, ...] = ("plate", "trade", "category")
 _BUCKET_SEPARATOR = "|"
+#: Bucket-identity key for a sorted residual walk (``sortName:sortType``).
+#: Not a partition axis: it reorders the parent query instead of narrowing it.
+_ORDER_KEY = "order"
+# A cover can miss rows that carry none of its filter values: measured on
+# 2020-04-28, sse main board x manufacturing held 4,273 rows but its 30
+# categories only 4,270 (a pre-IPO prospectus and an audit note had no
+# category). Capped walks of the parent in these orders reach both ends of
+# the result; no single order is exact on its own, because ties on a busy
+# code reshuffle between pages, but their residual completes the cover.
+_RESIDUAL_ORDERS: tuple[str, ...] = ("code:asc", "code:desc", "time:asc", "time:desc")
+#: Bucket-identity key for a walk pinned to one reported total.
+_VIEW_KEY = "view"
+# CNINFO answers from servers whose views of the same query differ: on
+# 2020-04-28 the ChiNext x construction cell came back with 126 or 128 rows at
+# random (two "（已取消）" reports), and on 2020-04-30 a main-board annual-report
+# cell with 247 or 255 (seven ordinary annual reports and summaries). A page
+# whose total differs from the walk's is retried until it matches, so every
+# page of a walk comes from one view.
+_VIEW_RETRIES = 8
+# Each view retry is a new observation of the same page; number its attempts
+# past any transport retries so archive identities never collide and replay
+# picks the last (matching) answer.
+_VIEW_ATTEMPT_STRIDE = 100
+
+
+def _view_attempt_kwargs(kwargs: dict[str, Any], view_try: int) -> dict[str, Any]:
+    on_response = kwargs.get("on_response")
+    if on_response is None or view_try == 0:
+        return kwargs
+    offset = view_try * _VIEW_ATTEMPT_STRIDE
+    return {
+        **kwargs,
+        "on_response": lambda response, parsed, attempt: on_response(
+            response, parsed, attempt + offset
+        ),
+    }
+
 
 # The checkpoint must be tied to the request/normalization contract.  Bumping
 # this value forces a clean walk instead of mixing rows fetched under an older
@@ -504,6 +541,13 @@ def _checkpoint_key(column: str, start: date, end: date) -> str:
     return f"{column}:{start.isoformat()}:{end.isoformat()}"
 
 
+class ViewUnavailable(RuntimeError):
+    """A pinned server view never answered one of its pages."""
+
+
+_PARTITION_SURPLUS_ROWS = 5
+
+
 class PartitionCoverageError(RuntimeError):
     """A candidate split did not provably cover the query it replaced.
 
@@ -517,7 +561,7 @@ def _bucket_column(column: str, filters: Mapping[str, str] | None) -> str:
     """Encode the applied filters into the checkpoint / archive identity."""
     suffix = "".join(
         f"{_BUCKET_SEPARATOR}{axis}={filters[axis]}"
-        for axis in _PARTITION_AXES
+        for axis in (*_PARTITION_AXES, _ORDER_KEY, _VIEW_KEY)
         if filters and filters.get(axis)
     )
     return f"{column}{suffix}"
@@ -582,7 +626,24 @@ def _reconcile_partition_rows(
                 f"CNINFO {label} {axis} coverage for {column} {day} contains an unkeyed row"
             )
         by_identity[str(identity)] = row
-    if len(by_identity) != expected_total:
+    surplus = len(by_identity) - expected_total
+    # CNINFO's unfiltered total can undercount by a row the filtered queries
+    # do return: szse 2022-08-31 split to 5,854 unique rows against a total of
+    # 5,853 on four tries hours apart, and its plate views disagreed the same
+    # way (2,810 vs 2,811). A surplus of distinct, keyed rows that still holds
+    # every control identity loses nothing, so a small one is accepted; a
+    # shortfall never is.
+    if 0 < surplus <= max(1, min(_PARTITION_SURPLUS_ROWS, expected_total // 1000)):
+        logger.warning(
+            "CNINFO %s %s coverage for %s %s returned %d row(s) beyond the unfiltered total %d",
+            label,
+            axis,
+            column,
+            day,
+            surplus,
+            expected_total,
+        )
+    elif surplus != 0:
         raise PartitionCoverageError(
             f"CNINFO {label} {axis} coverage for {column} {day} returned "
             f"{len(by_identity)} unique rows; unfiltered total is {expected_total}"
@@ -1050,6 +1111,123 @@ def _checkpoint_archive_reusable(
     return True
 
 
+def _residual_identities(rows: list[dict]) -> set[str]:
+    return {str(identity) for row in rows if (identity := _announcement_id(row)) is not None}
+
+
+def _with_residual(bucket_rows: list[dict], residual_rows: list[dict]) -> list[dict]:
+    """Add the sorted walks' rows that no bucket returned."""
+    covered = _residual_identities(bucket_rows)
+    return bucket_rows + [row for row in residual_rows if str(_announcement_id(row)) not in covered]
+
+
+def _wider_superset(
+    rows: list[dict], wider: list[dict], *, expected_total: int, context: str
+) -> list[dict]:
+    """Accept a wider view only if it is complete and contains the narrower one."""
+    own = _residual_identities(rows)
+    wide = _residual_identities(wider)
+    if len(wide) != expected_total or not own <= wide:
+        raise RuntimeError(
+            f"CNINFO views of {context} are not nested ({len(own)} vs {len(wide)} rows)"
+        )
+    return wider
+
+
+def _fetch_ordered_walk(
+    client: httpx.Client,
+    *,
+    day: date,
+    column: str,
+    label: str,
+    filters: Mapping[str, str],
+    order: str | None = None,
+    view_total: int | None = None,
+    config=None,
+    metrics: dict[str, Any] | None = None,
+    max_pages_per_slice: int,
+    raw_archive: RawPayloadArchive | None = None,
+    run_id: str | None = None,
+    request_scope: str | None = None,
+) -> list[dict]:
+    """Walk one day's query in a fixed order, or pinned to one reported total.
+
+    The result is evidence, never a complete slice: the caller only accepts it
+    after reconciling it against the source total itself.
+    """
+    sort_name, _, sort_type = (order or "").partition(":")
+    side = {_ORDER_KEY: order} if order else {_VIEW_KEY: str(view_total)}
+    bucket_column = _bucket_column(column, {**filters, **side})
+    record: dict[str, Any] = {"capture_id": uuid.uuid4().hex}
+    rows: list[dict] = []
+    signatures: set[str] = set()
+    total: int | None = None
+    for page in range(1, max_pages_per_slice + 1):
+        payload = {
+            "pageNum": page,
+            "pageSize": _PAGE_SIZE,
+            "column": column,
+            "tabName": "fulltext",
+            "plate": filters.get("plate", ""),
+            "stock": "",
+            "searchkey": "",
+            "secid": "",
+            "category": filters.get("category", ""),
+            "trade": filters.get("trade", ""),
+            "seDate": f"{day.isoformat()}~{day.isoformat()}",
+        }
+        if order:
+            payload["sortName"] = sort_name
+            payload["sortType"] = sort_type
+        kwargs: dict[str, Any] = {"data": payload}
+        if metrics is not None:
+            kwargs["metrics"] = metrics
+        if config is not None:
+            kwargs["config"] = config
+        if raw_archive is not None:
+            kwargs["on_response"] = lambda response, parsed, attempt, _payload=payload, _page=page: (
+                _archive_cninfo_response(
+                    raw_archive,
+                    record=record,
+                    label=label,
+                    payload=_payload,
+                    column=bucket_column,
+                    page=_page,
+                    start=day,
+                    end=day,
+                    response=response,
+                    parsed=parsed,
+                    attempt=attempt,
+                    run_id=run_id,
+                    request_scope=request_scope,
+                )
+            )
+        for view_try in range(_VIEW_RETRIES if view_total is not None else 1):
+            data = post_with_retry(client, _CNINFO_URL, **_view_attempt_kwargs(kwargs, view_try))
+            page_total = _pagination_total_record_num(data, column=column, page=page)
+            if view_total is None or page_total == view_total:
+                break
+        else:
+            raise ViewUnavailable(
+                f"CNINFO {label} never answered {bucket_column} page {page} with total {view_total}"
+            )
+        batch = _announcement_batch(data, column=column, page=page)
+        if total is None:
+            total = page_total
+        signature = _pagination_page_signature(batch)
+        if not batch or signature in signatures:
+            break
+        signatures.add(signature)
+        for item in batch:
+            _validate_source_date(item, day, column=column)
+        rows.extend(batch)
+        if metrics is not None:
+            metrics["residual_pages"] = int(metrics.get("residual_pages", 0)) + 1
+        if total is not None and len(rows) >= total:
+            break
+    return rows
+
+
 def _fetch_page_slice(
     client: httpx.Client,
     *,
@@ -1389,6 +1567,19 @@ def _fetch_page_slice(
                         )
                     control_identities.add(str(control_identity))
                 coverage_failure: PartitionCoverageError | None = None
+                residual_rows: list[dict] | None = None
+
+                def reconcile(rows: list[dict], axis: str) -> list[dict]:
+                    return _reconcile_partition_rows(
+                        rows,
+                        expected_total=authoritative_total,
+                        label=label,
+                        column=bucket_column,
+                        day=start,
+                        axis=axis,
+                        required_identities=control_identities,
+                    )
+
                 for axis, values in _partition_candidates(filters):
                     record["status"] = f"{axis}_split"
                     record["rows"] = []
@@ -1405,15 +1596,38 @@ def _fetch_page_slice(
                     try:
                         for value in values:
                             bucket_rows.extend(_child(start, end, {**filters, axis: value}))
-                        reconciled = _reconcile_partition_rows(
-                            bucket_rows,
-                            expected_total=authoritative_total,
-                            label=label,
-                            column=bucket_column,
-                            day=start,
-                            axis=axis,
-                            required_identities=control_identities,
-                        )
+                        try:
+                            reconciled = reconcile(bucket_rows, axis)
+                        except PartitionCoverageError:
+                            # Rows outside every bucket value: fetch the sorted
+                            # walks once per cell and retry with their residual.
+                            # Only a shortfall can be such a gap.
+                            if len(_residual_identities(bucket_rows)) >= authoritative_total:
+                                raise
+                            if residual_rows is None:
+                                residual_rows = []
+                                for order in _RESIDUAL_ORDERS:
+                                    residual_rows.extend(
+                                        _fetch_ordered_walk(
+                                            client,
+                                            day=start,
+                                            column=column,
+                                            label=label,
+                                            filters=filters,
+                                            order=order,
+                                            config=config,
+                                            metrics=metrics,
+                                            max_pages_per_slice=max_pages_per_slice,
+                                            raw_archive=raw_archive,
+                                            run_id=run_id,
+                                            request_scope=request_scope,
+                                        )
+                                    )
+                            reconciled = reconcile(_with_residual(bucket_rows, residual_rows), axis)
+                            if metrics is not None:
+                                metrics["residual_splits"] = (
+                                    int(metrics.get("residual_splits", 0)) + 1
+                                )
                     except PartitionCoverageError as exc:
                         # This cover cannot prove it read the whole day — but a
                         # different filter may still partition it, so try the
@@ -1515,6 +1729,7 @@ def _fetch_page_slice(
         mid = _midpoint(start, end)
         return _child(start, mid, filters) + _child(mid + timedelta(days=1), end, filters)
 
+    other_views: set[int] = set()
     while True:
         payload = {
             "pageNum": page,
@@ -1555,13 +1770,27 @@ def _fetch_page_slice(
                         )
                     )
                 )
-            data = post_with_retry(client, _CNINFO_URL, **kwargs)
+            for view_try in range(_VIEW_RETRIES):
+                data = post_with_retry(
+                    client, _CNINFO_URL, **_view_attempt_kwargs(kwargs, view_try)
+                )
+                page_total = _pagination_total_records(data, column=column, page=page)
+                page_authoritative_total = _pagination_total_record_num(
+                    data, column=column, page=page
+                )
+                observed = (
+                    page_authoritative_total if page_authoritative_total is not None else page_total
+                )
+                pinned = authoritative_total if authoritative_total is not None else expected_total
+                if pinned is None or observed is None or observed == pinned:
+                    break
+                # Another server's view of the same query; ask again so the
+                # walk stays on one view, and remember the other total.
+                other_views.add(observed)
             batch = _announcement_batch(data, column=column, page=page)
             total_pages = _pagination_total_pages(data, column=column, page=page)
             has_more = _pagination_has_more(data, column=column, page=page)
             has_more_present = data.get("hasMore") is not None
-            page_total = _pagination_total_records(data, column=column, page=page)
-            page_authoritative_total = _pagination_total_record_num(data, column=column, page=page)
             if expected_total is None:
                 expected_total = page_total
             elif page_total is not None and page_total != expected_total:
@@ -1722,6 +1951,44 @@ def _fetch_page_slice(
             f"raw row count {len(raw_rows)} does not match reported total {expected_total} "
             f"(unique keys={len(seen_keys)})"
         )
+    wider_views = sorted(view for view in other_views if expected_total and view > expected_total)
+    if wider_views and start == end:
+        # Keep the wider view: some servers lack rows others list, including
+        # cancelled and ordinary reports, so the narrower one is incomplete.
+        try:
+            wider = _fetch_ordered_walk(
+                client,
+                day=start,
+                column=column,
+                label=label,
+                filters=filters,
+                view_total=wider_views[-1],
+                config=config,
+                metrics=metrics,
+                max_pages_per_slice=max_pages_per_slice,
+                raw_archive=raw_archive,
+                run_id=run_id,
+                request_scope=request_scope,
+            )
+        except ViewUnavailable as exc:
+            # The narrower view is complete by itself; keep it when the wider
+            # server is too rarely reached to walk every page.
+            logger.warning("CNINFO keeping the narrower view: %s", exc)
+            if metrics is not None:
+                metrics["wider_views_unavailable"] = (
+                    int(metrics.get("wider_views_unavailable", 0)) + 1
+                )
+        else:
+            raw_rows = _wider_superset(
+                raw_rows,
+                wider,
+                expected_total=wider_views[-1],
+                context=f"{bucket_column} {start}",
+            )
+            seen_keys = _residual_identities(raw_rows)
+            expected_total = authoritative_total = wider_views[-1]
+            if metrics is not None:
+                metrics["wider_views"] = int(metrics.get("wider_views", 0)) + 1
     record["status"] = "complete"
     record["rows"] = raw_rows
     record["next_page"] = page + 1
@@ -1913,6 +2180,13 @@ def _replay_request_context(
     request_filters = {
         axis: value for axis in _PARTITION_AXES if (value := str(request.get(axis) or "").strip())
     }
+    sort_name = str(request.get("sortName") or "").strip()
+    if sort_name:
+        request_filters[_ORDER_KEY] = f"{sort_name}:{str(request.get('sortType') or '').strip()}"
+    # A pinned view is not a request field; only the walk's identity names it.
+    archived_view = _bucket_parts(archived_column)[1].get(_VIEW_KEY)
+    if archived_view:
+        request_filters[_VIEW_KEY] = archived_view
     request_bucket = _bucket_column(request_column, request_filters) if request_column else ""
     if request_bucket and archived_column and request_bucket != archived_column:
         raise RawArchiveError(
@@ -2007,6 +2281,115 @@ def _replay_group_contains(
         and child[2] <= parent[2]
         and (parent[1] < child[1] or child[2] < parent[2])
     )
+
+
+def _is_residual_group(key: tuple[str, date, date]) -> bool:
+    filters = _bucket_parts(key[0])[1]
+    return _ORDER_KEY in filters or _VIEW_KEY in filters
+
+
+def _replay_wider_view(
+    key: tuple[str, date, date],
+    rows: list[dict],
+    groups: dict[tuple[str, date, date], list[dict[str, Any]]],
+    *,
+    lineage: tuple[str, str],
+    captured_after: str,
+) -> list[dict]:
+    """Swap in the pinned wider view the live walk kept, if it fetched one."""
+    column, filters = _bucket_parts(key[0])
+    prefix = _bucket_column(column, filters) + _BUCKET_SEPARATOR + _VIEW_KEY + "="
+    views = [
+        candidate
+        for candidate in groups
+        if candidate[1:] == key[1:]
+        and candidate[0].startswith(prefix)
+        and any(
+            (str(item.get("run_id", "")), str(item.get("request_scope", ""))) == lineage
+            and str(item.get("captured_at", "")) >= captured_after
+            for item in groups[candidate]
+        )
+    ]
+    if not views:
+        return rows
+    view_key = max(views, key=lambda candidate: int(_bucket_parts(candidate[0])[1][_VIEW_KEY]))
+    view_total = int(_bucket_parts(view_key[0])[1][_VIEW_KEY])
+    by_page: dict[int, dict[str, Any]] = {}
+    for item in groups[view_key]:
+        if (str(item.get("run_id", "")), str(item.get("request_scope", ""))) != lineage:
+            continue
+        if item["pagination"].get("reported_total_records") != view_total:
+            continue
+        page = int(item["page"])
+        previous = by_page.get(page)
+        if previous is None or str(item.get("captured_at", "")) >= str(
+            previous.get("captured_at", "")
+        ):
+            by_page[page] = item
+    if any(page not in by_page for page in range(1, -(-view_total // _PAGE_SIZE) + 1)):
+        # The live walk gave up on this view and kept the narrower one.
+        return rows
+    wider: list[dict] = []
+    for page in sorted(by_page):
+        response = _replay_response(store=by_page[page]["store"], record=by_page[page]["record"])
+        if response is None:
+            raise RawArchiveError(f"CNINFO archived view walk is not an object: {view_key!r}")
+        wider.extend(_announcement_batch(response, column=column, page=page))
+    try:
+        return _wider_superset(rows, wider, expected_total=view_total, context=f"{key[0]} {key[1]}")
+    except RuntimeError as exc:
+        raise RawArchiveError(str(exc)) from exc
+
+
+def _replay_residual_rows(
+    key: tuple[str, date, date],
+    groups: dict[tuple[str, date, date], list[dict[str, Any]]],
+    *,
+    lineage: tuple[str, str],
+    captured_after: str,
+) -> list[dict]:
+    """Rows of the sorted walks the live split fetched for this cell."""
+    column, filters = _bucket_parts(key[0])
+    rows: list[dict] = []
+    for order in _RESIDUAL_ORDERS:
+        walk_key = (_bucket_column(column, {**filters, _ORDER_KEY: order}), key[1], key[2])
+        pages = [
+            item
+            for item in groups.get(walk_key, [])
+            if (str(item.get("run_id", "")), str(item.get("request_scope", ""))) == lineage
+            and str(item.get("captured_at", "")) >= captured_after
+        ]
+        if not pages:
+            continue
+        captures: dict[str, list[dict[str, Any]]] = {}
+        for item in pages:
+            captures.setdefault(str(item.get("capture_id", "")), []).append(item)
+        latest = max(
+            captures.values(),
+            key=lambda items: max(str(item.get("captured_at", "")) for item in items),
+        )
+        by_page: dict[int, dict[str, Any]] = {}
+        for item in latest:
+            page = int(item["page"])
+            previous = by_page.get(page)
+            if previous is None or int(item.get("attempt", 0)) >= int(previous.get("attempt", 0)):
+                by_page[page] = item
+        for page in sorted(by_page):
+            response = _replay_response(
+                store=by_page[page]["store"], record=by_page[page]["record"]
+            )
+            if response is None:
+                raise RawArchiveError(
+                    f"CNINFO archived residual walk is not an object: {walk_key!r}"
+                )
+            batch = _announcement_batch(response, column=column, page=page)
+            for row in batch:
+                try:
+                    _validate_source_date(row, key[1], column=column)
+                except RuntimeError as exc:
+                    raise RawArchiveError(str(exc)) from exc
+            rows.extend(batch)
+    return rows
 
 
 def _replay_group_rows(
@@ -2264,18 +2647,35 @@ def _replay_group_rows(
                             captured_after=selected_capture_end,
                         )
                     )
+
+                def reconcile(rows: list[dict]) -> list[dict]:
+                    try:
+                        return _reconcile_partition_rows(
+                            rows,
+                            expected_total=preflight_authoritative_total,
+                            label="archived announcement",
+                            column=key[0],
+                            day=key[1],
+                            axis=str(axis),
+                            required_identities=control_identities,
+                        )
+                    except RuntimeError as exc:
+                        raise RawArchiveError(str(exc)) from exc
+
                 try:
-                    return _reconcile_partition_rows(
-                        bucket_rows,
-                        expected_total=preflight_authoritative_total,
-                        label="archived announcement",
-                        column=key[0],
-                        day=key[1],
-                        axis=str(axis),
-                        required_identities=control_identities,
+                    return reconcile(bucket_rows)
+                except RawArchiveError:
+                    if len(_residual_identities(bucket_rows)) >= preflight_authoritative_total:
+                        raise
+                    residual_rows = _replay_residual_rows(
+                        key,
+                        groups,
+                        lineage=selected_lineage,
+                        captured_after=selected_capture_end,
                     )
-                except RuntimeError as exc:
-                    raise RawArchiveError(str(exc)) from exc
+                    if not residual_rows:
+                        raise
+                    return reconcile(_with_residual(bucket_rows, residual_rows))
             coverage_cursor = key[1]
             for child in children:
                 if child[1] != coverage_cursor:
@@ -2366,7 +2766,13 @@ def _replay_group_rows(
                 f"CNINFO archived slice raw row count {len(rows)} does not match "
                 f"its total {expected_total}: {key!r}"
             )
-        return rows
+        return _replay_wider_view(
+            key,
+            rows,
+            groups,
+            lineage=selected_lineage,
+            captured_after=selected_capture_end,
+        )
     finally:
         active.remove(key)
 
@@ -2494,7 +2900,8 @@ def replay_cninfo_rows(
         (
             key
             for key in groups
-            if not any(_replay_group_contains(parent, key) for parent in groups)
+            if not _is_residual_group(key)
+            and not any(_replay_group_contains(parent, key) for parent in groups)
         ),
         key=lambda value: (
             value[1],

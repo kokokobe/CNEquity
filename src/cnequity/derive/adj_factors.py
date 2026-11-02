@@ -1038,8 +1038,8 @@ _EMPTY_ACTION_TERMS = pl.DataFrame(
 )
 
 
-def _prior_factor_rows(config: Config, symbols: list[str], before: date) -> pl.DataFrame:
-    """Last stored factor row per symbol strictly before ``before``.
+def _prior_factor_rows(config: Config, out: pl.DataFrame) -> pl.DataFrame:
+    """Last stored factor row per symbol strictly before that symbol's first row in *out*.
 
     An append-only derive produces one new date per symbol, which has no
     predecessor inside its own output and therefore no measurable step — the
@@ -1048,21 +1048,31 @@ def _prior_factor_rows(config: Config, symbols: list[str], before: date) -> pl.D
     lookback is read: the previous *bar* date is one partition back for a
     symbol that trades, and the window still covers a month of suspension
     without scanning the whole history.
+
+    The edge is per symbol: one derive can append today's row for most symbols
+    and rewrite years of history for a few, and a single run-wide edge would
+    pair today's row with one from that distant start, piling every action in
+    between onto one step.
     """
     from cnequity.query.parquet_scan import dataset_has_parquet, scan_parquet_root
 
     root = config.derived_root / "adj_factors"
     if not dataset_has_parquet(root):
         return pl.DataFrame()
-    lookback_start = before - timedelta(days=CROSSCHECK_PRIOR_LOOKBACK_DAYS)
+    firsts = out.group_by("symbol").agg(pl.col("trade_date").min().alias("_first"))
+    lookback = timedelta(days=CROSSCHECK_PRIOR_LOOKBACK_DAYS)
     prior = (
         scan_parquet_root(
             root,
             partition_col="trade_date",
-            start=lookback_start,
-            symbols=symbols,
+            start=firsts.get_column("_first").min() - lookback,
+            symbols=sorted(firsts.get_column("symbol").to_list()),
         )
-        .filter(pl.col("trade_date") < before)
+        .join(firsts.lazy(), on="symbol")
+        .filter(
+            (pl.col("trade_date") < pl.col("_first"))
+            & (pl.col("trade_date") >= pl.col("_first") - lookback)
+        )
         .select("symbol", "trade_date", "adjust_type", "factor")
         .collect()
     )
@@ -1251,6 +1261,25 @@ def _drop_pre_exchange_actions(config: Config, terms: pl.DataFrame) -> pl.DataFr
     )
 
 
+def _fund_symbols_in(config: Config, symbols: list[str]) -> set[str]:
+    """Funds among ``symbols``; their hfq factor carries share events only.
+
+    The fund series is split-only by design (see ``fund_factors``): a cash
+    distribution leaves the unit multiplier at 1, so checks that derive an
+    expected step from a dividend must not apply it to these symbols.
+    """
+    from cnequity.storage.instrument_catalog import load_curated_instruments
+
+    instruments = load_curated_instruments(config, None)
+    if instruments is None or "asset_type" not in instruments.columns:
+        return set()
+    return set(
+        instruments.filter(
+            pl.col("symbol").is_in(symbols) & pl.col("asset_type").is_in(["etf", "lof"])
+        )["symbol"].to_list()
+    )
+
+
 def _corporate_action_crosscheck_findings(config: Config, out: pl.DataFrame) -> list[dict]:
     """Compare every stored factor step against the step the actions imply.
 
@@ -1273,7 +1302,7 @@ def _corporate_action_crosscheck_findings(config: Config, out: pl.DataFrame) -> 
         return []
 
     series = out.select("symbol", "trade_date", "adjust_type", "factor")
-    prior = _prior_factor_rows(config, symbols, start)
+    prior = _prior_factor_rows(config, out)
     if not prior.is_empty():
         series = pl.concat([prior.select(series.columns), series], how="vertical_relaxed")
         start = min(start, prior.get_column("trade_date").min())
@@ -1314,6 +1343,7 @@ def _corporate_action_crosscheck_findings(config: Config, out: pl.DataFrame) -> 
     # as an error and refused to print the comparison it exists to show. The
     # divergence is still recorded — as a warning that names the missing feed.
     has_action_feed = dataset_has_parquet(config.curated_root / "corporate_actions")
+    funds = sorted(_fund_symbols_in(config, symbols))
 
     # An ex-date in a trading halt takes effect on the next traded session,
     # which is where the factor steps; compare the action there.
@@ -1356,6 +1386,14 @@ def _corporate_action_crosscheck_findings(config: Config, out: pl.DataFrame) -> 
         )
         .with_columns(
             [pl.col(term).fill_null(1.0 if term == "_split" else 0.0) for term in _ACTION_TERMS]
+        )
+        .with_columns(
+            # A fund's factor ignores cash, so its expected step is the share
+            # multiplier alone.
+            [
+                pl.when(pl.col("symbol").is_in(funds)).then(0.0).otherwise(pl.col(t)).alias(t)
+                for t in ("_dividend", "_allot_cash")
+            ]
         )
         .with_columns(
             (pl.col("_prev_close") - pl.col("_dividend") + pl.col("_allot_cash")).alias(
@@ -1409,6 +1447,42 @@ def _corporate_action_crosscheck_findings(config: Config, out: pl.DataFrame) -> 
     return findings
 
 
+def _fund_cash_only_sessions(
+    config: Config, symbols: list[str], series: pl.DataFrame
+) -> pl.DataFrame:
+    """Fund sessions whose recorded action is cash only, flagged ``_fund_cash``."""
+    empty = pl.DataFrame(
+        schema={"symbol": pl.Utf8, "trade_date": pl.Date, "_fund_cash": pl.Boolean}
+    )
+    funds = sorted(_fund_symbols_in(config, symbols))
+    if not funds:
+        return empty
+    sessions = series.filter(pl.col("symbol").is_in(funds)).select("symbol", "trade_date").unique()
+    if sessions.is_empty():
+        return empty
+    terms = _action_terms(config, funds, sessions["trade_date"].min(), sessions["trade_date"].max())
+    if terms.is_empty():
+        return empty
+    shares = (1.0 + pl.col("_bonus") + pl.col("_transfer") + pl.col("_allotment")) * pl.col(
+        "_split"
+    )
+    terms = (
+        effective_session(terms, sessions)
+        .filter(pl.col("effective_session").is_not_null())
+        .with_columns([pl.col(t).fill_null(1.0 if t == "_split" else 0.0) for t in _ACTION_TERMS])
+        .group_by("symbol", "effective_session")
+        .agg(
+            (pl.col("_dividend") > 0).any().alias("_cash"),
+            ((shares - 1.0).abs() > 1e-9).any().alias("_shares"),
+        )
+    )
+    return terms.filter(pl.col("_cash") & ~pl.col("_shares")).select(
+        "symbol",
+        pl.col("effective_session").alias("trade_date"),
+        pl.lit(True).alias("_fund_cash"),
+    )
+
+
 def _pre_close_step_findings(config: Config, out: pl.DataFrame) -> list[dict]:
     """Check factor steps against the exchange's own previous close.
 
@@ -1430,7 +1504,7 @@ def _pre_close_step_findings(config: Config, out: pl.DataFrame) -> list[dict]:
     from cnequity.query.parquet_scan import collect_parquet_root
 
     series = out.select("symbol", "trade_date", "adjust_type", "factor")
-    prior = _prior_factor_rows(config, symbols, start)
+    prior = _prior_factor_rows(config, out)
     if not prior.is_empty():
         series = pl.concat([prior.select(series.columns), series], how="vertical_relaxed")
     try:
@@ -1449,6 +1523,7 @@ def _pre_close_step_findings(config: Config, out: pl.DataFrame) -> list[dict]:
         subset=["symbol", "trade_date"], keep="last"
     )
     tolerance = config.adj_factors_crosscheck_tolerance_bps
+    fund_cash_sessions = _fund_cash_only_sessions(config, symbols, series)
     diverged = (
         series.unique(subset=["symbol", "trade_date", "adjust_type"], keep="last")
         .join(bars, on=["symbol", "trade_date"], how="inner")
@@ -1467,6 +1542,15 @@ def _pre_close_step_findings(config: Config, out: pl.DataFrame) -> list[dict]:
         .with_columns(
             (pl.col("factor") / pl.col("_prev_factor")).alias("_actual"),
             (pl.col("_prev_close") / pl.col("pre_close")).alias("_expected"),
+        )
+        # The exchange lowers a fund's pre_close by its cash distribution, but
+        # the fund factor does not step for cash: expect 1.0 on those sessions.
+        .join(fund_cash_sessions, on=["symbol", "trade_date"], how="left")
+        .with_columns(
+            pl.when(pl.col("_fund_cash").fill_null(False))
+            .then(1.0)
+            .otherwise(pl.col("_expected"))
+            .alias("_expected")
         )
         .with_columns(
             ((pl.col("_actual") / pl.col("_expected") - 1).abs() * 10_000.0).alias("_bps"),

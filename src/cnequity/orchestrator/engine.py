@@ -193,6 +193,12 @@ class JobEngine:
     ) -> dict[str, Any]:
         trade_date = trade_date or shanghai_today()
         self.config._backfill = backfill
+        # Here as well as at `cne` start-up: callers such as
+        # scripts/run_catchup.py, run by another project's launchd agent at a
+        # 256-descriptor limit, drive the engine without either entry point.
+        from cnequity.fd_limit import raise_open_file_limit
+
+        raise_open_file_limit()
 
         if run_id and retry_failed_only:
             return self._retry_run(run_id, trade_date)
@@ -430,24 +436,26 @@ class JobEngine:
 
         Init is a core bootstrap contract even when a test or a legacy config
         supplied a custom scheduler group.  Compact and audit are core
-        infrastructure; adjustment and industry derives are research outputs,
-        so their source failures degrade a run without invalidating raw core
-        data.
+        infrastructure. Otherwise a registered dataset takes its support
+        level's criticality (``DatasetSpec.support``) in whichever group runs
+        it, so a failed ``financial_statement_items`` fails the fundamentals
+        run and a failed ``industry_index`` derive only degrades the core one.
+        A source-limited attempt still degrades rather than fails at any
+        level (``Manifest.aggregate_run_status``).
         """
         try:
             run = self.manifest.get_run(run_id)
         except Exception:  # pragma: no cover - defensive for custom manifests
             run = None
-        if name in {"derive_adj_factors", "derive_industry_index"}:
-            # The raw core spine (notably daily_bars) remains usable when an
-            # external adjustment/industry source is unavailable.  These
-            # receipts therefore degrade a run rather than invalidate the
-            # committed raw revision.
-            return "research"
         if run is not None and run["job_name"] == "init":
             return "core"
         if name in {"compact", "audit"}:
             return "core"
+        from cnequity.domain.datasets import dataset_criticality
+
+        by_support = dataset_criticality(self._step_dataset(name, {}))
+        if by_support is not None:
+            return by_support
         return _criticality_for_group(getattr(entry, "group", "advisory"))
 
     @staticmethod
@@ -905,10 +913,14 @@ class JobEngine:
                 error=exc,
             )
             self.manifest.record_stage_metrics(run_id, name, elapsed)
+            from cnequity.storage.revisions import DiskSpaceError
+
             if outcome.reason_code in SOURCE_LIMIT_REASONS:
                 logger.warning(N_("Step %s source unavailable after %.1fs: %s"), name, elapsed, exc)
             elif outcome.execution_status == "skipped":
                 logger.warning(N_("Step %s skipped: %s"), name, exc)
+            elif isinstance(exc, DiskSpaceError):
+                logger.error(N_("Step %s failed after %.1fs: %s"), name, elapsed, exc)
             else:
                 logger.exception(N_("Step %s failed after %.1fs"), name, elapsed)
             if outcome.execution_status == "skipped":

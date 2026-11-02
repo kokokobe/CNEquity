@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from cnequity.config import Config
-from cnequity.query import dataset_state
+from cnequity.query import dataset_revisions, dataset_state
 from cnequity.storage.parquet import StagingWriter, compact_dataset
 from cnequity.storage.revisions import RevisionStore
 
@@ -249,3 +249,115 @@ def test_revision_queries_do_not_initialize_an_empty_lake(tmp_path):
     assert resolve_committed_root(logical) == logical
     assert committed_revision(logical) is None
     assert not lake.exists()
+
+
+def test_public_dataset_revisions_lists_changes_after_a_revision(tmp_path):
+    cfg = Config(data_root=tmp_path / "data")
+    path = _curated_file(cfg.curated_root)
+    store = RevisionStore(cfg.meta_root, cfg.curated_root)
+    first = store.commit(
+        "daily_bars",
+        run_id="run-1",
+        changed_files=[path],
+        schema_version=1,
+        contract_fingerprint="contract-a",
+    )
+    later = cfg.curated_root / "daily_bars" / "trade_date=2026-10-28" / "part-merged.parquet"
+    later.parent.mkdir(parents=True)
+    later.write_bytes(b"later")
+    second = store.commit(
+        "daily_bars",
+        run_id="run-2",
+        changed_files=[later],
+        schema_version=1,
+        contract_fingerprint="contract-b",
+    )
+    assert first is not None and second is not None
+
+    changes = dataset_revisions("daily_bars", after=first.revision_id, config=cfg)
+    assert [c.revision_id for c in changes] == [second.revision_id]
+    assert changes[0].changed_partitions == ("daily_bars/trade_date=2026-10-28",)
+    assert changes[0].contract_fingerprint == "contract-b"
+    assert dataset_revisions("daily_bars", after=second.revision_id, config=cfg) == ()
+
+    with pytest.raises(ValueError, match="not in the receipt history"):
+        dataset_revisions("daily_bars", after="unknown", config=cfg)
+
+    later.write_bytes(b"later again")
+    third = store.commit(
+        "daily_bars",
+        run_id="run-3",
+        changed_files=[later],
+        schema_version=1,
+        contract_fingerprint="contract-b",
+    )
+    assert third is not None
+    (cfg.meta_root / "revisions" / "daily_bars" / f"{2:08d}-{second.revision_id}.json").unlink()
+    with pytest.raises(ValueError, match="revision 2 of daily_bars is missing"):
+        dataset_revisions("daily_bars", after=first.revision_id, config=cfg)
+
+
+def _commit(store, run_id, files):
+    return store.commit(
+        "daily_bars",
+        run_id=run_id,
+        changed_files=files,
+        schema_version=1,
+        contract_fingerprint="contract-sha",
+    )
+
+
+def test_unchanged_partitions_are_shared_with_the_previous_generation(tmp_path):
+    curated = tmp_path / "curated"
+    old = _curated_file(curated, b"old day")
+    store = RevisionStore(tmp_path / "meta", curated)
+    first = _commit(store, "run-1", [old])
+    new = curated / "daily_bars" / "trade_date=2024-06-19" / "part-merged.parquet"
+    new.parent.mkdir(parents=True)
+    new.write_bytes(b"new day")
+    second = _commit(store, "run-2", [new])
+
+    relative = Path("daily_bars") / "trade_date=2024-06-18" / "part-merged.parquet"
+    shared = tmp_path / "meta" / second.generation_path / relative.relative_to("daily_bars")
+    previous = tmp_path / "meta" / first.generation_path / relative.relative_to("daily_bars")
+    assert shared.stat().st_ino == previous.stat().st_ino
+    added = tmp_path / "meta" / second.generation_path / "trade_date=2024-06-19/part-merged.parquet"
+    assert added.stat().st_nlink == 1
+    assert {item.path: item for item in second.generation_files}[relative.as_posix()] == {
+        item.path: item for item in first.generation_files
+    }[relative.as_posix()]
+
+    # A later rewrite of the mutable file never reaches either generation.
+    old.write_bytes(b"rewritten in place")
+    assert shared.read_bytes() == b"old day"
+    shutil.rmtree(tmp_path / "meta" / first.generation_path)
+    assert shared.read_bytes() == b"old day"
+
+
+def test_generation_falls_back_to_copy_when_links_are_unsupported(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from cnequity.storage import revisions
+
+    def refuse(_source, _target):
+        raise OSError(errno.EPERM, "links disabled")
+
+    curated = tmp_path / "curated"
+    old = _curated_file(curated, b"old day")
+    store = RevisionStore(tmp_path / "meta", curated)
+    first = _commit(store, "run-1", [old])
+    new = curated / "daily_bars" / "trade_date=2024-06-19" / "part-merged.parquet"
+    new.parent.mkdir(parents=True)
+    new.write_bytes(b"new day")
+    monkeypatch.setattr(revisions.os, "link", refuse)
+    second = _commit(store, "run-2", [new])
+
+    carried = (
+        tmp_path / "meta" / second.generation_path / "trade_date=2024-06-18/part-merged.parquet"
+    )
+    previous = (
+        tmp_path / "meta" / first.generation_path / "trade_date=2024-06-18/part-merged.parquet"
+    )
+    assert carried.read_bytes() == b"old day"
+    assert os.stat(carried).st_ino != os.stat(previous).st_ino

@@ -23,8 +23,8 @@
 | `--profile` | `default` | daily_bars 可选 delisted：只回填已确认退市名录，沿用独立发现证据。 |
 | `--plan` | `False` | 只输出来源、范围和抓取方式；衍生品另给请求预算。不取数、不写湖。 |
 | `--exchange` | `—` | 仅衍生品：限定交易所，可重复。INE 归入 SHF 路由；2018 期货另取 INE 日文件。 |
-| `--source` | `—` | Source to use for this backfill instead of the configured one, without editing the config. Supported for margin_trading (exchange or eastmoney). |
-| `--refetch` | `False` | Ignore completion receipts and checkpoints and fetch the range again (sector_bars, futures_bars, option_bars); circuit breakers still apply. Without it a backfill resumes. |
+| `--source` | `—` | 本次回填改用的来源，不修改配置。支持 margin_trading（exchange 或 eastmoney）和 financial_statement_items（tdx_fin：只补湖中缺少的科目）。 |
+| `--refetch` | `False` | 忽略完成收据和 checkpoint，重新获取整个范围（sector_bars、futures_bars、option_bars）；熔断仍然生效。不加时回填从断点续跑。 |
 | `--start` | `—` | 回填区间起点（YYYY-MM-DD），包括 daily_bars、minute_bars、衍生品日线、日期/报告期推进及 sector_bars。sector_bars 默认往前 400 天；超过来源历史深度的范围保留为缺口，可取范围照常交付并提供补数指引。 |
 | `--end` | `—` | 回填区间终点（YYYY-MM-DD，默认今天），与 --start 配合限定历史窗口。 |
 | `--outstanding` | `False` | 只修复被容忍缺口欠下的那些 key，范围和窗口都取自欠账台账，不看 --symbols/--start/--end。补上的 key 会销账，仍然缺的继续欠着。 |
@@ -420,11 +420,11 @@
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `configs/cnequity.toml, else ~/.config/cnequity/config.toml` | 配置文件路径。 |
-| `--dry-run` | `False` | 兼容选项；现在所有清理均只预览。 |
+| `--dry-run` | `False` | 只打印预览，不询问是否删除。 |
 | `--orphan-retention-days` | `7` | 预览超过这么多天、且 manifest 里没有记录的孤儿 staging。 |
 | `--snapshot-retention-days` | `14` | 预览超过这么多天的 meta/source_snapshots run_id 目录（每个数据集 / 源的最新一份始终保留）。 |
 | `--force` | `False` | 将未完成或未 compact 的 staging 也列入预览，不删除文件、不降级批次。 |
-| `--keep-revision-generations` | `5` | 每个数据集保留最近这么多代及 current/hold；其他版本只列出候选，不标记、不释放字节。网页标记前须导入引用清单。0 表示跳过版本处理。 |
+| `--keep-revision-generations` | `5` | 确认删除时，每个数据集保留最近这么多代，并保留当前版本和 hold。0 表示不处理版本。 |
 | `--log-retention-days` | `30` | 预览超过这么多天的 `logs/cne-*.log`，不删除；0 表示跳过。 |
 | `--reconcile-runs` | `False` | 清理前，把卡在 'running'（worker 崩溃）的 run 标成 failed。 |
 | `--reconcile-after-seconds` | `—` | 只对静默超过这么多秒的 run 做上面的对账（默认取 [orchestrator].batch_stale_seconds）。 |
@@ -676,6 +676,7 @@
 | `--groups` | `—` | 配合 --datasets：只对这些调度组拥有的数据集判失败（空格或逗号分隔）。其它组的数据集照常列出、照常报为调度缺口，但不会让门禁失败。截面检查同样受它约束——daily_bars 归哪个组，它的覆盖率就归谁判。未跑完的 init 不属于任何调度组，始终判失败。 |
 | `--scope, --no-scope` | `True` | 配合 --datasets：是否做最新交易日的标的截面校验。它要读 daily_bars 的 tip 分区、instruments 和 trading_status，比单纯看水位贵；--no-scope 让这条命令回到纯元数据。 |
 | `--gate` | `False` | 按所选范围和新鲜度执行门禁；默认只报告。 |
+| `--core-only` | `False` | 配合 --datasets --gate：只有核心档数据集会让门槛失败，其余照常列出。`cne check` 使用此项。 |
 
 ## `cne storage apply`
 

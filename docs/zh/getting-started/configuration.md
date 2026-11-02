@@ -239,6 +239,17 @@ ST、停牌、CDR 和已退市的名字在任何取值下都会保留 —— 丢
 
 没开基金采集时，全量公司行为扫描跳过 ETF/LOF。之后开启任一开关，日更的公司行为步骤会补扫从没扫过除权历史的基金，每次最多 500 只（全市场约 2200 只，分几天扫完）；新上市基金同样补扫一次。扫完前每次运行告警 `fund_history_unswept` 并列出部分代码，这期间这些基金的复权因子缺少较早的份额拆分。
 
+## `[datasets]` {#datasets}
+
+尽力而为档（`best_effort`，见[支持档位](../datasets/catalog.md#支持档位)）默认不调度：只在启用后才开始积累的实时快照、已停更的来源，以及经常失败的接口。要启用，列在这里：
+
+```toml
+[datasets]
+best_effort = ["news_headlines", "flash_news_wire", "hot_rank"]   # 或 ["all"]
+```
+
+配置文件自己的调度组 `steps` / `steps_add` 里写到的尽力而为数据集也视为启用；只算这份文件本身写的，不算继承的内置默认值。所以完整展开的旧配置照旧运行它列出的步骤，`extends = "builtin"` 的新配置默认全部关闭。未启用的数据集从各调度组移除，新鲜度显示为 `removed` 而不是 `stale`；`cne backfill` 仍可显式运行。`cne config minimize` 会把完整配置启用的集合写进 `best_effort`，行为不变。
+
 ## `[job.daily.waves]`
 
 Wave DAG：每个 wave 含 `name`、`parallel`（wave 内 step 是否并行）、`steps`（step 名列表）。
@@ -452,6 +463,18 @@ cne storage raw-external --dataset financial_statement_items --source cninfo \
 默认仅把新 PDF 原文写到外置目录，其他响应继续留在本地。登记保存在该湖的 `meta/raw_storage.json`，所有归档读者自动识别；不使用软链接，不改写历史 `payload_path`。命令只登记，不自动迁移旧文件。迁移时按原 `payload_path` 在目标根下复制、核对字节和哈希；确认副本完整及云端上传完成后才移除本地原文，保留本地 `.json` 来源记录。
 
 原文重放需要外置目录可用；云端文件可能需要先下载。目录不可用时会明确报错，不会重建一个空目录或重新请求供应商。可移植快照会包含外置原文且不携带本机路径，生成快照可能触发云文件下载。iCloud 同步和“移除下载”由 macOS 管理，登记命令不代表已经上传成功。
+
+## `[storage.retention]` {#storage-retention}
+
+回补和日更每次发布都会留下一代不可变副本。`cne backfill` 和 `cne run daily` 结束时，每个数据集只留下最近 5 代，并删掉更早的代目录。这个数量和存储运维页上“最近 5 代”是同一个口径。当前正在读取的一代、`cne storage hold` 登记过的代、收据对不上或没有收据的代，以及任何 staging，都不会被这次自动清理删掉。收据仍留在 `meta/revisions/`，用来说明当时发布了什么；再按被删掉的代去读，会明确失败，不会改读更新的一代。交互终端里的 `cne run clean` 在预览后可以确认删除；要删最近 5 代里不是当前指针的版本，仍在 `cne serve` 的存储运维页确认。
+
+| 键 | 默认 | 说明 |
+|----|------|------|
+| `keep_generations` | `5` | 每个数据集保留的最近代数。`0` 不自动删除 |
+
+和上一代硬链接共享的文件不会因为删掉旧目录而消失，报告里的 `freed_bytes` 只计算删除后没有任何保留代还指向的字节。没有导入引用清单时，按“没有外部引用”处理。要钉住某一次发布给研究复现，先 `cne storage import` 再 `cne storage hold`，或者把 `keep_generations` 设为 `0`。小磁盘可以把这个数改小。
+
+清理失败（引用清单已过期，或还有未完成的删除）不会让已经发布成功的回补失败；原因打在 stderr，下一次回补或日更会再试。
 
 ## `[exchange_audit]`
 
