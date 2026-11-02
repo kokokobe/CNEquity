@@ -2,6 +2,10 @@
 
 这里记录面向用户的主要功能、修复与兼容性变化。历史版本中的命令名反映当时的接口；当前用法以 [CLI 参考](docs/zh/reference/cli.md)为准。升级前阅读[升级与兼容性](docs/zh/getting-started/installation.md#升级与兼容性)。
 
+## [未发布]
+
+- 新增 `cne repair phantom-bars`：删除沪市/深市日线里量为零、成交额缺失、且没有任何一手来源佐证的伪影行（新浪在停牌起始日复报昨收时偶发产生，如 600095.SH 2025-03-17/18）。删除须同时满足三道门：当日有一手（非 derived）停牌状态行、baostock 无该日 K 线、TDX 无该日 K 线；不满足的行保留并在预览中报告。默认只预览，`--apply` 在湖锁下发布新版本并保留旧版本。
+
 ## [0.20.0] — 2026-10-25
 
 - **升级步骤：** `pip install -U cnequity` 后重启 `cne serve` 和已在运行的 `cne mcp`。数据集契约只有兼容变更：`industry_members` 升到 schema 版本 2，新增 6 列层级列（见下文），新写入的东财行 `industry_code` 固定为三级行业；按固定层级统计请读 `l1_*`..`l3_*`。旧湖运行 `cne migrate` 预览、再 `cne migrate --apply`，补齐本版四步一次性迁移：`industry-levels`（在线读取东财当前板块层级）、`sw-delisted`、`offshore-final`（在线读取新浪 COMEX 黄金最终日线）和 `sw-never-listed`。基金派生状态行要标为非 ST 的，另按窗口运行 `cne repair status-traded --start … --end … --apply`。时点读取的截点改按北京时间日期判定，`as_of=T` 不再包含 T 日公告。EquityLab 等下游的消费契约无需改动。

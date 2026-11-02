@@ -524,6 +524,51 @@ def status_traded(config_path: str, start, end, apply: bool):
     _emit(repair_status_traded(_cfg(config_path), start=start.date(), end=end.date(), apply=apply))
 
 
+@repair.command("phantom-bars")
+@config_option
+@click.option(
+    "--start",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help=N_("Start of the phantom-row scan window (YYYY-MM-DD)."),
+)
+@click.option(
+    "--end",
+    required=True,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help=N_("End of the phantom-row scan window (YYYY-MM-DD)."),
+)
+@click.option("--symbols", "symbols_str", default=None, help=N_("Comma-separated symbols."))
+@click.option(
+    "--apply",
+    is_flag=True,
+    help=N_("Publish a new version after verification; by default only prints the plan."),
+)
+def phantom_bars(config_path: str, start, end, symbols_str: str | None, apply: bool):
+    """Drop zero-volume, null-amount SH/SZ bar rows no first-hand source corroborates.
+
+    \b
+    A row is dropped only when a first-hand (non-derived) suspended status row covers its day
+    and neither Baostock nor TDX serves a bar for it; anything else is kept and reported.
+    The default preview writes nothing; --apply publishes under the lake lock, keeping the old version.
+
+    """
+    from cnequity.storage.repairs.phantom_bars import repair_phantom_bars
+
+    if end < start:
+        raise click.BadParameter(_("--end must be on or after --start"))
+    symbols = [s.strip() for s in symbols_str.split(",") if s.strip()] if symbols_str else None
+    _emit(
+        repair_phantom_bars(
+            _cfg(config_path),
+            start=start.date(),
+            end=end.date(),
+            symbols=symbols,
+            apply=apply,
+        )
+    )
+
+
 @repair.command("repartition")
 @click.argument("dataset", required=False)
 @config_option
