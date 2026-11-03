@@ -27,7 +27,9 @@ def traded_status_evidence(
 
     Null/absent volume is unknown, not proof of a print. Unknown listing dates,
     missing instruments and dates outside the listed life remain visible as
-    exclusions, and never become derived trading rows.
+    exclusions, and never become derived trading rows. ``delist_date`` is the
+    last listed session, inclusive (see ``storage.repairs.delist_dates``): a
+    print on it is inside the listed life; only prints after it are excluded.
     """
     context = read_context or ReadContext.capture(
         config, ("daily_bars", "instruments", "trading_status", "announcement_index"), {}
@@ -84,20 +86,22 @@ def traded_status_evidence(
     rows = bars.join(inst, on="symbol", how="left").with_columns(
         pl.when(pl.col("asset_type") == "etf")
         .then(pl.lit("etf"))
+        .when(pl.col("asset_type") == "cdr")
+        .then(pl.lit("cdr"))
         .when((pl.col("asset_type") == "stock") & pl.col("symbol").str.ends_with(".BJ"))
         .then(pl.lit("bse_stock"))
         .when(pl.col("asset_type") == "stock")
         .then(pl.lit("sh_sz_stock"))
         .otherwise(pl.lit("other_or_unknown"))
         .alias("asset_class"),
-        pl.when(~pl.col("asset_type").is_in(["stock", "etf"]).fill_null(False))
+        pl.when(~pl.col("asset_type").is_in(["stock", "etf", "cdr"]).fill_null(False))
         .then(pl.lit("unsupported_or_missing_instrument"))
         .when(pl.col("list_date").is_null())
         .then(pl.lit("unknown_listing_date"))
         .when(pl.col("trade_date") < pl.col("list_date"))
         .then(pl.lit("before_listing"))
-        .when(pl.col("trade_date") >= pl.col("delist_date"))
-        .then(pl.lit("on_or_after_delisting"))
+        .when(pl.col("trade_date") > pl.col("delist_date"))
+        .then(pl.lit("after_delisting"))
         .otherwise(pl.lit(None, dtype=pl.String))
         .alias("exclusion"),
     )
@@ -167,7 +171,7 @@ def trading_state_coverage_report(
         "excluded_rows": sum(excluded.values()),
         "exclusions": excluded,
         "by_class_month": groups.to_dicts(),
-        "note": "Positive-volume stock/ETF keys only; this is not an ST coverage receipt.",
+        "note": "Positive-volume stock/ETF/CDR keys only; this is not an ST coverage receipt.",
     }
 
 
@@ -183,7 +187,7 @@ def trading_state_coverage_findings(config: Config, end: date) -> list[dict]:
             "severity": "warning"
             if missing or report["excluded_rows"] or report["contradictory_rows"]
             else "info",
-            "message": f"{missing} traded stock/ETF key(s) lack status, including pre-inception history; "
+            "message": f"{missing} traded stock/ETF/CDR key(s) lack status, including pre-inception history; "
             f"{report['risk_warning_unknown_rows']} lack ST evidence"
             + (
                 f"; {report['excluded_rows']} key(s) are left out of the count ("

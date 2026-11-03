@@ -1,7 +1,9 @@
 """Fill missing status keys from actual prints, without claiming historical ST.
 
 ST does not apply to funds, so a fund's derived row says ``risk_warning=False``
-rather than unknown; a stock's stays null until first-hand evidence exists.
+rather than unknown; a stock's or CDR's stays null until first-hand evidence
+exists. Prints on a recorded ``delist_date`` are inside the listed life (the
+date is the last listed session, inclusive) and are filled like any other.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """A print establishes trading, but never establishes a negative ST designation."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -121,14 +121,63 @@ def test_preview_is_read_only_and_names_only_missing_listed_prints(lake):
     before = _tree(lake.data_root)
     plan = repair_status_traded(lake, start=D1, end=D2)
     assert _tree(lake.data_root) == before
-    assert plan["rows"] == 4
-    assert plan["by_class"] == {"etf": 1, "bse_stock": 1, "sh_sz_stock": 2}
+    assert plan["rows"] == 5
+    assert plan["by_class"] == {"etf": 1, "bse_stock": 1, "sh_sz_stock": 3}
     assert plan["exclusions"] == {
         "before_listing": 1,
-        "on_or_after_delisting": 1,
         "unknown_listing_date": 2,
         "unsupported_or_missing_instrument": 2,
     }
+
+
+def test_a_print_on_the_last_listed_session_is_inside_the_listed_life(lake):
+    """delist_date 是最后一个上市交易日(含当日):当日成交必须可推状态,次日起才排除。"""
+    plan = repair_status_traded(lake, start=D1, end=D2)
+    assert plan["rows"] == 5
+    # 000002.SZ delists on D2 and printed on D1 and D2; both are eligible.
+    assert any(
+        row["symbol"] == "000002.SZ" and row["trade_date"] == str(D2) for row in plan["sample"]
+    )
+    root = lake.curated_root / "daily_bars" / "trade_date=2026-07"
+    after = pl.read_parquet(root / "part.parquet").filter(
+        (pl.col("symbol") == "000002.SZ") & (pl.col("trade_date") == D1)
+    ).with_columns(pl.lit(D2 + timedelta(days=1)).alias("trade_date"))
+    pl.concat([pl.read_parquet(root / "part.parquet"), after]).write_parquet(root / "part.parquet")
+    _commit(lake, "daily_bars")
+    plan = repair_status_traded(lake, start=D1, end=D2 + timedelta(days=1))
+    assert plan["rows"] == 5
+    assert plan["exclusions"]["after_delisting"] == 1
+
+
+def test_a_cdr_print_gets_a_status_row(lake):
+    root = lake.curated_root / "instruments"
+    cdr = pl.DataFrame(
+        {
+            "symbol": ["689009.SH"],
+            "asset_type": ["cdr"],
+            "list_date": [D1],
+            "delist_date": [None],
+        },
+        schema_overrides={"list_date": pl.Date, "delist_date": pl.Date},
+    )
+    pl.concat([pl.read_parquet(root / "part.parquet"), cdr]).write_parquet(root / "part.parquet")
+    _commit(lake, "instruments")
+    bars = pl.read_parquet(lake.curated_root / "daily_bars/trade_date=2026-07/part.parquet")
+    cdr_bars = bars.filter(pl.col("symbol") == "000001.SZ").with_columns(
+        pl.lit("689009.SH").alias("symbol")
+    )
+    pl.concat([bars, cdr_bars]).write_parquet(
+        lake.curated_root / "daily_bars/trade_date=2026-07/part.parquet"
+    )
+    _commit(lake, "daily_bars")
+
+    plan = repair_status_traded(lake, start=D1, end=D2)
+    assert plan["by_class"]["cdr"] == 2  # both CDR prints lack status rows
+    repair_status_traded(lake, start=D1, end=D2, apply=True)
+    added = load("trading_status", config=lake).filter(pl.col("symbol") == "689009.SH")
+    assert added.height == 2
+    assert added["status"][0] == "normal"
+    assert added["risk_warning"][0] is None
 
 
 def test_preview_of_an_empty_lake_creates_nothing(tmp_path):
@@ -149,7 +198,7 @@ def test_cli_previews_and_rejects_a_reversed_window(lake, monkeypatch):
         cli, ["repair", "status-traded", "--start", str(D1), "--end", str(D2)]
     )
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["rows"] == 4
+    assert json.loads(result.output)["rows"] == 5
     result = CliRunner().invoke(
         cli, ["repair", "status-traded", "--start", str(D2), "--end", str(D1)]
     )
@@ -163,10 +212,10 @@ def test_apply_publishes_missing_month_keys_preserves_conflicts_and_old_revision
     assert report["applied"]
     rows = load("trading_status", config=lake)
     added = rows.filter(pl.col("source") == DERIVED_TRADED_SOURCE)
-    assert added.height == 4
+    assert added.height == 5
     assert added["is_trading"].all()
-    # ST does not apply to funds; stocks stay unknown.
-    assert added["risk_warning"].null_count() == 3
+    # ST does not apply to funds; stocks and CDRs stay unknown.
+    assert added["risk_warning"].null_count() == 4
     assert added.filter(pl.col("symbol") == "510001.SH")["risk_warning"].to_list() == [False]
     assert (
         rows.filter((pl.col("symbol") == "000001.SZ") & (pl.col("trade_date") == D1))["status"][0]
@@ -179,21 +228,21 @@ def test_apply_publishes_missing_month_keys_preserves_conflicts_and_old_revision
 
 def test_coverage_counts_history_before_first_status_and_separates_st(lake):
     before = trading_state_coverage_report(lake)
-    assert before["traded_rows"] == 6
-    assert before["missing_rows"] == 4
+    assert before["traded_rows"] == 7
+    assert before["missing_rows"] == 5
     assert before["contradictory_rows"] == 1
     repair_status_traded(lake, start=D1, end=D2, apply=True)
     after = trading_state_coverage_report(lake)
     assert after["missing_rows"] == 0
-    assert after["derived_traded_rows"] == 4
-    assert after["risk_warning_unknown_rows"] == 5  # the derived fund row is not ST
+    assert after["derived_traded_rows"] == 5
+    assert after["risk_warning_unknown_rows"] == 6  # the derived fund row is not ST
 
 
 def test_preview_reads_committed_inputs_instead_of_unpublished_edits(lake):
     root = lake.curated_root / "daily_bars" / "trade_date=2026-07"
     frame = pl.read_parquet(root / "part.parquet").with_columns(pl.lit(0).alias("volume"))
     frame.write_parquet(root / "part.parquet")
-    assert repair_status_traded(lake, start=D1, end=D2)["rows"] == 4
+    assert repair_status_traded(lake, start=D1, end=D2)["rows"] == 5
 
 
 def test_apply_works_without_any_prior_status_partition(lake):
@@ -203,8 +252,8 @@ def test_apply_works_without_any_prior_status_partition(lake):
     for name in ("daily_bars", "instruments"):
         shutil.copytree(lake.curated_root / name, cfg.curated_root / name)
         _commit(cfg, name)
-    assert repair_status_traded(cfg, start=D1, end=D2, apply=True)["rows"] == 6
-    assert load("trading_status", config=cfg).height == 6
+    assert repair_status_traded(cfg, start=D1, end=D2, apply=True)["rows"] == 7
+    assert load("trading_status", config=cfg).height == 7
 
 
 def test_a_blocked_publication_never_moves_the_committed_pointer(lake, monkeypatch):
@@ -273,7 +322,7 @@ def test_null_volume_and_newer_zero_volume_are_not_print_evidence(lake):
     _commit(lake, "daily_bars")
     # Rounded-zero quantities with positive turnover cannot erase actual
     # prints. A genuine zero-volume/zero-amount observation remains distinct.
-    assert repair_status_traded(lake, start=D1, end=D2)["rows"] == 4
+    assert repair_status_traded(lake, start=D1, end=D2)["rows"] == 5
     newer = newer.with_columns(pl.lit(0.0).alias("amount"))
     pl.concat([frame, newer]).write_parquet(root / "part.parquet")
     _commit(lake, "daily_bars")

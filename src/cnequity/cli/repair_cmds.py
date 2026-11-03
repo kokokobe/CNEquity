@@ -511,7 +511,7 @@ def status_traded(config_path: str, start, end, apply: bool):
     """Fill missing status keys from actual trading bars, leaving stock ST unknown.
 
     \b
-    Only fills stock/ETF keys within known listing periods that have volume above zero and no status row, with source derived_traded.
+    Only fills stock/ETF/CDR keys within known listing periods that have volume above zero and no status row, with source derived_traded.
     ETF/fund rows are written not-ST, since ST does not apply to funds; earlier fund rows written as unknown are corrected.
     Does not overwrite other status rows, does not read days without trades as suspensions, and does not create ST coverage evidence.
     The default preview writes nothing; --apply re-checks the current version, then publishes, keeping the old version.
