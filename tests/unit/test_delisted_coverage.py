@@ -92,6 +92,28 @@ def test_coverage_can_scope_out_unsupported_bj_delistings(tmp_path, monkeypatch)
     assert report["verified"] is True
 
 
+def test_bj_unknown_overlap_is_disclosed_not_blocking(tmp_path, monkeypatch):
+    """BJ 停牌一手状态结构性无源:unknown_overlap 走披露,不阻断收据(2026-11-03 裁定)。
+
+    目录候选 920305.BJ 的终止日在窗口日之后(当日仍在册),窗口日无 bar、无状态行,
+    baostock/BSE/交易所均无法提供该日 BJ 停牌一手证据——与 ST 收据的
+    unsupported_exchange_symbols 披露同理,记录披露后收据通过。
+    """
+    cfg = _cfg(tmp_path, {"920305.BJ": "2026-07-29"})
+    _write_instruments(cfg, [("920305.BJ", None)])
+    monkeypatch.setattr(
+        "cnequity.quality.delisted_coverage.pending_codes", lambda cfg, read_context=None: []
+    )
+
+    report = delisted_coverage_report(cfg, date(2025, 4, 30), date(2025, 4, 30))
+
+    assert report["counts"]["unknown_overlap"] == 0
+    assert report["counts"]["unknown_overlap_disclosed_bj"] == 1
+    assert report["known_coverage_complete"] is True
+    assert report["verified"] is True
+    assert report["samples"]["unknown_overlap_disclosed_bj"][0]["symbol"] == "920305.BJ"
+
+
 def test_coverage_separates_definite_unknown_terminal_and_identity_gaps(tmp_path, monkeypatch):
     cfg = _cfg(
         tmp_path,

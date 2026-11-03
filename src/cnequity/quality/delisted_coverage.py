@@ -405,6 +405,10 @@ def delisted_coverage_report(
 
     missing_bars: list[dict] = []
     unknown_overlap: list[dict] = []
+    # BJ 停牌一手状态结构性无源(baostock 对部分 BJ 日 capability_limit、BSE 官方板
+    # 仅当日快照、交易所日报不覆盖 BJ)。与 ST 收据的 unsupported_exchange_symbols
+    # 披露同理(2026-11-03 用户裁定):记录披露,不阻断收据。沪深码不豁免。
+    unknown_overlap_disclosed_bj: list[dict] = []
     terminal_mismatches: list[dict] = []
     terminal_nonprinting: list[dict] = []
     missing_instruments: list[dict] = []
@@ -431,6 +435,10 @@ def delisted_coverage_report(
             finding = {"symbol": symbol, "catalog_last_traded": catalog_last.isoformat()}
             if overlap_is_definite:
                 missing_bars.append(finding)
+            elif symbol.endswith(".BJ"):
+                finding["disclosed"] = "bj_suspension_evidence_unsupported"
+                unknown_overlap_disclosed_bj.append(finding)
+                continue
             else:
                 unknown_overlap.append(finding)
                 continue
@@ -583,6 +591,7 @@ def delisted_coverage_report(
             "formal_unresolved": len(formal_unresolved),
             "missing_bars": len(missing_bars),
             "unknown_overlap": len(unknown_overlap),
+            "unknown_overlap_disclosed_bj": len(unknown_overlap_disclosed_bj),
             "not_yet_listed": len(not_yet_listed),
             "verified_nontrading": len(verified_nontrading),
             "terminal_mismatch": len(terminal_mismatches),
@@ -597,6 +606,7 @@ def delisted_coverage_report(
             "formal_unresolved": limited(formal_unresolved),
             "missing_bars": limited(missing_bars),
             "unknown_overlap": limited(unknown_overlap),
+            "unknown_overlap_disclosed_bj": limited(unknown_overlap_disclosed_bj),
             "not_yet_listed": limited(not_yet_listed),
             "verified_nontrading": limited(verified_nontrading),
             "terminal_mismatch": limited(terminal_mismatches),
