@@ -26,6 +26,7 @@ from cnequity.domain.datasets import get_dataset, intraday_datasets
 from cnequity.orchestrator.outcomes import SourcePayloadError, SourceUnavailableError
 from cnequity.orchestrator.registry import register_step
 from cnequity.query.intraday_scope import MinuteBarsScopeError as MinuteBarsScopeError
+from cnequity.query.calendar import list_trading_dates
 from cnequity.steps.common import incremental_window, instrument_metadata, load_symbols
 from cnequity.storage import StagingWriter
 
@@ -100,8 +101,24 @@ def _fetch_minute_bars_with_priority(
     config: Config,
     max_pages: int | None,
     workers: int,
+    expected_dates: list[date] | None = None,
 ) -> tuple[pl.DataFrame, list[str], str]:
-    """Prefer QMT; TDX fills only symbols the local bridge does not cover."""
+    """Prefer QMT; TDX fills the holes the local bridge leaves.
+
+    Two hole shapes, both real (2026-11-04 全窗 5m 回补):
+
+    - whole symbols QMT never answers — the original fallback;
+    - **date holes**: QMT answers a symbol but only with its recent window
+      (the bridge's minute retention is shallow), so the symbol counted as
+      "covered" and its older dates stayed empty even though TDX serves them
+      — 14 of 35 rebalance dates went unfilled that way. ``expected_dates``
+      (the lake calendar) makes the coverage check per (symbol, trade_date);
+      without it the function keeps the cheap old behavior rather than
+      guessing which dates should exist.
+
+    TDX pages back from the live tip regardless of window width, so one wide
+    span over all hole dates costs the same request budget as narrow spans.
+    """
     if not getattr(config, "qmt_bridge_enabled", False):
         df, failed = fetch_minute_bars(
             symbols,
@@ -146,8 +163,77 @@ def _fetch_minute_bars_with_priority(
 
     observed = set(qmt_df["symbol"].unique().to_list())
     missing = [symbol for symbol in symbols if symbol not in observed]
+
+    combined = qmt_df
+    tdx_used = False
+
+    if expected_dates and symbols != missing:
+        # 日期级缺口：只问 QMT 部分覆盖的码，只补它缺的日期跨度。
+        expected_set = set(expected_dates)
+        covered_by_symbol: dict[str, set[date]] = {}
+        for symbol, trade_day in zip(
+            qmt_df.get_column("symbol").to_list(),
+            qmt_df.get_column("trade_date").to_list(),
+        ):
+            covered_by_symbol.setdefault(symbol, set()).add(trade_day)
+        hole_symbols: set[str] = set()
+        hole_dates: set[date] = set()
+        for symbol in symbols:
+            if symbol not in observed:
+                continue  # 整码缺失走下面的整窗路径
+            holes = expected_set - covered_by_symbol.get(symbol, set())
+            if holes:
+                hole_symbols.add(symbol)
+                hole_dates |= holes
+        if hole_symbols:
+            hole_lo, hole_hi = min(hole_dates), max(hole_dates)
+            logger.info(
+                "%s: %d symbol(s) have %s date holes in %s..%s; TDX date fill",
+                dataset,
+                len(hole_symbols),
+                frequency,
+                hole_lo,
+                hole_hi,
+            )
+            try:
+                hole_df, _hole_failed = fetch_minute_bars(
+                    sorted(hole_symbols),
+                    hole_lo,
+                    hole_hi,
+                    frequency=frequency,
+                    rate_limit=rate_limit,
+                    backfill=backfill,
+                    config=config,
+                    max_pages=max_pages,
+                    require_complete=True,
+                    workers=workers,
+                )
+            except Exception as exc:
+                # 洞式回填失败不把部分覆盖的码标成 failed——它们已有 QMT
+                # 行；剩余缺口由水位/覆盖报告如实呈现。
+                logger.warning(
+                    "TDX %s date-hole fill failed (%s..%s): %s",
+                    frequency,
+                    hole_lo,
+                    hole_hi,
+                    exc,
+                )
+            else:
+                if not hole_df.is_empty():
+                    combined = pl.concat(
+                        [
+                            combined,
+                            normalize_with_source(
+                                hole_df, "tdx_protocol", dataset=dataset
+                            ),
+                        ],
+                        how="diagonal_relaxed",
+                    )
+                    combined = dedupe_by_primary_key(combined, dataset)
+                    tdx_used = True
+
     if not missing:
-        return qmt_df, [], "qmt_bridge"
+        return combined, [], "mixed" if tdx_used else "qmt_bridge"
 
     try:
         fallback_df, failed = fetch_minute_bars(
@@ -164,12 +250,12 @@ def _fetch_minute_bars_with_priority(
         )
     except Exception as exc:
         logger.warning("TDX %s bars gap fill failed: %s", frequency, exc)
-        return qmt_df, missing, "qmt_bridge"
+        return combined, missing, "mixed" if tdx_used else "qmt_bridge"
 
     fallback_df = normalize_with_source(
         fallback_df, "tdx_protocol", dataset=dataset
     )
-    combined = pl.concat([qmt_df, fallback_df], how="diagonal_relaxed")
+    combined = pl.concat([combined, fallback_df], how="diagonal_relaxed")
     combined = dedupe_by_primary_key(combined, dataset)
     failed = sorted(set(failed) | (set(missing) - set(combined["symbol"].unique().to_list())))
     return combined, failed, "mixed"
@@ -334,6 +420,14 @@ def capture_intraday_bars(
     failed: list[str] = []
     with_rows: set[str] = set()
 
+    # 日期级 TDX 回填的期望交易日表：一次算好传给每个批次。日历不可用
+    # 时保持旧的按码兜底，不猜日期。
+    try:
+        expected_dates = list_trading_dates(config, start, end)
+    except Exception as exc:  # noqa: BLE001 — 日历缺失不该拦住抓取
+        logger.warning("%s: trading calendar unavailable (%s); date-level TDX fill disabled", dataset, exc)
+        expected_dates = None
+
     for index in range(0, len(symbols), _BATCH_SYMBOLS):
         chunk = symbols[index : index + _BATCH_SYMBOLS]
         try:
@@ -348,6 +442,7 @@ def capture_intraday_bars(
                 config=config,
                 max_pages=max_pages,
                 workers=config.minute_bars_fetch_workers,
+                expected_dates=expected_dates,
             )
         except Exception as exc:  # noqa: BLE001 — recorded, sweep continues
             # A batch failing outright (e.g. a connect timeout after hundreds
