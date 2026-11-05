@@ -316,9 +316,15 @@ def _reform_share_counts(config, symbols, read_context=None) -> pl.DataFrame:
     scan = scan_parquet_root(
         root, partition_col="change_date", symbols=symbols, end=_SHARE_REFORM[1], committed=False
     )
+    schema_names = scan.collect_schema().names()
+    # A legacy (pre-0.21.0) generation holds no ``float_a_shares``; read the
+    # missing column as null so old rows drop out of the positive-count filter
+    # instead of failing schema resolution. The migration backfills real counts.
+    if "float_a_shares" not in schema_names:
+        scan = scan.with_columns(pl.lit(None, dtype=pl.Float64).alias("float_a_shares"))
     # Each change appears once per announcement revision, some without the
     # float A count; the last positive count on a date is that date's level.
-    order = [c for c in ("announce_date", "observed_at") if c in scan.collect_schema().names()]
+    order = [c for c in ("announce_date", "observed_at") if c in schema_names]
     return (
         scan.filter(pl.col("float_a_shares") > 0)
         .select("symbol", pl.col("change_date").cast(pl.Date), "float_a_shares", *order)

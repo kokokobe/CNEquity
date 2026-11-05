@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from cnequity.config import Config
-from cnequity.derive.stock_factors import stock_event_series
+from cnequity.derive.stock_factors import _reform_share_counts, stock_event_series
 from cnequity.quality.factor_policy import advisory_factor_findings
 from cnequity.storage.repairs.adj_factors import repair_adj_factors
 from cnequity.storage.revisions import RevisionStore
@@ -467,3 +467,46 @@ def test_plain_adjusted_load_skips_diagnostics_and_receipt_survives_them(tmp_pat
     result = load_with_receipt("daily_bars", config=cfg, symbols=["600001.SH"], adjust="hfq")
     assert result.frame.height == 10
     assert result.receipt["adjustment"]["diagnostics_assessed"] is False
+
+
+def _legacy_share_structure(change_date):
+    """A pre-0.21.0 share_structure row set: schema v1, no ``float_a_shares``."""
+    stamp = datetime(2026, 6, 16, tzinfo=timezone.utc)
+    return pl.DataFrame(
+        {
+            "symbol": ["600001.SH"],
+            "change_date": [change_date],
+            "total_shares": [1.0e9],
+            "float_shares": [8.0e8],
+            "restricted_shares": [2.0e8],
+            "free_float_shares": [7.0e8],
+            "change_reason": ["限售股份上市"],
+            "announce_date": [change_date],
+            "source": ["eastmoney"],
+            "data_version": ["v1"],
+            "fetched_at": [stamp],
+            "available_at": [stamp],
+            "source_published_at": [stamp],
+            "observed_at": [stamp],
+            "revision_id": ["legacy-v1"],
+        }
+    )
+
+
+def test_reform_counts_tolerate_legacy_share_structure_beyond_the_window(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake", publication_gate="block", audit_gate="block")
+    path = cfg.curated_root / "share_structure" / "change_date=2026" / "part.parquet"
+    path.parent.mkdir(parents=True)
+    _legacy_share_structure(date(2026, 6, 15)).write_parquet(path)
+    counts = _reform_share_counts(cfg, ["600001.SH"])
+    assert counts.columns == ["symbol", "change_date", "float_a_shares"]
+    assert counts.is_empty()
+
+
+def test_reform_counts_drop_in_window_legacy_rows_without_a_float_a_count(tmp_path):
+    cfg = Config(data_root=tmp_path / "lake", publication_gate="block", audit_gate="block")
+    path = cfg.curated_root / "share_structure" / "change_date=2006" / "part.parquet"
+    path.parent.mkdir(parents=True)
+    _legacy_share_structure(date(2006, 3, 1)).write_parquet(path)
+    counts = _reform_share_counts(cfg, ["600001.SH"])
+    assert counts.is_empty()
